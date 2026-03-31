@@ -178,10 +178,38 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			p.store.UpsertAsset(ctx, &toolResult.Assets[j]) //nolint:errcheck
 		}
 
-		// Persist findings
-		for j := range toolResult.Findings {
-			toolResult.Findings[j].ScanID = scan.ID
-			p.store.UpsertFinding(ctx, &toolResult.Findings[j]) //nolint:errcheck
+		// Persist findings — resolve AssetID from URL/host to actual asset
+		if len(toolResult.Findings) > 0 {
+			assetLookup := p.buildAssetLookup(ctx, targetID)
+			fallbackAssetID := resolveAssetID("", assetLookup)
+			persisted, errCount := 0, 0
+			var firstErr error
+			for j := range toolResult.Findings {
+				toolResult.Findings[j].ScanID = scan.ID
+				resolved := resolveAssetID(toolResult.Findings[j].AssetID, assetLookup)
+				if resolved == "" {
+					resolved = fallbackAssetID
+				}
+				if resolved == "" {
+					errCount++
+					continue
+				}
+				toolResult.Findings[j].AssetID = resolved
+				if err := p.store.UpsertFinding(ctx, &toolResult.Findings[j]); err != nil {
+					errCount++
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				persisted++
+			}
+			if errCount > 0 && firstErr != nil {
+				fmt.Fprintf(os.Stderr, "    Warning: %d findings failed to persist (first error: %v)\n", errCount, firstErr)
+			}
+			if persisted > 0 && persisted < len(toolResult.Findings) {
+				fmt.Fprintf(os.Stderr, "    Persisted %d/%d findings (duplicates merged)\n", persisted, len(toolResult.Findings))
+			}
 		}
 
 		// Update stats
@@ -284,6 +312,52 @@ func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTo
 		Config:        map[string]interface{}{},
 	}
 	p.store.CreateToolRun(ctx, tr) //nolint:errcheck
+}
+
+// buildAssetLookup returns a map of asset value → asset ID for all assets of a target.
+func (p *Pipeline) buildAssetLookup(ctx context.Context, targetID string) map[string]string {
+	assets, err := p.store.ListAssets(ctx, storage.AssetListOptions{TargetID: targetID, Limit: 10000})
+	if err != nil {
+		return nil
+	}
+	lookup := make(map[string]string, len(assets))
+	for _, a := range assets {
+		lookup[a.Value] = a.ID
+	}
+	return lookup
+}
+
+// resolveAssetID maps a host/URL string (from nuclei) to a real asset ID.
+// It tries exact match first, then prefix matching, then fallback to any URL asset.
+func resolveAssetID(hostHint string, lookup map[string]string) string {
+	if lookup == nil || len(lookup) == 0 {
+		return ""
+	}
+
+	if hostHint != "" {
+		// Exact match
+		if id, ok := lookup[hostHint]; ok {
+			return id
+		}
+		// Prefix matching (e.g., "https://lacuerda.net:443" ↔ asset value)
+		for value, id := range lookup {
+			if strings.Contains(hostHint, value) || strings.Contains(value, hostHint) {
+				return id
+			}
+		}
+	}
+
+	// Fallback: first URL asset
+	for value, id := range lookup {
+		if strings.HasPrefix(value, "http") {
+			return id
+		}
+	}
+	// Last resort: any asset
+	for _, id := range lookup {
+		return id
+	}
+	return ""
 }
 
 func shouldSkip(tool detection.DetectionTool, opts PipelineOptions) bool {

@@ -126,6 +126,8 @@ func ensureNucleiTemplates() error {
 	return nil
 }
 
+// mapNucleiEvent converts a nuclei result event to a Finding.
+// AssetID is temporarily set to event.Host so the pipeline can resolve it to a real asset ID.
 func mapNucleiEvent(event *output.ResultEvent) model.Finding {
 	cve := ""
 	var cvss float64
@@ -146,6 +148,7 @@ func mapNucleiEvent(event *output.ResultEvent) model.Finding {
 	}
 
 	return model.Finding{
+		AssetID:      event.Host, // temporary: pipeline resolves to real asset ID
 		TemplateID:   event.TemplateID,
 		TemplateName: event.Info.Name,
 		Severity:     mapNucleiSeverity(event.Info.SeverityHolder.Severity.String()),
@@ -156,6 +159,7 @@ func mapNucleiEvent(event *output.ResultEvent) model.Finding {
 		Evidence:     event.Matched,
 		CVSS:         cvss,
 		CVE:          cve,
+		Status:       model.FindingStatusOpen,
 		SourceTool:   "nuclei",
 		Confidence:   80.0,
 	}
