@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
+	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
 var statusCmd = &cobra.Command{
@@ -27,31 +31,40 @@ var statusCmd = &cobra.Command{
 
 		// Counts
 		targets, _ := store.CountTargets(ctx)
-		scans, _ := store.CountScans(ctx)
-		findings, _ := store.CountFindings(ctx)
 		assets, _ := store.CountAssets(ctx)
 
 		fmt.Printf("Targets:     %d\n", targets)
+		fmt.Printf("Assets:      %d\n", assets)
 
+		// Findings with severity breakdown
+		findings, _ := store.CountFindings(ctx)
+		findingsStr := fmt.Sprintf("%d", findings)
+		if findings > 0 {
+			allFindings, _ := store.ListFindings(ctx, storage.FindingListOptions{Limit: findings})
+			sevCounts := countSeverities(allFindings)
+			if len(sevCounts) > 0 {
+				findingsStr += " (" + strings.Join(sevCounts, ", ") + ")"
+			}
+		}
+		fmt.Printf("Findings:    %s\n", findingsStr)
+
+		// Last scan
 		lastScanStr := "never"
 		if last, err := store.LastScan(ctx); err == nil && last != nil {
-			lastScanStr = last.CreatedAt.Format("2006-01-02 15:04")
+			ago := time.Since(last.CreatedAt)
+			target, _ := store.GetTarget(ctx, last.TargetID)
+			targetName := last.TargetID
+			if target != nil {
+				targetName = target.Value
+			}
+			lastScanStr = fmt.Sprintf("%s — %s ago (%s)", targetName, formatDurationShort(ago), last.Status)
 		}
-		fmt.Printf("Scans:       %d (last: %s)\n", scans, lastScanStr)
-		fmt.Printf("Findings:    %d\n", findings)
-		fmt.Printf("Assets:      %d\n", assets)
+		fmt.Printf("Last scan:   %s\n", lastScanStr)
 
 		// Tools
 		allTools := registry.Tools()
 		availTools := registry.AvailableTools()
-		var toolNames []string
-		for _, t := range allTools {
-			toolNames = append(toolNames, t.Name())
-		}
-		fmt.Printf("\nTools:       %s (%d/%d available)\n",
-			strings.Join(toolNames, ", "), len(availTools), len(allTools))
-		fmt.Println("Connectors:  none configured")
-		fmt.Println("Cloud:       not connected")
+		fmt.Printf("Tools:       %d/%d available\n", len(availTools), len(allTools))
 
 		return nil
 	},
@@ -72,4 +85,31 @@ func formatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func formatDurationShort(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+func countSeverities(findings []model.Finding) []string {
+	counts := map[model.Severity]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
+	}
+	var parts []string
+	for _, sev := range []model.Severity{model.SeverityCritical, model.SeverityHigh, model.SeverityMedium, model.SeverityLow} {
+		if c, ok := counts[sev]; ok && c > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c, sev))
+		}
+	}
+	return parts
 }

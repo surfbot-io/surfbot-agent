@@ -3,11 +3,13 @@ package detection
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	nuclei "github.com/projectdiscovery/nuclei/v3/lib"
+	"github.com/projectdiscovery/nuclei/v3/pkg/installer"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 
 	"github.com/surfbot-io/surfbot-agent/internal/model"
@@ -26,6 +28,11 @@ func (n *NucleiTool) Available() bool { return true }
 func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	if len(inputs) == 0 {
 		return &RunResult{}, nil
+	}
+
+	// Ensure templates are installed (transparent auto-download)
+	if err := ensureNucleiTemplates(); err != nil {
+		return nil, fmt.Errorf("nuclei templates setup: %w", err)
 	}
 
 	severity := "critical,high,medium,low,info"
@@ -93,6 +100,30 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		},
 	}
 	return result, nil
+}
+
+// ensureNucleiTemplates downloads nuclei templates if they are not already installed.
+func ensureNucleiTemplates() error {
+	installer.HideProgressBar = true
+	installer.HideUpdateChangesTable = true
+	installer.HideReleaseNotes = true
+
+	tm := &installer.TemplateManager{}
+	if err := tm.FreshInstallIfNotExists(); err != nil {
+		return fmt.Errorf("installing nuclei templates: %w", err)
+	}
+
+	// Create .nuclei-ignore if it doesn't exist (prevents ERR log)
+	cfg := nuclei.DefaultConfig
+	if cfg != nil {
+		ignorePath := cfg.GetIgnoreFilePath()
+		if _, err := os.Stat(ignorePath); os.IsNotExist(err) {
+			os.MkdirAll(strings.TrimSuffix(ignorePath, ".nuclei-ignore"), 0o755) //nolint:errcheck
+			os.WriteFile(ignorePath, []byte(""), 0o644)                           //nolint:errcheck
+		}
+	}
+
+	return nil
 }
 
 func mapNucleiEvent(event *output.ResultEvent) model.Finding {

@@ -18,6 +18,11 @@ func NewRegistry() *Registry {
 	}
 }
 
+// NewRegistryFrom creates a registry from the given tools (useful for testing).
+func NewRegistryFrom(tools []DetectionTool) *Registry {
+	return &Registry{tools: tools}
+}
+
 // Tools returns all registered tools.
 func (r *Registry) Tools() []DetectionTool { return r.tools }
 
