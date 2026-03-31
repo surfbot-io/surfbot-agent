@@ -30,7 +30,6 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		return &RunResult{}, nil
 	}
 
-	// Ensure templates are installed (transparent auto-download)
 	if err := ensureNucleiTemplates(); err != nil {
 		return nil, fmt.Errorf("nuclei templates setup: %w", err)
 	}
@@ -45,12 +44,26 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		rateLimit = opts.RateLimit
 	}
 
+	timeout := 10
+	if opts.Timeout > 0 && opts.Timeout < 300 {
+		timeout = opts.Timeout
+	}
+
 	engineOpts := []nuclei.NucleiSDKOptions{
 		nuclei.WithTemplateFilters(nuclei.TemplateFilters{
 			Severity: severity,
 		}),
 		nuclei.DisableUpdateCheck(),
 		nuclei.WithGlobalRateLimit(rateLimit, time.Second),
+		nuclei.WithNetworkConfig(nuclei.NetworkConfig{
+			Timeout:       timeout,
+			Retries:       1,
+			MaxHostError:  3,
+			LeaveDefaultPorts: true,
+		}),
+		nuclei.WithVerbosity(nuclei.VerbosityOptions{
+			Silent: true,
+		}),
 	}
 
 	if templatePath, ok := opts.ExtraArgs["templates"]; ok && templatePath != "" {
@@ -71,6 +84,7 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 
 	var findings []model.Finding
 	var mu sync.Mutex
+	var skipped int
 
 	err = ne.ExecuteWithCallback(func(event *output.ResultEvent) {
 		defer func() {
@@ -79,12 +93,22 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 			}
 		}()
 
+		// Filter out findings without real evidence
+		if !isValidFinding(event) {
+			mu.Lock()
+			skipped++
+			mu.Unlock()
+			return
+		}
+
 		finding := mapNucleiEvent(event)
 		mu.Lock()
 		findings = append(findings, finding)
 		mu.Unlock()
 	})
-	if err != nil {
+	// Context deadline/cancellation is not a fatal error if we already have findings —
+	// nuclei may not finish all templates within the timeout, and that's OK.
+	if err != nil && len(findings) == 0 {
 		return nil, fmt.Errorf("nuclei execution: %w", err)
 	}
 
@@ -96,10 +120,29 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 			Status:        model.ToolRunCompleted,
 			FindingsCount: len(findings),
 			TargetsCount:  len(inputs),
-			Config:        map[string]interface{}{},
+			Config: map[string]interface{}{
+				"filtered": skipped,
+			},
 		},
 	}
 	return result, nil
+}
+
+// isValidFinding checks if a nuclei result represents a real finding, not noise.
+func isValidFinding(event *output.ResultEvent) bool {
+	// Must have a matched-at URL — this means the template actually matched something
+	if event.Matched == "" {
+		return false
+	}
+	// Must have a host
+	if event.Host == "" {
+		return false
+	}
+	// MatcherStatus false means matchers did not match (negative/inverse result)
+	if !event.MatcherStatus {
+		return false
+	}
+	return true
 }
 
 // ensureNucleiTemplates downloads nuclei templates if they are not already installed.

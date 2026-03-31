@@ -87,6 +87,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 
 	tools := p.selectTools(opts)
 	inputs := []string{target.Value}
+	hostnames := []string{target.Value} // original hostnames for hostname-aware phases
 	result := &PipelineResult{
 		ScanID: scan.ID,
 		Target: target.Value,
@@ -228,17 +229,25 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// Thread outputs to next phase
 		nextInputs := extractInputsForNextPhase(tool.Phase(), toolResult)
 
-		// If discovery found 0 subdomains, fall back to the root domain itself
-		if tool.Phase() == "discovery" && len(nextInputs) == 0 {
-			fmt.Fprintf(os.Stderr, "    No subdomains found, using root domain as target\n")
-			nextInputs = []string{target.Value}
+		// Track hostnames from discovery phase
+		if tool.Phase() == "discovery" {
+			if len(nextInputs) == 0 {
+				fmt.Fprintf(os.Stderr, "    No subdomains found, using root domain as target\n")
+				nextInputs = []string{target.Value}
+			}
+			hostnames = nextInputs
+		}
+
+		// For http_probe: include hostnames alongside IPs/ports so CDN-backed
+		// sites can be probed by hostname (not just IP)
+		if tool.Phase() == "resolution" || tool.Phase() == "port_scan" {
+			nextInputs = mergeHostnames(nextInputs, hostnames)
 		}
 
 		// Update inputs for next phase (assessment returns nil — keep previous inputs)
 		if nextInputs != nil {
 			inputs = nextInputs
 		} else if tool.Phase() != "assessment" {
-			// Phase produced no relevant outputs — empty inputs for next phase
 			inputs = []string{}
 		}
 
@@ -358,6 +367,22 @@ func resolveAssetID(hostHint string, lookup map[string]string) string {
 		return id
 	}
 	return ""
+}
+
+// mergeHostnames appends hostnames to the input list, deduplicating.
+func mergeHostnames(inputs, hostnames []string) []string {
+	seen := make(map[string]bool, len(inputs))
+	for _, v := range inputs {
+		seen[v] = true
+	}
+	merged := append([]string{}, inputs...)
+	for _, h := range hostnames {
+		if !seen[h] {
+			seen[h] = true
+			merged = append(merged, h)
+		}
+	}
+	return merged
 }
 
 func shouldSkip(tool detection.DetectionTool, opts PipelineOptions) bool {
