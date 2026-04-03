@@ -25,6 +25,11 @@ func (n *NucleiTool) Phase() string  { return "assessment" }
 func (n *NucleiTool) Kind() ToolKind { return ToolKindLibrary }
 func (n *NucleiTool) Available() bool { return true }
 
+func (n *NucleiTool) Command() string       { return "assess" }
+func (n *NucleiTool) Description() string   { return "Run vulnerability assessment using nuclei templates" }
+func (n *NucleiTool) InputType() string     { return "urls" }
+func (n *NucleiTool) OutputTypes() []string { return []string{"finding"} }
+
 func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	if len(inputs) == 0 {
 		return &RunResult{}, nil

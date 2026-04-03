@@ -50,6 +50,11 @@ func (h *HTTPXTool) Phase() string  { return "http_probe" }
 func (h *HTTPXTool) Kind() ToolKind { return ToolKindNative }
 func (h *HTTPXTool) Available() bool { return true }
 
+func (h *HTTPXTool) Command() string       { return "probe" }
+func (h *HTTPXTool) Description() string   { return "Probe host:port pairs for live HTTP services and detect technologies" }
+func (h *HTTPXTool) InputType() string     { return "hostports" }
+func (h *HTTPXTool) OutputTypes() []string { return []string{"url", "technology"} }
+
 type probeResult struct {
 	URL        string
 	StatusCode int

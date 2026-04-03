@@ -76,3 +76,42 @@ func TestToolMetadata(t *testing.T) {
 		assert.Equal(t, exp.kind, tools[i].Kind(), "tool %d kind", i)
 	}
 }
+
+func TestToolCLIMetadata(t *testing.T) {
+	expected := []struct {
+		name        string
+		command     string
+		description string
+		inputType   string
+		outputTypes []string
+	}{
+		{"subfinder", "discover", "Discover subdomains for a target domain using passive sources", "domains", []string{"subdomain"}},
+		{"dnsx", "resolve", "Resolve domains to IP addresses via DNS lookup", "domains", []string{"ipv4", "ipv6"}},
+		{"naabu", "portscan", "Scan hosts for open TCP ports", "ips", []string{"port"}},
+		{"httpx", "probe", "Probe host:port pairs for live HTTP services and detect technologies", "hostports", []string{"url", "technology"}},
+		{"nuclei", "assess", "Run vulnerability assessment using nuclei templates", "urls", []string{"finding"}},
+	}
+
+	r := NewRegistry()
+	tools := r.Tools()
+	require.Len(t, tools, len(expected))
+
+	// Check no duplicate command names
+	commands := make(map[string]bool)
+	for _, tool := range tools {
+		assert.NotEmpty(t, tool.Command(), "tool %s has empty Command()", tool.Name())
+		assert.NotEmpty(t, tool.Description(), "tool %s has empty Description()", tool.Name())
+		assert.NotEmpty(t, tool.InputType(), "tool %s has empty InputType()", tool.Name())
+		assert.NotEmpty(t, tool.OutputTypes(), "tool %s has empty OutputTypes()", tool.Name())
+
+		assert.False(t, commands[tool.Command()], "duplicate command name: %s", tool.Command())
+		commands[tool.Command()] = true
+	}
+
+	for i, exp := range expected {
+		assert.Equal(t, exp.command, tools[i].Command(), "tool %d command", i)
+		assert.Equal(t, exp.description, tools[i].Description(), "tool %d description", i)
+		assert.Equal(t, exp.inputType, tools[i].InputType(), "tool %d inputType", i)
+		assert.Equal(t, exp.outputTypes, tools[i].OutputTypes(), "tool %d outputTypes", i)
+	}
+}

@@ -22,6 +22,11 @@ func (d *DNSXTool) Phase() string  { return "resolution" }
 func (d *DNSXTool) Kind() ToolKind { return ToolKindNative }
 func (d *DNSXTool) Available() bool { return true }
 
+func (d *DNSXTool) Command() string       { return "resolve" }
+func (d *DNSXTool) Description() string   { return "Resolve domains to IP addresses via DNS lookup" }
+func (d *DNSXTool) InputType() string     { return "domains" }
+func (d *DNSXTool) OutputTypes() []string { return []string{"ipv4", "ipv6"} }
+
 type dnsResult struct {
 	Host  string
 	IPs   []string

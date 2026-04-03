@@ -36,6 +36,11 @@ func (n *NaabuTool) Phase() string  { return "port_scan" }
 func (n *NaabuTool) Kind() ToolKind { return ToolKindNative }
 func (n *NaabuTool) Available() bool { return true }
 
+func (n *NaabuTool) Command() string       { return "portscan" }
+func (n *NaabuTool) Description() string   { return "Scan hosts for open TCP ports" }
+func (n *NaabuTool) InputType() string     { return "ips" }
+func (n *NaabuTool) OutputTypes() []string { return []string{"port"} }
+
 func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	startedAt := time.Now().UTC()
 

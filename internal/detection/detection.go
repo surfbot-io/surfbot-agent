@@ -33,6 +33,18 @@ type DetectionTool interface {
 	// Run executes the tool against the given inputs and returns results.
 	// Inputs are string values (domains, IPs, URLs) from the previous pipeline stage.
 	Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error)
+
+	// Command returns the CLI subcommand name (e.g., "discover", "resolve").
+	Command() string
+
+	// Description returns a one-line description for --help and LLM discovery.
+	Description() string
+
+	// InputType returns what inputs this tool expects: "domains", "ips", "hostports", "urls".
+	InputType() string
+
+	// OutputTypes returns the asset types this tool produces.
+	OutputTypes() []string
 }
 
 // RunOptions configures a tool execution.
