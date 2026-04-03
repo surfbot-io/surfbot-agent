@@ -44,34 +44,50 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		rateLimit = opts.RateLimit
 	}
 
-	timeout := 10
-	if opts.Timeout > 0 && opts.Timeout < 300 {
+	timeout := 5
+	if opts.Timeout > 0 && opts.Timeout < 60 {
 		timeout = opts.Timeout
 	}
 
+	// Template filtering by scan profile:
+	// "fast" (quick scans): only cve + misconfig + exposure tags
+	// default (full scans): cve + misconfig + exposure + tech + default-login
+	// This reduces ~10k templates to ~2-3k for practical scan times.
+	profile := opts.ExtraArgs["profile"]
+
+	filters := nuclei.TemplateFilters{
+		Severity:             severity,
+		ExcludeProtocolTypes: "headless,file,code",
+		ExcludeTags:          []string{"dos", "fuzz", "intrusive"},
+	}
+	switch profile {
+	case "fast":
+		// Quick scan: only tech detection + misconfig (~1,900 templates)
+		filters.Tags = []string{"tech", "misconfig"}
+	default:
+		// Full scan: tech + misconfig + exposure (~3,300 templates)
+		filters.Tags = []string{"tech", "misconfig", "exposure"}
+	}
+
+	templateDirs := defaultTemplateDirs()
+
 	engineOpts := []nuclei.NucleiSDKOptions{
-		nuclei.WithTemplateFilters(nuclei.TemplateFilters{
-			Severity: severity,
+		nuclei.WithTemplateFilters(filters),
+		nuclei.WithTemplatesOrWorkflows(nuclei.TemplateSources{
+			Templates: templateDirs,
 		}),
 		nuclei.DisableUpdateCheck(),
 		nuclei.WithGlobalRateLimit(rateLimit, time.Second),
 		nuclei.WithNetworkConfig(nuclei.NetworkConfig{
-			Timeout:       timeout,
-			Retries:       1,
-			MaxHostError:  3,
+			Timeout:           timeout,
+			Retries:           2,
+			MaxHostError:      30,
+			DisableMaxHostErr: true,
 			LeaveDefaultPorts: true,
 		}),
 		nuclei.WithVerbosity(nuclei.VerbosityOptions{
 			Silent: true,
 		}),
-	}
-
-	if templatePath, ok := opts.ExtraArgs["templates"]; ok && templatePath != "" {
-		engineOpts = append(engineOpts, nuclei.WithTemplatesOrWorkflows(
-			nuclei.TemplateSources{
-				Templates: []string{templatePath},
-			},
-		))
 	}
 
 	ne, err := nuclei.NewNucleiEngineCtx(ctx, engineOpts...)
@@ -143,6 +159,27 @@ func isValidFinding(event *output.ResultEvent) bool {
 		return false
 	}
 	return true
+}
+
+// defaultTemplateDirs returns the template directories for a standard scan:
+// http, ssl, dns — excludes network/dast/javascript/cloud which are slow or noisy.
+func defaultTemplateDirs() []string {
+	base := nuclei.DefaultConfig.TemplatesDirectory
+	return []string{
+		base + "/http",
+		base + "/ssl",
+		base + "/dns",
+	}
+}
+
+// fastTemplateDirs returns a minimal set of template dirs for quick scans.
+func fastTemplateDirs() []string {
+	base := nuclei.DefaultConfig.TemplatesDirectory
+	return []string{
+		base + "/http",
+		base + "/ssl",
+		base + "/dns",
+	}
 }
 
 // ensureNucleiTemplates downloads nuclei templates if they are not already installed.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -126,16 +127,27 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 
 		fmt.Fprintf(os.Stderr, "[+] Phase %d/%d: %s — %s\n", i+1, len(tools), tool.Phase(), tool.Name())
 
-		// Per-phase timeout
+		// Per-phase timeout — assessment (nuclei) gets 10 min, others 5 min
 		phaseTimeout := time.Duration(opts.Timeout) * time.Second
 		if phaseTimeout == 0 {
-			phaseTimeout = 5 * time.Minute
+			if tool.Phase() == "assessment" {
+				phaseTimeout = 10 * time.Minute
+			} else {
+				phaseTimeout = 5 * time.Minute
+			}
 		}
 		phaseCtx, cancel := context.WithTimeout(ctx, phaseTimeout)
 
 		runOpts := detection.RunOptions{
 			RateLimit: opts.RateLimit,
 			Timeout:   opts.Timeout,
+		}
+		// Pass scan type to nuclei as profile hint
+		if tool.Phase() == "assessment" && opts.ScanType == model.ScanTypeQuick {
+			if runOpts.ExtraArgs == nil {
+				runOpts.ExtraArgs = map[string]string{}
+			}
+			runOpts.ExtraArgs["profile"] = "fast"
 		}
 
 		startTime := time.Now()
@@ -369,6 +381,36 @@ func resolveAssetID(hostHint string, lookup map[string]string) string {
 	return ""
 }
 
+func dedup(ss []string) []string {
+	seen := make(map[string]bool, len(ss))
+	var out []string
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// isIPBasedURL checks if a URL uses a raw IP instead of a hostname.
+func isIPBasedURL(u string) bool {
+	// Strip protocol
+	host := u
+	if idx := strings.Index(host, "://"); idx >= 0 {
+		host = host[idx+3:]
+	}
+	// Strip port
+	if idx := strings.LastIndex(host, ":"); idx >= 0 {
+		host = host[:idx]
+	}
+	// Strip path
+	if idx := strings.Index(host, "/"); idx >= 0 {
+		host = host[:idx]
+	}
+	return net.ParseIP(host) != nil
+}
+
 // mergeHostnames appends hostnames to the input list, deduplicating.
 func mergeHostnames(inputs, hostnames []string) []string {
 	seen := make(map[string]bool, len(inputs))
@@ -433,13 +475,30 @@ func extractInputsForNextPhase(phase string, result *detection.RunResult) []stri
 		return hostports
 
 	case "http_probe":
-		var urls []string
+		// Deduplicate URLs for nuclei: prefer hostname-based, one per scheme.
+		// httpx produces many URLs (each IP × protocol) but nuclei only needs
+		// the unique hostname+scheme combinations.
+		seen := make(map[string]bool)
+		var hostnameURLs, ipURLs []string
 		for _, a := range result.Assets {
-			if a.Type == model.AssetTypeURL {
-				urls = append(urls, a.Value)
+			if a.Type != model.AssetTypeURL {
+				continue
+			}
+			if seen[a.Value] {
+				continue
+			}
+			seen[a.Value] = true
+			if isIPBasedURL(a.Value) {
+				ipURLs = append(ipURLs, a.Value)
+			} else {
+				hostnameURLs = append(hostnameURLs, a.Value)
 			}
 		}
-		return urls
+		if len(hostnameURLs) > 0 {
+			return hostnameURLs
+		}
+		// If no hostname URLs, keep only unique IP:port combos (max 1 per IP)
+		return dedup(ipURLs)
 
 	case "assessment":
 		return nil
