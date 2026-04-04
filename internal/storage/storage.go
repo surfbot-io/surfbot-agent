@@ -32,6 +32,16 @@ type AssetListOptions struct {
 	Disappeared bool
 }
 
+// AssetChangeListOptions configures asset change listing queries.
+type AssetChangeListOptions struct {
+	TargetID     string
+	ScanID       string
+	ChangeType   string // appeared|disappeared|modified
+	Significance string // critical|high|medium|low|info
+	AssetType    string
+	Limit        int
+}
+
 // FindingListOptions configures finding listing queries.
 type FindingListOptions struct {
 	AssetID    string
@@ -64,6 +74,12 @@ type Store interface {
 
 	CreateToolRun(ctx context.Context, tr *model.ToolRun) error
 	UpdateToolRun(ctx context.Context, tr *model.ToolRun) error
+
+	CreateAssetChange(ctx context.Context, ac *model.AssetChange) error
+	ListAssetChanges(ctx context.Context, opts AssetChangeListOptions) ([]model.AssetChange, error)
+	UpdateAssetStatus(ctx context.Context, id string, status model.AssetStatus) error
+	NormalizeAssetStatuses(ctx context.Context, targetID string) error
+	UpdateFindingResolvedAt(ctx context.Context, id string, resolvedAt *time.Time) error
 
 	GetMeta(ctx context.Context, key string) (string, error)
 	SetMeta(ctx context.Context, key, value string) error
@@ -120,12 +136,20 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 func (s *SQLiteStore) runMigrations() error {
 	migration, err := migrationsFS.ReadFile("migrations/001_init.sql")
 	if err != nil {
-		return fmt.Errorf("reading migration: %w", err)
+		return fmt.Errorf("reading migration 001: %w", err)
 	}
-	_, err = s.db.Exec(string(migration))
+	if _, err = s.db.Exec(string(migration)); err != nil {
+		return fmt.Errorf("executing migration 001: %w", err)
+	}
+
+	migration002, err := migrationsFS.ReadFile("migrations/002_asset_changes.sql")
 	if err != nil {
-		return fmt.Errorf("executing migration: %w", err)
+		return fmt.Errorf("reading migration 002: %w", err)
 	}
+	if _, err = s.db.Exec(string(migration002)); err != nil {
+		return fmt.Errorf("executing migration 002: %w", err)
+	}
+
 	return nil
 }
 
@@ -663,6 +687,166 @@ func (s *SQLiteStore) UpdateToolRun(ctx context.Context, tr *model.ToolRun) erro
 	)
 	if err != nil {
 		return fmt.Errorf("updating tool run: %w", err)
+	}
+	return nil
+}
+
+// --- Asset Changes ---
+
+func (s *SQLiteStore) CreateAssetChange(ctx context.Context, ac *model.AssetChange) error {
+	if ac.ID == "" {
+		ac.ID = uuid.New().String()
+	}
+	if ac.CreatedAt.IsZero() {
+		ac.CreatedAt = time.Now().UTC()
+	}
+	if ac.PreviousMeta == nil {
+		ac.PreviousMeta = map[string]any{}
+	}
+	if ac.CurrentMeta == nil {
+		ac.CurrentMeta = map[string]any{}
+	}
+
+	prevJSON, err := json.Marshal(ac.PreviousMeta)
+	if err != nil {
+		return fmt.Errorf("marshaling previous_meta: %w", err)
+	}
+	currJSON, err := json.Marshal(ac.CurrentMeta)
+	if err != nil {
+		return fmt.Errorf("marshaling current_meta: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO asset_changes (id, target_id, scan_id, asset_id, change_type, significance,
+		   asset_type, asset_value, previous_meta, current_meta, summary, baseline, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ac.ID, ac.TargetID, ac.ScanID, sqlNullString(ac.AssetID),
+		string(ac.ChangeType), string(ac.Significance),
+		ac.AssetType, ac.AssetValue,
+		string(prevJSON), string(currJSON),
+		ac.Summary, boolToInt(ac.Baseline),
+		ac.CreatedAt.Format(timeFormat),
+	)
+	if err != nil {
+		return fmt.Errorf("inserting asset change: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListAssetChanges(ctx context.Context, opts AssetChangeListOptions) ([]model.AssetChange, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 100
+	}
+
+	query := `SELECT id, target_id, scan_id, asset_id, change_type, significance,
+	   asset_type, asset_value, previous_meta, current_meta, summary, baseline, created_at
+	   FROM asset_changes`
+	where := []string{}
+	args := []interface{}{}
+
+	if opts.TargetID != "" {
+		where = append(where, "target_id = ?")
+		args = append(args, opts.TargetID)
+	}
+	if opts.ScanID != "" {
+		where = append(where, "scan_id = ?")
+		args = append(args, opts.ScanID)
+	}
+	if opts.ChangeType != "" {
+		where = append(where, "change_type = ?")
+		args = append(args, opts.ChangeType)
+	}
+	if opts.Significance != "" {
+		where = append(where, "significance = ?")
+		args = append(args, opts.Significance)
+	}
+	if opts.AssetType != "" {
+		where = append(where, "asset_type = ?")
+		args = append(args, opts.AssetType)
+	}
+
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += ` ORDER BY CASE significance
+		WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+		WHEN 'low' THEN 3 WHEN 'info' THEN 4 WHEN 'noise' THEN 5 END, created_at DESC LIMIT ?`
+	args = append(args, opts.Limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing asset changes: %w", err)
+	}
+	defer rows.Close()
+
+	changes := make([]model.AssetChange, 0)
+	for rows.Next() {
+		var ac model.AssetChange
+		var assetID sql.NullString
+		var prevJSON, currJSON string
+		var baseline int
+		var createdAt sql.NullString
+
+		if err := rows.Scan(&ac.ID, &ac.TargetID, &ac.ScanID, &assetID,
+			&ac.ChangeType, &ac.Significance,
+			&ac.AssetType, &ac.AssetValue,
+			&prevJSON, &currJSON,
+			&ac.Summary, &baseline, &createdAt); err != nil {
+			return nil, fmt.Errorf("scanning asset change row: %w", err)
+		}
+
+		ac.AssetID = assetID.String
+		ac.Baseline = baseline != 0
+		ac.CreatedAt = parseTime(createdAt)
+
+		if err := json.Unmarshal([]byte(prevJSON), &ac.PreviousMeta); err != nil {
+			return nil, fmt.Errorf("unmarshaling previous_meta: %w", err)
+		}
+		if err := json.Unmarshal([]byte(currJSON), &ac.CurrentMeta); err != nil {
+			return nil, fmt.Errorf("unmarshaling current_meta: %w", err)
+		}
+		changes = append(changes, ac)
+	}
+	return changes, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateAssetStatus(ctx context.Context, id string, status model.AssetStatus) error {
+	now := time.Now().UTC().Format(timeFormat)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE assets SET status=?, updated_at=? WHERE id=?`,
+		string(status), now, id)
+	if err != nil {
+		return fmt.Errorf("updating asset status: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) NormalizeAssetStatuses(ctx context.Context, targetID string) error {
+	now := time.Now().UTC().Format(timeFormat)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE assets SET status = 'active', updated_at = ? WHERE target_id = ? AND status = 'new'`,
+		now, targetID)
+	if err != nil {
+		return fmt.Errorf("normalizing asset statuses: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpdateFindingResolvedAt(ctx context.Context, id string, resolvedAt *time.Time) error {
+	now := time.Now().UTC().Format(timeFormat)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE findings SET resolved_at=?, updated_at=? WHERE id=?`,
+		timePtrVal(resolvedAt), now, id)
+	if err != nil {
+		return fmt.Errorf("updating finding resolved_at: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

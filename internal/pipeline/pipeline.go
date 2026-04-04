@@ -33,6 +33,7 @@ type PipelineResult struct {
 	Duration      time.Duration
 	Stats         model.ScanStats
 	Phases        []PhaseResult
+	DiffSummary   *ChangeSummary
 }
 
 // PhaseResult describes the outcome of a single pipeline phase.
@@ -85,6 +86,16 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	if err != nil {
 		return nil, fmt.Errorf("getting target: %w", err)
 	}
+
+	// Snapshot pre-scan assets for diff computation
+	// Check if there are previous scans (ListScans returns DESC by created_at,
+	// and we just created our scan, so if there are 2+ we have a previous one)
+	preScans, _ := p.store.ListScans(ctx, targetID, 2)
+	isFirstScan := len(preScans) <= 1
+	preAssets, _ := SnapshotAssets(ctx, p.store, targetID)
+
+	// Normalize "new" → "active" before running tools
+	p.store.NormalizeAssetStatuses(ctx, targetID) //nolint:errcheck
 
 	tools := p.selectTools(opts)
 	inputs := []string{target.Value}
@@ -279,6 +290,30 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			break
 		}
 	}
+
+	// Diff phase: compute changes before marking scan as completed
+	scan.Phase = "diffing"
+	p.store.UpdateScan(ctx, scan) //nolint:errcheck
+
+	postAssets, _ := SnapshotAssets(ctx, p.store, targetID)
+	changes := ComputeChanges(targetID, scan.ID, preAssets, postAssets, isFirstScan)
+	newFindingCount, resolvedFindingCount := 0, 0
+
+	for i := range changes {
+		p.store.CreateAssetChange(ctx, &changes[i]) //nolint:errcheck
+	}
+	ApplyStatusChanges(ctx, p.store, changes) //nolint:errcheck
+
+	newFindings, resolvedFindings, findingErr := ComputeFindingChanges(ctx, p.store, targetID, scan.ID)
+	if findingErr == nil {
+		AutoResolveFindings(ctx, p.store, resolvedFindings) //nolint:errcheck
+		newFindingCount = len(newFindings)
+		resolvedFindingCount = len(resolvedFindings)
+	}
+
+	summary := BuildChangeSummary(changes, newFindingCount, resolvedFindingCount)
+	result.DiffSummary = &summary
+	PrintChangeSummary(summary)
 
 	// Complete scan
 	scan.Status = model.ScanStatusCompleted

@@ -29,8 +29,16 @@ var findingsListCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 		scanID, _ := cmd.Flags().GetString("scan")
 		limit, _ := cmd.Flags().GetInt("limit")
+		newOnly, _ := cmd.Flags().GetBool("new")
+		resolvedOnly, _ := cmd.Flags().GetBool("resolved")
+
 		if limit <= 0 {
 			limit = 50
+		}
+
+		// --resolved overrides status filter
+		if resolvedOnly {
+			status = string(model.FindingStatusResolved)
 		}
 
 		opts := storage.FindingListOptions{
@@ -46,33 +54,80 @@ var findingsListCmd = &cobra.Command{
 			return fmt.Errorf("listing findings: %w", err)
 		}
 
+		// --new: filter to findings where first_seen == last_seen
+		if newOnly {
+			var filtered []model.Finding
+			for _, f := range findings {
+				if f.FirstSeen.Equal(f.LastSeen) {
+					filtered = append(filtered, f)
+				}
+			}
+			findings = filtered
+		}
+
 		if len(findings) == 0 {
 			fmt.Println("No findings found.")
 			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tSEVERITY\tTITLE\tTOOL\tSTATUS")
-		for _, f := range findings {
-			short := f.ID
-			if len(short) > 8 {
-				short = short[:8]
+		if resolvedOnly {
+			fmt.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tRESOLVED AT")
+			for _, f := range findings {
+				title := f.Title
+				if len(title) > 60 {
+					title = title[:57] + "..."
+				}
+				resolvedAt := ""
+				if f.ResolvedAt != nil {
+					resolvedAt = f.ResolvedAt.Format("2006-01-02 15:04:05")
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+					strings.ToUpper(string(f.Severity)),
+					title,
+					f.SourceTool,
+					resolvedAt,
+				)
 			}
-			title := f.Title
-			if len(title) > 60 {
-				title = title[:57] + "..."
+		} else if newOnly {
+			fmt.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tFIRST SEEN")
+			for _, f := range findings {
+				title := f.Title
+				if len(title) > 60 {
+					title = title[:57] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+					strings.ToUpper(string(f.Severity)),
+					title,
+					f.SourceTool,
+					f.FirstSeen.Format("2006-01-02 15:04:05"),
+				)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				short,
-				strings.ToUpper(string(f.Severity)),
-				title,
-				f.SourceTool,
-				f.Status,
-			)
+		} else {
+			fmt.Fprintln(w, "ID\tSEVERITY\tTITLE\tTOOL\tSTATUS")
+			for _, f := range findings {
+				short := f.ID
+				if len(short) > 8 {
+					short = short[:8]
+				}
+				title := f.Title
+				if len(title) > 60 {
+					title = title[:57] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+					short,
+					strings.ToUpper(string(f.Severity)),
+					title,
+					f.SourceTool,
+					f.Status,
+				)
+			}
 		}
 		w.Flush()
 		fmt.Printf("\nShowing %d findings. Use --limit to see more.\n", len(findings))
-		fmt.Println("Use `surfbot findings show <id>` for full details.")
+		if !newOnly && !resolvedOnly {
+			fmt.Println("Use `surfbot findings show <id>` for full details.")
+		}
 
 		return nil
 	},
@@ -144,6 +199,8 @@ func init() {
 	findingsListCmd.Flags().String("status", "", "Filter by status: open|resolved|acknowledged|false_positive|ignored")
 	findingsListCmd.Flags().String("scan", "", "Filter by scan ID")
 	findingsListCmd.Flags().Int("limit", 50, "Max number of results")
+	findingsListCmd.Flags().Bool("new", false, "Show only new findings from last scan")
+	findingsListCmd.Flags().Bool("resolved", false, "Show only recently resolved findings")
 
 	findingsCmd.AddCommand(findingsListCmd, findingsShowCmd)
 	rootCmd.AddCommand(findingsCmd)

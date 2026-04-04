@@ -28,6 +28,10 @@ func (m *mockTool) Name() string               { return m.name }
 func (m *mockTool) Phase() string               { return m.phase }
 func (m *mockTool) Kind() detection.ToolKind    { return detection.ToolKindLibrary }
 func (m *mockTool) Available() bool             { return true }
+func (m *mockTool) Command() string             { return m.name }
+func (m *mockTool) Description() string         { return "mock tool" }
+func (m *mockTool) InputType() string           { return "domains" }
+func (m *mockTool) OutputTypes() []string       { return nil }
 func (m *mockTool) Run(_ context.Context, _ []string, _ detection.RunOptions) (*detection.RunResult, error) {
 	if m.err != nil {
 		return nil, m.err
