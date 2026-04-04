@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/google/uuid"
 
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
@@ -105,7 +108,8 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		Target: target.Value,
 	}
 
-	fmt.Fprintf(os.Stderr, "[*] Scan started: %s (%s)\n", target.Value, opts.ScanType)
+	pp := newPipelinePrinter(os.Stderr)
+	pp.progress("Scan started: %s (%s)", target.Value, opts.ScanType)
 
 	for i, tool := range tools {
 		// Check for context cancellation
@@ -136,7 +140,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		scan.Progress = float32(i) / float32(len(tools)) * 100
 		p.store.UpdateScan(ctx, scan) //nolint:errcheck
 
-		fmt.Fprintf(os.Stderr, "[+] Phase %d/%d: %s — %s\n", i+1, len(tools), tool.Phase(), tool.Name())
+		pp.success("Phase %d/%d: %s — %s", i+1, len(tools), tool.Phase(), tool.Name())
 
 		// Per-phase timeout — assessment (nuclei) gets 10 min, others 5 min
 		phaseTimeout := time.Duration(opts.Timeout) * time.Second
@@ -189,7 +193,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 				p.store.UpdateScan(ctx, scan) //nolint:errcheck
 				return nil, fmt.Errorf("%s: %w", tool.Name(), toolErr)
 			}
-			fmt.Fprintf(os.Stderr, "    Warning: %s failed: %v\n", tool.Name(), toolErr)
+			pp.warn("    %s failed: %v", tool.Name(), toolErr)
 			continue
 		}
 
@@ -229,10 +233,10 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 				persisted++
 			}
 			if errCount > 0 && firstErr != nil {
-				fmt.Fprintf(os.Stderr, "    Warning: %d findings failed to persist (first error: %v)\n", errCount, firstErr)
+				pp.warn("    %d findings failed to persist (first error: %v)", errCount, firstErr)
 			}
 			if persisted > 0 && persisted < len(toolResult.Findings) {
-				fmt.Fprintf(os.Stderr, "    Persisted %d/%d findings (duplicates merged)\n", persisted, len(toolResult.Findings))
+				pp.muted("    Persisted %d/%d findings (duplicates merged)\n", persisted, len(toolResult.Findings))
 			}
 		}
 
@@ -255,7 +259,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// Track hostnames from discovery phase
 		if tool.Phase() == "discovery" {
 			if len(nextInputs) == 0 {
-				fmt.Fprintf(os.Stderr, "    No subdomains found, using root domain as target\n")
+				pp.warn("    No subdomains found, using root domain as target")
 				nextInputs = []string{target.Value}
 			}
 			hostnames = nextInputs
@@ -586,6 +590,7 @@ func updateStats(stats *model.ScanStats, phase string, result *detection.RunResu
 }
 
 func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult) {
+	pp := newPipelinePrinter(os.Stderr)
 	switch tool.Phase() {
 	case "discovery":
 		count := 0
@@ -594,7 +599,7 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 				count++
 			}
 		}
-		fmt.Fprintf(os.Stderr, "    Found %d subdomains\n", count)
+		pp.muted("    Found %d subdomains\n", count)
 	case "resolution":
 		ipv4, ipv6 := 0, 0
 		for _, a := range result.Assets {
@@ -605,7 +610,7 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 				ipv6++
 			}
 		}
-		fmt.Fprintf(os.Stderr, "    Resolved %d IPs (%d IPv4, %d IPv6)\n", ipv4+ipv6, ipv4, ipv6)
+		pp.muted("    Resolved %d IPs (%d IPv4, %d IPv6)\n", ipv4+ipv6, ipv4, ipv6)
 	case "port_scan":
 		hosts := make(map[string]bool)
 		for _, a := range result.Assets {
@@ -613,7 +618,7 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 				hosts[a.ParentID] = true
 			}
 		}
-		fmt.Fprintf(os.Stderr, "    Scanned hosts, found %d open ports\n", len(result.Assets))
+		pp.muted("    Scanned hosts, found %d open ports\n", len(result.Assets))
 	case "http_probe":
 		urls, techs := 0, 0
 		for _, a := range result.Assets {
@@ -624,7 +629,7 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 				techs++
 			}
 		}
-		fmt.Fprintf(os.Stderr, "    Probed endpoints, %d live (%d technologies detected)\n", urls, techs)
+		pp.muted("    Probed endpoints, %d live (%d technologies detected)\n", urls, techs)
 	case "assessment":
 		crit, high, med, low, info := 0, 0, 0, 0, 0
 		for _, f := range result.Findings {
@@ -642,7 +647,7 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 			}
 		}
 		total := len(result.Findings)
-		fmt.Fprintf(os.Stderr, "    Scanned %d URLs, found %d findings (%d critical, %d high, %d medium, %d low, %d info)\n",
+		pp.muted("    Scanned %d URLs, found %d findings (%d critical, %d high, %d medium, %d low, %d info)\n",
 			len(result.Assets)+total, total, crit, high, med, low, info)
 	}
 }
@@ -676,36 +681,106 @@ func WriteJSONResult(result *PipelineResult, path string) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// PrintSummary prints the findings summary table to stderr.
+// PrintSummary prints the findings summary table to stderr with colored severity.
 func PrintSummary(result *PipelineResult) {
-	fmt.Fprintf(os.Stderr, "\nScan completed in %s\n", formatDuration(result.Duration))
+	pp := newPipelinePrinter(os.Stderr)
+
+	pp.theme.Success.Fprintf(os.Stderr, "\nScan completed in %s\n", formatDuration(result.Duration))
 
 	if result.Stats.FindingsTotal > 0 {
+		pp.theme.Bold.Fprintf(os.Stderr, "\nFINDINGS SUMMARY\n")
+
+		w := tabwriter.NewWriter(os.Stderr, 0, 0, 3, ' ', 0)
+		pp.theme.Bold.Fprintln(w, "Severity\tCount")
+		pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
+
+		printSeverityRow(w, pp.theme.Critical, "CRITICAL", result.Stats.FindingsCritical, pp.theme.Muted)
+		printSeverityRow(w, pp.theme.High, "HIGH", result.Stats.FindingsHigh, pp.theme.Muted)
+		printSeverityRow(w, pp.theme.Medium, "MEDIUM", result.Stats.FindingsMedium, pp.theme.Muted)
+		printSeverityRow(w, pp.theme.Low, "LOW", result.Stats.FindingsLow, pp.theme.Muted)
+		printSeverityRow(w, pp.theme.Info, "INFO", result.Stats.FindingsInfo, pp.theme.Muted)
+
+		pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
+		pp.theme.Bold.Fprintf(w, "%-12s\t%d\n", "TOTAL", result.Stats.FindingsTotal)
+		w.Flush()
+
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "FINDINGS SUMMARY")
-		fmt.Fprintf(os.Stderr, "%-12s %s\n", "Severity", "Count")
-		fmt.Fprintln(os.Stderr, strings.Repeat("─", 20))
-		if result.Stats.FindingsCritical > 0 {
-			fmt.Fprintf(os.Stderr, "%-12s %d\n", "CRITICAL", result.Stats.FindingsCritical)
-		}
-		if result.Stats.FindingsHigh > 0 {
-			fmt.Fprintf(os.Stderr, "%-12s %d\n", "HIGH", result.Stats.FindingsHigh)
-		}
-		if result.Stats.FindingsMedium > 0 {
-			fmt.Fprintf(os.Stderr, "%-12s %d\n", "MEDIUM", result.Stats.FindingsMedium)
-		}
-		if result.Stats.FindingsLow > 0 {
-			fmt.Fprintf(os.Stderr, "%-12s %d\n", "LOW", result.Stats.FindingsLow)
-		}
-		if result.Stats.FindingsInfo > 0 {
-			fmt.Fprintf(os.Stderr, "%-12s %d\n", "INFO", result.Stats.FindingsInfo)
-		}
-		fmt.Fprintln(os.Stderr, strings.Repeat("─", 20))
-		fmt.Fprintf(os.Stderr, "%-12s %d\n", "TOTAL", result.Stats.FindingsTotal)
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Use `surfbot findings list` to see details.")
-		fmt.Fprintln(os.Stderr, "Use `surfbot findings show <id>` for full evidence.")
+		pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings list` to see details.")
+		pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings show <id>` for full evidence.")
 	}
+}
+
+func printSeverityRow(w io.Writer, sevColor *color.Color, label string, count int, muted *color.Color) {
+	if count > 0 {
+		sevColor.Fprintf(w, "%-12s\t%d\n", label, count)
+	} else {
+		muted.Fprintf(w, "%-12s\t0\n", label)
+	}
+}
+
+// pipelinePrinter provides colored output helpers for the pipeline package.
+// This is a lightweight wrapper (not exported) to keep fatih/color usage
+// local to the pipeline package without importing cli.
+type pipelinePrinter struct {
+	w     io.Writer
+	theme *pipelineTheme
+}
+
+type pipelineTheme struct {
+	Critical *color.Color
+	High     *color.Color
+	Medium   *color.Color
+	Low      *color.Color
+	Info     *color.Color
+	Success  *color.Color
+	Warning  *color.Color
+	Error    *color.Color
+	Progress *color.Color
+	Muted    *color.Color
+	Bold     *color.Color
+}
+
+func newPipelinePrinter(w io.Writer) *pipelinePrinter {
+	return &pipelinePrinter{
+		w: w,
+		theme: &pipelineTheme{
+			Critical: color.New(color.FgRed, color.Bold),
+			High:     color.New(color.FgRed),
+			Medium:   color.New(color.FgYellow),
+			Low:      color.New(color.FgBlue),
+			Info:     color.New(color.Faint),
+			Success:  color.RGB(0, 229, 153), // Surfbot Signal Green #00E599
+			Warning:  color.New(color.FgYellow),
+			Error:    color.New(color.FgRed, color.Bold),
+			Progress: color.New(color.FgCyan),
+			Muted:    color.New(color.Faint),
+			Bold:     color.New(color.Bold),
+		},
+	}
+}
+
+func (p *pipelinePrinter) progress(format string, args ...interface{}) {
+	p.theme.Progress.Fprintf(p.w, "[*] ")
+	fmt.Fprintf(p.w, format+"\n", args...)
+}
+
+func (p *pipelinePrinter) success(format string, args ...interface{}) {
+	p.theme.Success.Fprintf(p.w, "[+] ")
+	fmt.Fprintf(p.w, format+"\n", args...)
+}
+
+func (p *pipelinePrinter) warn(format string, args ...interface{}) {
+	p.theme.Warning.Fprintf(p.w, "[!] ")
+	fmt.Fprintf(p.w, format+"\n", args...)
+}
+
+func (p *pipelinePrinter) errorf(format string, args ...interface{}) {
+	p.theme.Error.Fprintf(p.w, "[✗] ")
+	fmt.Fprintf(p.w, format+"\n", args...)
+}
+
+func (p *pipelinePrinter) muted(format string, args ...interface{}) {
+	p.theme.Muted.Fprintf(p.w, format, args...)
 }
 
 func formatDuration(d time.Duration) string {

@@ -280,30 +280,34 @@ func outputResult(w io.Writer, output ToolResult, format string) error {
 }
 
 func printTextResult(w io.Writer, output ToolResult) error {
-	fmt.Fprintf(w, "%s — %s\n", output.Tool, output.Phase)
-	fmt.Fprintln(w, strings.Repeat("─", 40))
+	p := NewPrinter(w)
+
+	p.Theme.Bold.Fprintf(w, "%s — %s\n", output.Tool, output.Phase)
+	p.Divider(40)
 	fmt.Fprintf(w, "Duration: %.1fs\n", float64(output.DurationMs)/1000)
 	fmt.Fprintf(w, "Inputs:   %d\n", output.Stats.InputCount)
 	fmt.Fprintf(w, "Outputs:  %d\n", output.Stats.OutputCount)
 
 	if len(output.Assets) > 0 {
-		fmt.Fprintf(w, "\nASSETS (%d)\n", len(output.Assets))
+		p.Theme.Bold.Fprintf(w, "\nASSETS (%d)\n", len(output.Assets))
 		for _, a := range output.Assets {
 			fmt.Fprintf(w, "  %-12s %s\n", a.Type, a.Value)
 		}
 	}
 
 	if len(output.Findings) > 0 {
-		fmt.Fprintf(w, "\nFINDINGS (%d)\n", len(output.Findings))
+		p.Theme.Bold.Fprintf(w, "\nFINDINGS (%d)\n", len(output.Findings))
 		for _, f := range output.Findings {
-			fmt.Fprintf(w, "  [%s] %s\n", f.Severity, f.Title)
+			sevColor := p.Theme.SeverityColor(model.Severity(f.Severity))
+			sevColor.Fprintf(w, "  [%s]", strings.ToUpper(f.Severity))
+			fmt.Fprintf(w, " %s\n", f.Title)
 		}
 	}
 
 	if len(output.Errors) > 0 {
-		fmt.Fprintf(w, "\nERRORS (%d)\n", len(output.Errors))
+		p.Theme.Error.Fprintf(w, "\nERRORS (%d)\n", len(output.Errors))
 		for _, e := range output.Errors {
-			fmt.Fprintf(w, "  %s\n", e)
+			p.Theme.Error.Fprintf(w, "  %s\n", e)
 		}
 	}
 

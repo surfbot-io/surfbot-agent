@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -37,20 +36,21 @@ var targetAddCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
+		p := NewPrinter(os.Stdout)
 		err := store.CreateTarget(ctx, t)
 		if err != nil {
 			if errors.Is(err, storage.ErrAlreadyExists) {
-				fmt.Printf("Target already exists: %s\n", args[0])
+				p.Warn("Target already exists: %s", args[0])
 				return nil
 			}
 			if errors.Is(err, storage.ErrInvalidTarget) {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				p.Errorf("%s", err)
 				return nil
 			}
 			return err
 		}
 
-		fmt.Printf("Target added: %s (%s, %s) [id: %s]\n", t.Value, t.Type, t.Scope, t.ID[:8])
+		p.Success("Target added: %s (%s, %s) [id: %s]", t.Value, t.Type, t.Scope, t.ID[:8])
 		return nil
 	},
 }
@@ -71,13 +71,17 @@ var targetListCmd = &cobra.Command{
 			return enc.Encode(targets)
 		}
 
+		p := NewPrinter(os.Stdout)
+
 		if len(targets) == 0 {
-			fmt.Println("No targets configured. Add one with: surfbot target add <domain|ip|cidr>")
+			p.EmptyState("No targets configured.",
+				"Add one with: surfbot target add <domain|ip|cidr>")
 			return nil
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "ID\tVALUE\tTYPE\tSCOPE\tLAST SCAN\tCREATED")
+		w := p.NewTable()
+		p.Theme.Bold.Fprintln(w, "ID\tVALUE\tTYPE\tSCOPE\tLAST SCAN\tCREATED")
+		p.Divider(70)
 		for _, t := range targets {
 			lastScan := "never"
 			if t.LastScanAt != nil {
@@ -117,6 +121,7 @@ var targetRemoveCmd = &cobra.Command{
 			return err
 		}
 
+		p := NewPrinter(os.Stdout)
 		if !force {
 			fmt.Printf("Remove target %s and all associated data? [y/N] ", t.Value)
 			var answer string
@@ -130,7 +135,7 @@ var targetRemoveCmd = &cobra.Command{
 		if err := store.DeleteTarget(ctx, t.ID); err != nil {
 			return err
 		}
-		fmt.Printf("Target removed: %s\n", t.Value)
+		p.Theme.Warning.Fprintf(os.Stdout, "Target removed: %s\n", t.Value)
 		return nil
 	},
 }

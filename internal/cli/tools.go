@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -59,19 +58,31 @@ var toolsListCmd = &cobra.Command{
 			return enc.Encode(map[string]interface{}{"tools": infos})
 		}
 
-		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tCOMMAND\tPHASE\tINPUT\tOUTPUT\tSTATUS")
+		out := cmd.OutOrStdout()
+		p := NewPrinter(out)
+
+		if len(infos) == 0 {
+			p.EmptyState("No detection tools registered.",
+				"This is unexpected — please report a bug.")
+			return nil
+		}
+
+		w := p.NewTable()
+		p.Theme.Bold.Fprintln(w, "NAME\tCOMMAND\tPHASE\tINPUT\tOUTPUT\tSTATUS")
+		p.Divider(70)
 		for _, t := range infos {
-			status := "✓ available"
-			if !t.Available {
-				status = "✗ unavailable"
+			var status string
+			if t.Available {
+				status = p.Theme.Success.Sprint("✓ available")
+			} else {
+				status = p.Theme.Error.Sprint("✗ unavailable")
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				t.Name, t.Command, t.Phase, t.InputType,
 				strings.Join(t.OutputTypes, ","), status)
 		}
 		w.Flush()
-		fmt.Fprintf(cmd.OutOrStdout(), "\n%d/%d tools available\n", available, len(tools))
+		fmt.Fprintf(out, "\n%d/%d tools available\n", available, len(tools))
 		return nil
 	},
 }

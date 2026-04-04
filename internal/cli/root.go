@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -33,6 +34,11 @@ var rootCmd = &cobra.Command{
 	Short: "Surfbot Agent — local security scanner",
 	Long:  "Surfbot Agent is a local security scanner with pluggable detection and remediation tools.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Wire --no-color flag and NO_COLOR env var
+		if noColor || os.Getenv("NO_COLOR") != "" {
+			color.NoColor = true
+		}
+
 		if skipDBCommands[cmd.Name()] {
 			return nil
 		}
@@ -76,6 +82,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Verbose output")
 	rootCmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+
 }
 
 // Execute runs the root command.

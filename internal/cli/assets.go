@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -63,26 +62,34 @@ func runAssetsList(cmd *cobra.Command) error {
 		return printAssetsJSON(assets)
 	}
 
+	p := NewPrinter(os.Stdout)
+
 	if len(assets) == 0 {
-		fmt.Println("No assets found.")
+		p.EmptyState("No assets found.",
+			"Run `surfbot scan <target>` to discover assets.")
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TYPE\tVALUE\tSTATUS\tFIRST SEEN\tLAST SEEN")
+	w := p.NewTable()
+	p.Theme.Bold.Fprintln(w, "TYPE\tVALUE\tSTATUS\tFIRST SEEN\tLAST SEEN")
+	p.Divider(70)
 	for _, a := range assets {
-		value := a.Value
-		if len(value) > 60 {
-			value = value[:57] + "..."
+		value := truncate(a.Value, 50)
+		statusStr := string(a.Status)
+		switch a.Status {
+		case model.AssetStatusNew:
+			statusStr = p.Theme.Success.Sprint("new")
+		case model.AssetStatusDisappeared:
+			statusStr = p.Theme.Error.Sprint("disappeared")
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			a.Type, value, a.Status,
+			a.Type, value, statusStr,
 			a.FirstSeen.Format("2006-01-02 15:04:05"),
 			a.LastSeen.Format("2006-01-02 15:04:05"),
 		)
 	}
 	w.Flush()
-	fmt.Printf("\nShowing %d assets. Use --limit to see more.\n", len(assets))
+	p.Muted("\nShowing %d assets. Use --limit to see more.\n", len(assets))
 
 	return nil
 }
@@ -97,8 +104,12 @@ func runAssetsDiff(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("getting last scan: %w", err)
 	}
+
+	p := NewPrinter(os.Stdout)
+
 	if lastScan == nil {
-		fmt.Println("No scans found. Run `surfbot scan` first.")
+		p.EmptyState("No scans found.",
+			"Run `surfbot scan <target>` first.")
 		return nil
 	}
 
@@ -115,29 +126,34 @@ func runAssetsDiff(cmd *cobra.Command) error {
 	}
 
 	if len(changes) == 0 {
-		fmt.Println("No changes detected in last scan.")
+		p.EmptyState("No changes detected.",
+			"Run a second scan to start tracking changes.")
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TYPE\tVALUE\tCHANGE\tSIGNIFICANCE\tSUMMARY")
+	w := p.NewTable()
+	p.Theme.Bold.Fprintln(w, "TYPE\tVALUE\tCHANGE\tSIGNIFICANCE\tSUMMARY")
+	p.Divider(70)
 	for _, c := range changes {
 		if c.Baseline {
 			continue
 		}
-		value := c.AssetValue
-		if len(value) > 50 {
-			value = value[:47] + "..."
+		value := truncate(c.AssetValue, 50)
+		summary := truncate(c.Summary, 50)
+
+		// Color the change type
+		changeStr := strings.ToUpper(string(c.ChangeType))
+		switch c.ChangeType {
+		case model.ChangeTypeAppeared:
+			changeStr = p.Theme.Success.Sprint(changeStr)
+		case model.ChangeTypeDisappeared:
+			changeStr = p.Theme.Error.Sprint(changeStr)
+		case model.ChangeTypeModified:
+			changeStr = p.Theme.Warning.Sprint(changeStr)
 		}
-		summary := c.Summary
-		if len(summary) > 60 {
-			summary = summary[:57] + "..."
-		}
+
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			c.AssetType, value,
-			strings.ToUpper(string(c.ChangeType)),
-			c.Significance,
-			summary,
+			c.AssetType, value, changeStr, c.Significance, summary,
 		)
 	}
 	w.Flush()

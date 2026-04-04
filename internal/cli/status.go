@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,8 +17,9 @@ var statusCmd = &cobra.Command{
 	Short: "Show agent status: DB path, targets count, last scan, findings summary",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
+		p := NewPrinter(os.Stdout)
 
-		fmt.Printf("Surfbot Agent %s\n\n", Version)
+		p.Theme.Bold.Fprintf(os.Stdout, "Surfbot Agent %s\n\n", Version)
 
 		// DB info
 		dbPath := store.DBPath()
@@ -36,17 +36,17 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("Targets:     %d\n", targets)
 		fmt.Printf("Assets:      %d\n", assets)
 
-		// Findings with severity breakdown
+		// Findings with colored severity breakdown
 		findings, _ := store.CountFindings(ctx)
-		findingsStr := fmt.Sprintf("%d", findings)
+		fmt.Fprintf(os.Stdout, "Findings:    %d", findings)
 		if findings > 0 {
 			allFindings, _ := store.ListFindings(ctx, storage.FindingListOptions{Limit: findings})
-			sevCounts := countSeverities(allFindings)
-			if len(sevCounts) > 0 {
-				findingsStr += " (" + strings.Join(sevCounts, ", ") + ")"
+			parts := countSeveritiesColored(p, allFindings)
+			if len(parts) > 0 {
+				fmt.Fprintf(os.Stdout, " (%s)", joinColoredParts(parts))
 			}
 		}
-		fmt.Printf("Findings:    %s\n", findingsStr)
+		fmt.Fprintln(os.Stdout)
 
 		// Last scan
 		lastScanStr := "never"
@@ -100,16 +100,40 @@ func formatDurationShort(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func countSeverities(findings []model.Finding) []string {
+type coloredPart struct {
+	text string
+}
+
+func countSeveritiesColored(p *Printer, findings []model.Finding) []coloredPart {
 	counts := map[model.Severity]int{}
 	for _, f := range findings {
 		counts[f.Severity]++
 	}
-	var parts []string
+	var parts []coloredPart
 	for _, sev := range []model.Severity{model.SeverityCritical, model.SeverityHigh, model.SeverityMedium, model.SeverityLow} {
 		if c, ok := counts[sev]; ok && c > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", c, sev))
+			c := p.Theme.SeverityColor(sev)
+			parts = append(parts, coloredPart{text: c.Sprintf("%d %s", counts[sev], sev)})
 		}
 	}
 	return parts
+}
+
+func joinColoredParts(parts []coloredPart) string {
+	strs := make([]string, len(parts))
+	for i, p := range parts {
+		strs[i] = p.text
+	}
+	return fmt.Sprintf("%s", joinStrings(strs, ", "))
+}
+
+func joinStrings(ss []string, sep string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	result := ss[0]
+	for _, s := range ss[1:] {
+		result += sep + s
+	}
+	return result
 }

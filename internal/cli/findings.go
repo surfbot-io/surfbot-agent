@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -65,58 +64,60 @@ var findingsListCmd = &cobra.Command{
 			findings = filtered
 		}
 
+		p := NewPrinter(os.Stdout)
+
 		if len(findings) == 0 {
-			fmt.Println("No findings found.")
+			if resolvedOnly {
+				p.EmptyState("No resolved findings.",
+					"Findings are auto-resolved when no longer detected in subsequent scans.")
+			} else {
+				p.EmptyState("No findings found.",
+					"Run `surfbot scan <target>` first, or check targets with `surfbot target list`.")
+			}
 			return nil
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		w := p.NewTable()
 		if resolvedOnly {
-			fmt.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tRESOLVED AT")
+			p.Theme.Bold.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tRESOLVED AT")
+			p.Divider(70)
 			for _, f := range findings {
-				title := f.Title
-				if len(title) > 60 {
-					title = title[:57] + "..."
-				}
+				title := truncate(f.Title, 50)
 				resolvedAt := ""
 				if f.ResolvedAt != nil {
 					resolvedAt = f.ResolvedAt.Format("2006-01-02 15:04:05")
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					strings.ToUpper(string(f.Severity)),
+					p.Severity(f.Severity),
 					title,
 					f.SourceTool,
 					resolvedAt,
 				)
 			}
 		} else if newOnly {
-			fmt.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tFIRST SEEN")
+			p.Theme.Bold.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tFIRST SEEN")
+			p.Divider(70)
 			for _, f := range findings {
-				title := f.Title
-				if len(title) > 60 {
-					title = title[:57] + "..."
-				}
+				title := truncate(f.Title, 50)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					strings.ToUpper(string(f.Severity)),
+					p.Severity(f.Severity),
 					title,
 					f.SourceTool,
 					f.FirstSeen.Format("2006-01-02 15:04:05"),
 				)
 			}
 		} else {
-			fmt.Fprintln(w, "ID\tSEVERITY\tTITLE\tTOOL\tSTATUS")
+			p.Theme.Bold.Fprintln(w, "ID\tSEVERITY\tTITLE\tTOOL\tSTATUS")
+			p.Divider(70)
 			for _, f := range findings {
 				short := f.ID
 				if len(short) > 8 {
 					short = short[:8]
 				}
-				title := f.Title
-				if len(title) > 60 {
-					title = title[:57] + "..."
-				}
+				title := truncate(f.Title, 50)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 					short,
-					strings.ToUpper(string(f.Severity)),
+					p.Severity(f.Severity),
 					title,
 					f.SourceTool,
 					f.Status,
@@ -124,9 +125,31 @@ var findingsListCmd = &cobra.Command{
 			}
 		}
 		w.Flush()
-		fmt.Printf("\nShowing %d findings. Use --limit to see more.\n", len(findings))
+
+		// Summary with colored severity counts
+		crit, high, med := 0, 0, 0
+		for _, f := range findings {
+			switch f.Severity {
+			case model.SeverityCritical:
+				crit++
+			case model.SeverityHigh:
+				high++
+			case model.SeverityMedium:
+				med++
+			}
+		}
+		fmt.Fprintf(os.Stdout, "\n%d findings", len(findings))
+		if crit > 0 {
+			p.Theme.Critical.Fprintf(os.Stdout, " (%d critical)", crit)
+		} else if high > 0 {
+			p.Theme.High.Fprintf(os.Stdout, " (%d high)", high)
+		} else if med > 0 {
+			p.Theme.Medium.Fprintf(os.Stdout, " (%d medium)", med)
+		}
+		fmt.Fprintln(os.Stdout, "")
+
 		if !newOnly && !resolvedOnly {
-			fmt.Println("Use `surfbot findings show <id>` for full details.")
+			p.Muted("Use `surfbot findings show <id>` for full details.\n")
 		}
 
 		return nil
@@ -158,8 +181,10 @@ var findingsShowCmd = &cobra.Command{
 			return fmt.Errorf("finding not found: %s", id)
 		}
 
-		fmt.Printf("Finding: %s\n", found.ID)
-		fmt.Printf("Severity: %s\n", strings.ToUpper(string(found.Severity)))
+		p := NewPrinter(os.Stdout)
+
+		p.Theme.Bold.Fprintf(os.Stdout, "Finding: %s\n", found.ID)
+		fmt.Fprintf(os.Stdout, "Severity: %s\n", p.Severity(found.Severity))
 		fmt.Printf("Title: %s\n", found.Title)
 		fmt.Printf("Template: %s (%s)\n", found.TemplateID, found.TemplateName)
 		fmt.Printf("Tool: %s\n", found.SourceTool)
@@ -172,22 +197,25 @@ var findingsShowCmd = &cobra.Command{
 			fmt.Printf("CVSS: %.1f\n", found.CVSS)
 		}
 		if found.Description != "" {
-			fmt.Printf("\nDescription:\n  %s\n", found.Description)
+			p.Theme.Bold.Fprintf(os.Stdout, "\nDescription:\n")
+			fmt.Printf("  %s\n", found.Description)
 		}
 		if found.Evidence != "" {
-			fmt.Printf("\nEvidence:\n  %s\n", found.Evidence)
+			p.Theme.Bold.Fprintf(os.Stdout, "\nEvidence:\n")
+			fmt.Printf("  %s\n", found.Evidence)
 		}
 		if found.Remediation != "" {
-			fmt.Printf("\nRemediation:\n  %s\n", found.Remediation)
+			p.Theme.Bold.Fprintf(os.Stdout, "\nRemediation:\n")
+			fmt.Printf("  %s\n", found.Remediation)
 		}
 		if len(found.References) > 0 {
-			fmt.Println("\nReferences:")
+			p.Theme.Bold.Fprintf(os.Stdout, "\nReferences:\n")
 			for _, ref := range found.References {
 				fmt.Printf("  - %s\n", ref)
 			}
 		}
-		fmt.Printf("\nFirst seen: %s\n", found.FirstSeen.Format("2006-01-02 15:04:05"))
-		fmt.Printf("Last seen:  %s\n", found.LastSeen.Format("2006-01-02 15:04:05"))
+		p.Muted("\nFirst seen: %s\n", found.FirstSeen.Format("2006-01-02 15:04:05"))
+		p.Muted("Last seen:  %s\n", found.LastSeen.Format("2006-01-02 15:04:05"))
 
 		return nil
 	},

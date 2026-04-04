@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/google/uuid"
 
 	"github.com/surfbot-io/surfbot-agent/internal/model"
@@ -319,21 +320,27 @@ func BuildChangeSummary(changes []model.AssetChange, newFindings, resolvedFindin
 	return s
 }
 
-// PrintChangeSummary prints the change summary to stderr.
+// PrintChangeSummary prints the change summary to stderr with colored markers.
 func PrintChangeSummary(summary ChangeSummary) {
+	success := color.RGB(0, 229, 153) // Surfbot Signal Green #00E599
+	errColor := color.New(color.FgRed)
+	warn := color.New(color.FgYellow)
+	muted := color.New(color.Faint)
+	bold := color.New(color.Bold)
+
 	if summary.IsBaseline {
-		fmt.Fprintf(os.Stderr, "\nBASELINE SCAN — %d assets discovered. Run again to detect changes.\n", summary.TotalBaselineAssets)
+		muted.Fprintf(os.Stderr, "\nBASELINE SCAN — %d assets discovered. Run again to detect changes.\n", summary.TotalBaselineAssets)
 		return
 	}
 
 	total := summary.NewAssets + summary.DisappearedAssets + summary.ModifiedAssets + summary.NewFindings + summary.ResolvedFindings
 	if total == 0 {
-		fmt.Fprintf(os.Stderr, "\nNo changes since last scan.\n")
+		muted.Fprintf(os.Stderr, "\nNo changes since last scan.\n")
 		return
 	}
 
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "CHANGES SINCE LAST SCAN")
+	bold.Fprintln(os.Stderr, "CHANGES SINCE LAST SCAN")
 
 	if summary.NewAssets > 0 {
 		parts := []string{}
@@ -344,23 +351,24 @@ func PrintChangeSummary(summary ChangeSummary) {
 		if len(parts) > 0 {
 			detail = " (" + strings.Join(parts, ", ") + ")"
 		}
-		fmt.Fprintf(os.Stderr, "  + %d new %s%s\n", summary.NewAssets, pluralize("asset", summary.NewAssets), detail)
+		success.Fprintf(os.Stderr, "  + %d new %s%s\n", summary.NewAssets, pluralize("asset", summary.NewAssets), detail)
 	}
 	if summary.DisappearedAssets > 0 {
-		fmt.Fprintf(os.Stderr, "  - %d disappeared %s\n", summary.DisappearedAssets, pluralize("asset", summary.DisappearedAssets))
+		errColor.Fprintf(os.Stderr, "  - %d disappeared %s\n", summary.DisappearedAssets, pluralize("asset", summary.DisappearedAssets))
 	}
 	if summary.ModifiedAssets > 0 {
 		detail := ""
 		if summary.CriticalModified > 0 {
 			detail = fmt.Sprintf(" (%d critical)", summary.CriticalModified)
 		}
-		fmt.Fprintf(os.Stderr, "  ~ %d modified %s%s\n", summary.ModifiedAssets, pluralize("asset", summary.ModifiedAssets), detail)
+		warn.Fprintf(os.Stderr, "  ~ %d modified %s%s\n", summary.ModifiedAssets, pluralize("asset", summary.ModifiedAssets), detail)
 	}
 	if summary.NewFindings > 0 {
-		fmt.Fprintf(os.Stderr, "  + %d new %s\n", summary.NewFindings, pluralize("finding", summary.NewFindings))
+		success.Fprintf(os.Stderr, "  + %d new %s\n", summary.NewFindings, pluralize("finding", summary.NewFindings))
 	}
 	if summary.ResolvedFindings > 0 {
-		fmt.Fprintf(os.Stderr, "  ✓ %d resolved %s\n", summary.ResolvedFindings, pluralize("finding", summary.ResolvedFindings))
+		successMuted := color.RGB(0, 229, 153).Add(color.Faint) // Signal Green + dim
+		successMuted.Fprintf(os.Stderr, "  ✓ %d resolved %s\n", summary.ResolvedFindings, pluralize("finding", summary.ResolvedFindings))
 	}
 }
 
