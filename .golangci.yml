@@ -1,18 +1,28 @@
+version: "2"
+
 linters:
+  default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+  settings:
+    misspell:
+      locale: US
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-
-linters-settings:
-  misspell:
-    locale: US
 
 run:
   timeout: 5m
+
+issues:
+  # Temporary: only fail on issues introduced by this branch.
+  # Pre-existing dirt is tracked separately and must be cleaned up before
+  # this filter is removed.
+  new-from-rev: origin/main

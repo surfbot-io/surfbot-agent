@@ -87,6 +87,9 @@ func (s *SubfinderTool) enumerate(ctx context.Context, domain string, opts RunOp
 		args = append(args, "-t", threads)
 	}
 
+	// daemon-context-audited (SPEC-X1): subfinder is the only real
+	// subprocess in the detection pipeline; using CommandContext ensures
+	// runner-cancellation propagates so `daemon stop` leaves no orphans.
 	cmd := exec.CommandContext(ctx, "subfinder", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
