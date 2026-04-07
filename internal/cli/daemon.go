@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -173,6 +174,8 @@ func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 
+	cfg.DBPath = resolveDaemonDBPath(mode, paths, cfg.DBPath)
+
 	runStore, err := storage.NewSQLiteStore(cfg.DBPath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
@@ -200,6 +203,19 @@ func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 		return nil, nil, nil, err
 	}
 	return s, svc, cleanup, nil
+}
+
+// resolveDaemonDBPath picks the SQLite path for the daemon process. In
+// system mode the daemon is launched by the OS service manager (systemd,
+// launchd, …) which may not export a usable $HOME. Anchor the DB under
+// paths.StateDir so it lives next to the rest of the daemon state. In
+// user mode we keep whatever the user configured (or DefaultConfig()'s
+// $HOME-derived default).
+func resolveDaemonDBPath(mode daemon.Mode, paths daemon.Paths, configured string) string {
+	if mode == daemon.ModeSystem {
+		return filepath.Join(paths.StateDir, "surfbot.db")
+	}
+	return configured
 }
 
 func durationOr(d, fallback time.Duration) time.Duration {
