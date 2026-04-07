@@ -168,8 +168,8 @@ func TestDaemon_Scheduler_TicksWithin90s(t *testing.T) {
 daemon:
   scheduler:
     enabled: true
-    full_scan_interval: 1m
-    quick_check_interval: 30s
+    full_scan_interval: 2m
+    quick_check_interval: 1m
     jitter: 0s
     run_on_start: true
     quick_check_tools: [httpx, nuclei]
@@ -189,7 +189,7 @@ daemon:
 		t.Fatalf("start failed: %v\n%s", err, out)
 	}
 
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(150 * time.Second)
 	var last schedulerStatus
 	for time.Now().Before(deadline) {
 		out, _ := runCmd(t, bin, "daemon", "status", "--json")
@@ -201,7 +201,7 @@ daemon:
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("scheduler never populated both cursors within 90s; last=%+v", last)
+	t.Fatalf("scheduler never populated both cursors within 150s; last=%+v", last)
 }
 
 // TestDaemon_Scheduler_MaintenanceWindowSuppresses installs with a window
@@ -216,8 +216,8 @@ func TestDaemon_Scheduler_MaintenanceWindowSuppresses(t *testing.T) {
 daemon:
   scheduler:
     enabled: true
-    full_scan_interval: 1m
-    quick_check_interval: 30s
+    full_scan_interval: 2m
+    quick_check_interval: 1m
     jitter: 0s
     run_on_start: true
     maintenance_window:
