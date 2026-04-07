@@ -1,6 +1,6 @@
 # Binaries
 bin/
-surfbot
+/surfbot
 *.exe
 
 # IDE
