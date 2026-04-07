@@ -90,7 +90,7 @@ func (r *Runner) Stop(grace time.Duration) error {
 	}
 }
 
-// loop runs until ctx is cancelled. It writes a state heartbeat on a
+// loop runs until ctx is canceled. It writes a state heartbeat on a
 // ticker and concurrently lets the scheduler do its thing.
 func (r *Runner) loop(ctx context.Context) {
 	defer close(r.done)

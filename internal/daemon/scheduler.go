@@ -11,21 +11,21 @@ import (
 // plumbing.
 //
 // Implementations must be safe for a single Run call per instance. Run
-// blocks until ctx is cancelled.
+// blocks until ctx is canceled.
 type Scheduler interface {
 	// Next returns the time of the next scheduled scan, or the zero value
 	// if none is scheduled. The runner reports this in the state file so
 	// `surfbot daemon status` can show "next scan: ..." to users.
 	Next() time.Time
 
-	// Run blocks until ctx is cancelled. Real schedulers trigger scans on
+	// Run blocks until ctx is canceled. Real schedulers trigger scans on
 	// their internal cadence; NoopScheduler simply waits.
 	Run(ctx context.Context) error
 }
 
 // NoopScheduler is the default Scheduler used in X1. It reports a fixed
 // "next scan in 24h" so daemon status displays a non-zero value, then
-// blocks until cancelled without doing any work.
+// blocks until canceled without doing any work.
 type NoopScheduler struct {
 	startedAt time.Time
 }

@@ -20,3 +20,9 @@ formatters:
 
 run:
   timeout: 5m
+
+issues:
+  # Temporary: only fail on issues introduced by this branch.
+  # Pre-existing dirt is tracked separately and must be cleaned up before
+  # this filter is removed.
+  new-from-rev: origin/main

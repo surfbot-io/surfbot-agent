@@ -100,7 +100,7 @@ func tailFile(path string, n int) ([]string, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	// Simple approach: scan all lines, keep a rolling window of n.
 	// Daemon logs are bounded by lumberjack rotation (10 MB) so this is fine.
 	scanner := bufio.NewScanner(f)
@@ -118,7 +118,7 @@ func tailFile(path string, n int) ([]string, error) {
 	return ring, nil
 }
 
-// Follow tails the log file until ctx is cancelled, writing each new line
+// Follow tails the log file until ctx is canceled, writing each new line
 // to w. Implementation polls the file size every 250ms and reads from the
 // last known offset — no external dependencies.
 func (l *Logger) Follow(ctx context.Context, w io.Writer) error {
@@ -126,7 +126,7 @@ func (l *Logger) Follow(ctx context.Context, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}

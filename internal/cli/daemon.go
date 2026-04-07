@@ -231,7 +231,7 @@ func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage
 	if warn, verr := icfg.Validate(); verr != nil {
 		return nil, verr
 	} else if warn != "" {
-		fmt.Fprintln(os.Stderr, "scheduler:", warn)
+		_, _ = fmt.Fprintln(os.Stderr, "scheduler:", warn)
 	}
 
 	registry := detection.NewRegistry()
@@ -326,21 +326,21 @@ func loadSchedulerStatus(paths daemon.Paths) *schedulerStatus {
 }
 
 func printSchedulerStatus(w io.Writer, s *schedulerStatus) {
-	fmt.Fprintln(w, "  scheduler:")
+	_, _ = fmt.Fprintln(w, "  scheduler:")
 	if !s.LastFullAt.IsZero() {
-		fmt.Fprintf(w, "    last full:  %s (%s)\n", s.LastFullAt.Format(time.RFC3339), s.LastFullStatus)
+		_, _ = fmt.Fprintf(w, "    last full:  %s (%s)\n", s.LastFullAt.Format(time.RFC3339), s.LastFullStatus)
 	}
 	if !s.LastQuickAt.IsZero() {
-		fmt.Fprintf(w, "    last quick: %s (%s)\n", s.LastQuickAt.Format(time.RFC3339), s.LastQuickStatus)
+		_, _ = fmt.Fprintf(w, "    last quick: %s (%s)\n", s.LastQuickAt.Format(time.RFC3339), s.LastQuickStatus)
 	}
 	if !s.NextFullAt.IsZero() {
-		fmt.Fprintf(w, "    next full:  %s\n", s.NextFullAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, "    next full:  %s\n", s.NextFullAt.Format(time.RFC3339))
 	}
 	if !s.NextQuickAt.IsZero() {
-		fmt.Fprintf(w, "    next quick: %s\n", s.NextQuickAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, "    next quick: %s\n", s.NextQuickAt.Format(time.RFC3339))
 	}
 	if s.WindowEnabled {
-		fmt.Fprintf(w, "    window:     %s [%s]\n", s.WindowDesc, s.WindowState)
+		_, _ = fmt.Fprintf(w, "    window:     %s [%s]\n", s.WindowDesc, s.WindowState)
 	}
 }
 
@@ -359,7 +359,7 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 	if err := svc.Install(); err != nil {
 		// Idempotent: kardianos returns "Init already exists" or similar.
 		if isAlreadyInstalled(err) {
-			fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon already installed")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon already installed")
 			return nil
 		}
 		if isPermissionError(err) {
@@ -367,7 +367,7 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("installing service: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "surfbot daemon installed (%s mode)\n", mode)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "surfbot daemon installed (%s mode)\n", mode)
 	return nil
 }
 
@@ -382,7 +382,7 @@ func runDaemonUninstall(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("uninstalling service: %w", err)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon uninstalled")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon uninstalled")
 	return nil
 }
 
@@ -394,7 +394,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	if err := svc.Start(); err != nil {
 		return fmt.Errorf("starting service: %w", err)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon started")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon started")
 	return nil
 }
 
@@ -406,7 +406,7 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 	if err := svc.Stop(); err != nil {
 		return fmt.Errorf("stopping service: %w", err)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon stopped")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon stopped")
 	return nil
 }
 
@@ -424,7 +424,7 @@ func runDaemonRestart(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("restart fallback failed: %w (original: %v)", serr, rerr)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon restarted")
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon restarted")
 	return nil
 }
 
@@ -504,23 +504,23 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	} else {
-		fmt.Fprintln(w, "surfbot daemon")
-		fmt.Fprintf(w, "  status:    %s\n", out.Status)
-		fmt.Fprintf(w, "  pid:       %d\n", out.PID)
-		fmt.Fprintf(w, "  version:   %s\n", out.Version)
+		_, _ = fmt.Fprintln(w, "surfbot daemon")
+		_, _ = fmt.Fprintf(w, "  status:    %s\n", out.Status)
+		_, _ = fmt.Fprintf(w, "  pid:       %d\n", out.PID)
+		_, _ = fmt.Fprintf(w, "  version:   %s\n", out.Version)
 		if !out.StartedAt.IsZero() {
-			fmt.Fprintf(w, "  uptime:    %s\n", time.Since(out.StartedAt).Round(time.Second))
+			_, _ = fmt.Fprintf(w, "  uptime:    %s\n", time.Since(out.StartedAt).Round(time.Second))
 		}
 		if !out.LastScanAt.IsZero() {
-			fmt.Fprintf(w, "  last scan: %s (%s)\n", out.LastScanAt.Format(time.RFC3339), st.LastScanStatus)
+			_, _ = fmt.Fprintf(w, "  last scan: %s (%s)\n", out.LastScanAt.Format(time.RFC3339), st.LastScanStatus)
 		}
 		if !out.NextScanAt.IsZero() {
-			fmt.Fprintf(w, "  next scan: %s\n", out.NextScanAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(w, "  next scan: %s\n", out.NextScanAt.Format(time.RFC3339))
 		}
 		if out.Scheduler != nil {
 			printSchedulerStatus(w, out.Scheduler)
 		}
-		fmt.Fprintf(w, "  log file:  %s\n", out.LogFile)
+		_, _ = fmt.Fprintf(w, "  log file:  %s\n", out.LogFile)
 	}
 
 	if exitCode != 0 {

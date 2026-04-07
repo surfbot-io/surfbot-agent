@@ -174,7 +174,7 @@ func (s *IntervalScheduler) computeNext(now time.Time) time.Time {
 	}
 }
 
-// Run blocks until ctx is cancelled, triggering scans on schedule. It
+// Run blocks until ctx is canceled, triggering scans on schedule. It
 // implements the loop described in spec §3.3.
 func (s *IntervalScheduler) Run(ctx context.Context) error {
 	if s.store != nil {

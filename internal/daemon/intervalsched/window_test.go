@@ -103,7 +103,7 @@ func TestWindow_DST_Madrid_Spring(t *testing.T) {
 	// 2026-03-29 03:15 local — DST has just kicked in. Whether the
 	// scheduler considers this "inside" depends on the wall-clock minutes,
 	// which is exactly what users configure against. We assert the
-	// behaviour is consistent: 03:15 wall-clock is inside [02:30, 03:30).
+	// behavior is consistent: 03:15 wall-clock is inside [02:30, 03:30).
 	inside := time.Date(2026, 3, 29, 3, 15, 0, 0, loc)
 	require.True(t, w.Contains(inside))
 	end := w.NextOpen(inside)
