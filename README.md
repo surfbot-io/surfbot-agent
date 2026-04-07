@@ -83,6 +83,44 @@ surfbot.exe daemon stop
 and the next scheduled scan. Use `--json` for machine-readable output.
 Exit codes: `0` running, `3` stopped, `4` unknown / not installed.
 
+### Scheduling
+
+The daemon runs full scans and lightweight quick checks on independent
+cadences, defined under `daemon.scheduler` in `~/.surfbot/config.yaml`:
+
+```yaml
+daemon:
+  scheduler:
+    enabled: true               # turn the scheduler off without uninstalling
+    full_scan_interval: 24h     # full pipeline (default: 24h)
+    quick_check_interval: 1h    # quick checks only (default: 1h)
+    jitter: 5m                  # +/- jitter applied to each tick (default: 5m)
+    run_on_start: false         # fire one full scan immediately on daemon start
+    quick_check_tools:          # tool whitelist for quick checks
+      - httpx
+      - nuclei
+    maintenance_window:         # optional: suppress new scans during this window
+      enabled: false
+      start: "02:00"            # HH:MM, may cross midnight (e.g. 22:00 → 06:00)
+      end:   "04:00"
+      timezone: "Europe/Madrid" # IANA tz; DST-correct
+```
+
+Rules:
+
+- Intervals must be ≥ `1m`. If `quick_check_interval ≥ full_scan_interval`,
+  quick checks are disabled and a warning is logged.
+- `jitter` is capped at `min(interval) / 10` and only ever added (never
+  subtracted), so a fresh start is never pushed into the past.
+- Inside the maintenance window, new scans are deferred to the next close
+  time. In-flight scans are not killed.
+- A failed scan still advances the cursor — the scheduler never enters a
+  tight retry loop on a permanent failure. The error is recorded in
+  `last_full_status` / `last_quick_status` and surfaced by
+  `surfbot daemon status`.
+- Cursors persist across restarts in `schedule.state.json`, alongside
+  `daemon.state.json`.
+
 ## Architecture
 
 See [ADR-001](../surfbot-strategy/ADR-001-surfbot-agent-architecture.md).

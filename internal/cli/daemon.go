@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,7 +15,11 @@ import (
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
 
+	"github.com/surfbot-io/surfbot-agent/internal/config"
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
+	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
+	"github.com/surfbot-io/surfbot-agent/internal/detection"
+	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
 // Persistent flags on the parent `daemon` command. They control the install
@@ -128,7 +133,9 @@ func resolveMode() (daemon.Mode, error) {
 	return daemon.DefaultMode(), nil
 }
 
-// buildDaemonService is the common setup all daemon subcommands run.
+// buildDaemonService is the common setup install/uninstall/start/stop/
+// status/restart use. It does NOT load surfbot config or open the SQLite
+// store — only `daemon run` needs those, and it uses buildDaemonRunService.
 func buildDaemonService() (*daemon.Service, service.Service, daemon.Mode, error) {
 	mode, err := resolveMode()
 	if err != nil {
@@ -148,6 +155,200 @@ func buildDaemonService() (*daemon.Service, service.Service, daemon.Mode, error)
 		return nil, nil, mode, err
 	}
 	return s, svc, mode, nil
+}
+
+// buildDaemonRunService is invoked by `daemon run`. It loads the full
+// surfbot config, opens the database, builds the IntervalScheduler from
+// daemon.scheduler config, and hands the result to daemon.Build. The
+// returned cleanup func closes the database — the caller must defer it.
+func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
+	mode, err := resolveMode()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	paths := daemon.Resolve(daemon.Default(mode))
+
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+
+	runStore, err := storage.NewSQLiteStore(cfg.DBPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	cleanup := func() { _ = runStore.Close() }
+
+	sched, err := buildScheduler(cfg.Daemon.Scheduler, paths, runStore)
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("building scheduler: %w", err)
+	}
+
+	dcfg := daemon.Config{
+		Mode:           mode,
+		Paths:          paths,
+		Version:        Version,
+		ShutdownGrace:  durationOr(cfg.Daemon.ShutdownGrace, 20*time.Second),
+		Heartbeat:      durationOr(cfg.Daemon.StateHeartbeat, 30*time.Second),
+		ConfigOverride: cfgFile,
+		Scheduler:      sched,
+	}
+	s, svc, err := daemon.Build(dcfg)
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, err
+	}
+	return s, svc, cleanup, nil
+}
+
+func durationOr(d, fallback time.Duration) time.Duration {
+	if d <= 0 {
+		return fallback
+	}
+	return d
+}
+
+// buildScheduler converts SchedulerConfig into a concrete daemon.Scheduler.
+// Returns the X1 NoopScheduler when scheduling is disabled so the daemon
+// still stays up (UI / logs are useful even without scans).
+func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage.Store) (daemon.Scheduler, error) {
+	if !sc.Enabled {
+		return daemon.NewNoopScheduler(), nil
+	}
+	window, err := buildWindow(sc.MaintenanceWindow)
+	if err != nil {
+		return nil, err
+	}
+	icfg := intervalsched.Config{
+		FullInterval:  sc.FullScanInterval,
+		QuickInterval: sc.QuickCheckInterval,
+		Jitter:        sc.Jitter,
+		Window:        window,
+		QuickTools:    sc.QuickCheckTools,
+		RunOnStart:    sc.RunOnStart,
+	}
+	if warn, verr := icfg.Validate(); verr != nil {
+		return nil, verr
+	} else if warn != "" {
+		fmt.Fprintln(os.Stderr, "scheduler:", warn)
+	}
+
+	registry := detection.NewRegistry()
+	if err := validateQuickTools(icfg.QuickTools, registry); err != nil {
+		return nil, err
+	}
+
+	scanRunner := newPipelineScanRunner(store, registry, icfg.QuickTools)
+	stateStore := intervalsched.NewScheduleStateStore(scheduleStatePath(paths))
+	return intervalsched.New(icfg, intervalsched.Options{
+		StateStore: stateStore,
+		Scanner:    scanRunner,
+	}), nil
+}
+
+func buildWindow(mw config.MaintenanceWindowConfig) (intervalsched.MaintenanceWindow, error) {
+	w := intervalsched.MaintenanceWindow{Enabled: mw.Enabled}
+	if !mw.Enabled {
+		return w, nil
+	}
+	start, err := intervalsched.ParseTimeOfDay(mw.Start)
+	if err != nil {
+		return w, err
+	}
+	end, err := intervalsched.ParseTimeOfDay(mw.End)
+	if err != nil {
+		return w, err
+	}
+	loc := time.Local
+	if mw.Timezone != "" {
+		loc, err = time.LoadLocation(mw.Timezone)
+		if err != nil {
+			return w, fmt.Errorf("invalid maintenance_window.timezone: %w", err)
+		}
+	}
+	w.Start, w.End, w.Loc = start, end, loc
+	return w, nil
+}
+
+// validateQuickTools rejects unknown tool names so a typo in config
+// doesn't silently disable quick checks.
+func validateQuickTools(tools []string, registry *detection.Registry) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	for _, name := range tools {
+		if _, ok := registry.GetByName(name); !ok {
+			return fmt.Errorf("quick_check_tools: unknown tool %q", name)
+		}
+	}
+	return nil
+}
+
+// loadSchedulerStatus reads schedule.state.json (if present) and translates
+// it into the schedulerStatus shape used by `daemon status`. Returns nil
+// when the state file does not exist yet — the daemon either has scheduling
+// disabled or has not completed a tick.
+func loadSchedulerStatus(paths daemon.Paths) *schedulerStatus {
+	store := intervalsched.NewScheduleStateStore(scheduleStatePath(paths))
+	st, err := store.Load()
+	if err != nil {
+		return nil
+	}
+	if st.LastFullAt.IsZero() && st.LastQuickAt.IsZero() &&
+		st.NextFullAt.IsZero() && st.NextQuickAt.IsZero() {
+		return nil
+	}
+	out := &schedulerStatus{
+		Enabled:         true,
+		LastFullAt:      st.LastFullAt,
+		LastFullStatus:  st.LastFullStatus,
+		LastQuickAt:     st.LastQuickAt,
+		LastQuickStatus: st.LastQuickStatus,
+		NextFullAt:      st.NextFullAt,
+		NextQuickAt:     st.NextQuickAt,
+	}
+	if cfg, cerr := config.Load(cfgFile); cerr == nil {
+		mw := cfg.Daemon.Scheduler.MaintenanceWindow
+		if mw.Enabled {
+			out.WindowEnabled = true
+			out.WindowDesc = fmt.Sprintf("%s-%s %s", mw.Start, mw.End, mw.Timezone)
+			if w, werr := buildWindow(mw); werr == nil {
+				if w.Contains(time.Now()) {
+					out.WindowState = "closed"
+				} else {
+					out.WindowState = "open"
+				}
+			}
+		}
+	}
+	return out
+}
+
+func printSchedulerStatus(w io.Writer, s *schedulerStatus) {
+	fmt.Fprintln(w, "  scheduler:")
+	if !s.LastFullAt.IsZero() {
+		fmt.Fprintf(w, "    last full:  %s (%s)\n", s.LastFullAt.Format(time.RFC3339), s.LastFullStatus)
+	}
+	if !s.LastQuickAt.IsZero() {
+		fmt.Fprintf(w, "    last quick: %s (%s)\n", s.LastQuickAt.Format(time.RFC3339), s.LastQuickStatus)
+	}
+	if !s.NextFullAt.IsZero() {
+		fmt.Fprintf(w, "    next full:  %s\n", s.NextFullAt.Format(time.RFC3339))
+	}
+	if !s.NextQuickAt.IsZero() {
+		fmt.Fprintf(w, "    next quick: %s\n", s.NextQuickAt.Format(time.RFC3339))
+	}
+	if s.WindowEnabled {
+		fmt.Fprintf(w, "    window:     %s [%s]\n", s.WindowDesc, s.WindowState)
+	}
+}
+
+// scheduleStatePath returns the path of schedule.state.json next to
+// daemon.state.json so users can inspect/back up both files together.
+func scheduleStatePath(paths daemon.Paths) string {
+	dir := paths.StateDir
+	return dir + string(os.PathSeparator) + "schedule.state.json"
 }
 
 func runDaemonInstall(cmd *cobra.Command, _ []string) error {
@@ -227,15 +428,30 @@ func runDaemonRestart(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// statusOutput is the JSON shape emitted by `daemon status --json`.
+// statusOutput is the JSON shape emitted by `daemon status --json`. The
+// scheduler block is populated from schedule.state.json (SPEC-X2).
 type statusOutput struct {
-	Status     string    `json:"status"`
-	PID        int       `json:"pid"`
-	Version    string    `json:"version"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	NextScanAt time.Time `json:"next_scan_at,omitempty"`
-	LastScanAt time.Time `json:"last_scan_at,omitempty"`
-	LogFile    string    `json:"log_file"`
+	Status     string           `json:"status"`
+	PID        int              `json:"pid"`
+	Version    string           `json:"version"`
+	StartedAt  time.Time        `json:"started_at,omitempty"`
+	NextScanAt time.Time        `json:"next_scan_at,omitempty"`
+	LastScanAt time.Time        `json:"last_scan_at,omitempty"`
+	LogFile    string           `json:"log_file"`
+	Scheduler  *schedulerStatus `json:"scheduler,omitempty"`
+}
+
+type schedulerStatus struct {
+	Enabled         bool      `json:"enabled"`
+	WindowEnabled   bool      `json:"window_enabled"`
+	WindowDesc      string    `json:"window,omitempty"`
+	WindowState     string    `json:"window_state,omitempty"` // "open" | "closed"
+	LastFullAt      time.Time `json:"last_full_at,omitempty"`
+	LastFullStatus  string    `json:"last_full_status,omitempty"`
+	LastQuickAt     time.Time `json:"last_quick_at,omitempty"`
+	LastQuickStatus string    `json:"last_quick_status,omitempty"`
+	NextFullAt      time.Time `json:"next_full_at,omitempty"`
+	NextQuickAt     time.Time `json:"next_quick_at,omitempty"`
 }
 
 func runDaemonStatus(cmd *cobra.Command, _ []string) error {
@@ -277,6 +493,7 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) error {
 		NextScanAt: st.NextScanAt,
 		LastScanAt: st.LastScanAt,
 		LogFile:    paths.LogFile(),
+		Scheduler:  loadSchedulerStatus(paths),
 	}
 
 	w := cmd.OutOrStdout()
@@ -299,6 +516,9 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) error {
 		}
 		if !out.NextScanAt.IsZero() {
 			fmt.Fprintf(w, "  next scan: %s\n", out.NextScanAt.Format(time.RFC3339))
+		}
+		if out.Scheduler != nil {
+			printSchedulerStatus(w, out.Scheduler)
 		}
 		fmt.Fprintf(w, "  log file:  %s\n", out.LogFile)
 	}
@@ -346,13 +566,15 @@ func runDaemonLogs(cmd *cobra.Command, _ []string) error {
 	return logger.Follow(ctx, w)
 }
 
-// runDaemonRun is the entrypoint the OS service manager invokes. It blocks
-// inside service.Run until the service is asked to stop.
+// runDaemonRun is the entrypoint the OS service manager invokes. It loads
+// the surfbot config, opens the database, builds the IntervalScheduler,
+// and blocks inside service.Run until the service is asked to stop.
 func runDaemonRun(_ *cobra.Command, _ []string) error {
-	_, svc, _, err := buildDaemonService()
+	_, svc, cleanup, err := buildDaemonRunService()
 	if err != nil {
 		return err
 	}
+	defer cleanup()
 	return svc.Run()
 }
 

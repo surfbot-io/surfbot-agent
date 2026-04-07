@@ -24,6 +24,11 @@ type Config struct {
 	ShutdownGrace  time.Duration
 	Heartbeat      time.Duration
 	ConfigOverride string // optional --config path baked into the unit
+
+	// Scheduler injects the scan scheduler. SPEC-X1 left this nil and
+	// defaulted to NoopScheduler; SPEC-X2 wires an IntervalScheduler from
+	// daemon config when invoked via `daemon run`.
+	Scheduler Scheduler
 }
 
 // Service is the kardianos/service.Interface implementation. Start spawns
@@ -51,8 +56,12 @@ func Build(cfg Config) (*Service, service.Service, error) {
 
 	logger := NewLogger(cfg.Paths.LogFile(), LoggerOptions{Compress: true})
 	state := NewStateStore(cfg.Paths.StateFile())
+	sched := cfg.Scheduler
+	if sched == nil {
+		sched = NewNoopScheduler()
+	}
 	runner := NewRunner(RunnerConfig{
-		Scheduler: NewNoopScheduler(),
+		Scheduler: sched,
 		State:     state,
 		Logger:    logger,
 		Heartbeat: cfg.Heartbeat,
