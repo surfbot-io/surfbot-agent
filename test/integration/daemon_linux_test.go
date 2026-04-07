@@ -69,6 +69,23 @@ func runCmd(t *testing.T, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// resetDaemonState removes the daemon state files so a previous test's
+// schedule cursors do not bleed into this run. The scheduler restores
+// LastFullAt/LastQuickAt from /var/lib/surfbot/schedule.state.json on
+// startup, which would otherwise make the maintenance-window assertion
+// see stale timestamps from TicksWithin90s.
+func resetDaemonState(t *testing.T) {
+	t.Helper()
+	for _, p := range []string{
+		"/var/lib/surfbot/schedule.state.json",
+		"/var/lib/surfbot/daemon.state.json",
+	} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("reset daemon state %s: %v", p, err)
+		}
+	}
+}
+
 // dumpDaemonState dumps every piece of state we can get our hands on so a
 // failed scheduler integration test in CI is debuggable. Called from a
 // t.Cleanup that fires only when t.Failed().
@@ -164,6 +181,7 @@ type schedulerStatus struct {
 func TestDaemon_Scheduler_TicksWithin90s(t *testing.T) {
 	requireRoot(t)
 	bin := buildBinary(t)
+	resetDaemonState(t)
 	cfgPath := writeConfig(t, `
 daemon:
   scheduler:
@@ -209,6 +227,7 @@ daemon:
 func TestDaemon_Scheduler_MaintenanceWindowSuppresses(t *testing.T) {
 	requireRoot(t)
 	bin := buildBinary(t)
+	resetDaemonState(t)
 
 	now := time.Now()
 	end := now.Add(5 * time.Minute)
