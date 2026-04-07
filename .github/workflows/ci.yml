@@ -39,3 +39,14 @@ jobs:
         with:
           go-version: '1.24'
       - run: GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o surfbot-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/surfbot
+
+  integration-linux:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Run daemon integration tests
+        run: sudo -E env "PATH=$PATH" go test -tags=integration ./test/integration/... -v -count=1

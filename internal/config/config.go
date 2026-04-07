@@ -3,15 +3,27 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	DBPath   string      `yaml:"db_path" mapstructure:"db_path"`
-	LogLevel string      `yaml:"log_level" mapstructure:"log_level"`
-	Tools    ToolsConfig `yaml:"tools" mapstructure:"tools"`
-	Scan     ScanConfig  `yaml:"scan" mapstructure:"scan"`
+	DBPath   string       `yaml:"db_path" mapstructure:"db_path"`
+	LogLevel string       `yaml:"log_level" mapstructure:"log_level"`
+	Tools    ToolsConfig  `yaml:"tools" mapstructure:"tools"`
+	Scan     ScanConfig   `yaml:"scan" mapstructure:"scan"`
+	Daemon   DaemonConfig `yaml:"daemon" mapstructure:"daemon"`
+}
+
+// DaemonConfig holds settings for `surfbot daemon`. Only ShutdownGrace and
+// StateHeartbeat are read in SPEC-X1; the scheduling fields are stubbed
+// here so config files written today remain valid once SPEC-X2 lands.
+type DaemonConfig struct {
+	FullScanInterval   time.Duration `yaml:"full_scan_interval" mapstructure:"full_scan_interval"`
+	QuickCheckInterval time.Duration `yaml:"quick_check_interval" mapstructure:"quick_check_interval"`
+	ShutdownGrace      time.Duration `yaml:"shutdown_grace" mapstructure:"shutdown_grace"`
+	StateHeartbeat     time.Duration `yaml:"state_heartbeat" mapstructure:"state_heartbeat"`
 }
 
 type ToolsConfig struct {
@@ -38,6 +50,10 @@ func DefaultConfig() *Config {
 			DefaultType: "full",
 			RateLimit:   0,
 			Timeout:     300,
+		},
+		Daemon: DaemonConfig{
+			ShutdownGrace:  20 * time.Second,
+			StateHeartbeat: 30 * time.Second,
 		},
 	}
 }

@@ -29,6 +29,22 @@ var skipDBCommands = map[string]bool{
 	"completion": true,
 }
 
+// skipDB returns true if the given cobra command should NOT have the
+// SQLite store opened in PersistentPreRunE. This covers leaf commands in
+// `skipDBCommands` plus every subcommand of `daemon` (which manages the
+// OS service registration and its own state file, never the user DB).
+func skipDB(cmd *cobra.Command) bool {
+	if skipDBCommands[cmd.Name()] {
+		return true
+	}
+	for p := cmd; p != nil; p = p.Parent() {
+		if p.Name() == "daemon" {
+			return true
+		}
+	}
+	return false
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "surfbot",
 	Short: "Surfbot Agent — local security scanner",
@@ -39,7 +55,7 @@ var rootCmd = &cobra.Command{
 			color.NoColor = true
 		}
 
-		if skipDBCommands[cmd.Name()] {
+		if skipDB(cmd) {
 			return nil
 		}
 
