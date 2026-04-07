@@ -69,6 +69,35 @@ func runCmd(t *testing.T, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// dumpDaemonState dumps every piece of state we can get our hands on so a
+// failed scheduler integration test in CI is debuggable. Called from a
+// t.Cleanup that fires only when t.Failed().
+func dumpDaemonState(t *testing.T) {
+	t.Helper()
+	dump := func(label string, name string, args ...string) {
+		out, _ := runCmd(t, name, args...)
+		t.Logf("=== %s ===\n%s", label, out)
+	}
+	dumpFile := func(label, path string) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Logf("=== %s (%s) ===\n<not present: %v>", label, path, err)
+			return
+		}
+		t.Logf("=== %s (%s) ===\n%s", label, path, string(b))
+	}
+	dump("ls -la /var/lib/surfbot", "ls", "-la", "/var/lib/surfbot")
+	dump("ls -la /var/log/surfbot", "ls", "-la", "/var/log/surfbot")
+	dump("tail -n 200 /var/log/surfbot/daemon.log", "sh", "-c", "tail -n 200 /var/log/surfbot/daemon.log 2>&1 || true")
+	dump("tail -n 200 /var/lib/surfbot/daemon.log", "sh", "-c", "tail -n 200 /var/lib/surfbot/daemon.log 2>&1 || true")
+	dumpFile("schedule.state.json", "/var/lib/surfbot/schedule.state.json")
+	dumpFile("daemon.state.json", "/var/lib/surfbot/daemon.state.json")
+	dump("systemctl status surfbot", "systemctl", "status", "surfbot", "--no-pager")
+	dump("journalctl -u surfbot", "journalctl", "-u", "surfbot", "--no-pager", "-n", "200")
+	dump("systemd unit file", "sh", "-c", "cat /etc/systemd/system/surfbot.service 2>&1 || cat /lib/systemd/system/surfbot.service 2>&1 || true")
+	dump("ps -ef surfbot", "sh", "-c", "ps -ef | grep -i surfbot | grep -v grep || true")
+}
+
 func TestDaemon_InstallStartStatusStopUninstall(t *testing.T) {
 	requireRoot(t)
 	bin := buildBinary(t)
@@ -143,6 +172,9 @@ daemon:
     quick_check_tools: [httpx, nuclei]
 `)
 	t.Cleanup(func() {
+		if t.Failed() {
+			dumpDaemonState(t)
+		}
 		_, _ = runCmd(t, bin, "daemon", "stop")
 		_, _ = runCmd(t, bin, "daemon", "uninstall")
 	})
@@ -193,6 +225,9 @@ daemon:
 `
 	cfgPath := writeConfig(t, cfgBody)
 	t.Cleanup(func() {
+		if t.Failed() {
+			dumpDaemonState(t)
+		}
 		_, _ = runCmd(t, bin, "daemon", "stop")
 		_, _ = runCmd(t, bin, "daemon", "uninstall")
 	})
@@ -209,8 +244,9 @@ daemon:
 	out, _ := runCmd(t, bin, "daemon", "status", "--json")
 	var s schedulerStatus
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &s))
-	if s.Scheduler != nil {
-		require.True(t, s.Scheduler.LastFullAt.IsZero(), "full scan must not run inside window")
-		require.True(t, s.Scheduler.LastQuickAt.IsZero(), "quick scan must not run inside window")
+	if s.Scheduler == nil {
+		t.Fatal("scheduler block missing from status JSON")
 	}
+	require.True(t, s.Scheduler.LastFullAt.IsZero(), "full scan must not run inside window")
+	require.True(t, s.Scheduler.LastQuickAt.IsZero(), "quick scan must not run inside window")
 }
