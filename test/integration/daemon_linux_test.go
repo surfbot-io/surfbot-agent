@@ -266,9 +266,17 @@ daemon:
 	out, _ := runCmd(t, bin, "daemon", "status", "--json")
 	var s schedulerStatus
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &s))
-	if s.Scheduler == nil {
-		t.Fatal("scheduler block missing from status JSON")
+
+	// Positive liveness check: the daemon must still be running. Without
+	// this an early-exit daemon would silently satisfy the "no scan ran"
+	// condition for the wrong reason.
+	require.Equal(t, "running", s.Status, "daemon must be running")
+
+	// Inside the maintenance window the scheduler suppresses every scan,
+	// so schedule.state.json is never written and `s.Scheduler` is nil.
+	// If it does appear, the timestamps must still be zero.
+	if s.Scheduler != nil {
+		require.True(t, s.Scheduler.LastFullAt.IsZero(), "full scan must not run inside window")
+		require.True(t, s.Scheduler.LastQuickAt.IsZero(), "quick scan must not run inside window")
 	}
-	require.True(t, s.Scheduler.LastFullAt.IsZero(), "full scan must not run inside window")
-	require.True(t, s.Scheduler.LastQuickAt.IsZero(), "quick scan must not run inside window")
 }
