@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Surfbot Logo - Transparent Background -->
+
+  <!-- Left antenna -->
+  <rect x="148" y="30" width="35" height="38" fill="#5CE0B0"/>
+
+  <!-- Right antenna -->
+  <rect x="329" y="30" width="35" height="38" fill="#5CE0B0"/>
+
+  <!-- Head -->
+  <rect x="100" y="68" width="312" height="248" fill="#5CE0B0"/>
+
+  <!-- Left eye -->
+  <rect x="168" y="155" width="48" height="48" fill="#2D7A60"/>
+
+  <!-- Right eye -->
+  <rect x="296" y="155" width="48" height="48" fill="#2D7A60"/>
+
+  <!-- Mouth -->
+  <rect x="168" y="248" width="176" height="40" fill="#3E9E7E"/>
+
+  <!-- Upper body bar (bright green, wider than head) -->
+  <rect x="72" y="345" width="368" height="32" fill="#5CE0B0"/>
+
+  <!-- Lower body bar (darker green, same width as head) -->
+  <rect x="100" y="397" width="312" height="40" fill="#3E9E7E"/>
+</svg>

@@ -28,6 +28,7 @@ type AssetListOptions struct {
 	Type        model.AssetType
 	Status      model.AssetStatus
 	Limit       int
+	Offset      int
 	NewOnly     bool
 	Disappeared bool
 }
@@ -46,10 +47,12 @@ type AssetChangeListOptions struct {
 type FindingListOptions struct {
 	AssetID    string
 	ScanID     string
+	TargetID   string
 	Severity   model.Severity
 	Status     model.FindingStatus
 	SourceTool string
 	Limit      int
+	Offset     int
 }
 
 // Store defines the storage interface for all surfbot-agent entities.
@@ -66,14 +69,17 @@ type Store interface {
 	ListScans(ctx context.Context, targetID string, limit int) ([]model.Scan, error)
 
 	UpsertAsset(ctx context.Context, a *model.Asset) error
+	GetAsset(ctx context.Context, id string) (*model.Asset, error)
 	ListAssets(ctx context.Context, opts AssetListOptions) ([]model.Asset, error)
 
 	UpsertFinding(ctx context.Context, f *model.Finding) error
+	GetFinding(ctx context.Context, id string) (*model.Finding, error)
 	ListFindings(ctx context.Context, opts FindingListOptions) ([]model.Finding, error)
 	UpdateFindingStatus(ctx context.Context, id string, status model.FindingStatus) error
 
 	CreateToolRun(ctx context.Context, tr *model.ToolRun) error
 	UpdateToolRun(ctx context.Context, tr *model.ToolRun) error
+	ListToolRuns(ctx context.Context, scanID string) ([]model.ToolRun, error)
 
 	CreateAssetChange(ctx context.Context, ac *model.AssetChange) error
 	ListAssetChanges(ctx context.Context, opts AssetChangeListOptions) ([]model.AssetChange, error)
@@ -88,6 +94,14 @@ type Store interface {
 	CountScans(ctx context.Context) (int, error)
 	CountFindings(ctx context.Context) (int, error)
 	CountAssets(ctx context.Context) (int, error)
+	CountFindingsFiltered(ctx context.Context, opts FindingListOptions) (int, error)
+	CountAssetsFiltered(ctx context.Context, opts AssetListOptions) (int, error)
+	CountFindingsBySeverity(ctx context.Context) (map[model.Severity]int, error)
+	CountAssetsByType(ctx context.Context) (map[model.AssetType]int, error)
+	CountFindingsByTargetID(ctx context.Context, targetID string) (int, error)
+	CountAssetsByTargetID(ctx context.Context, targetID string) (int, error)
+	CountScansByTargetID(ctx context.Context, targetID string) (int, error)
+	CountFindingsByAssetIDs(ctx context.Context) (map[string]int, error)
 	LastScan(ctx context.Context) (*model.Scan, error)
 
 	Close() error
@@ -452,8 +466,8 @@ func (s *SQLiteStore) ListAssets(ctx context.Context, opts AssetListOptions) ([]
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY first_seen DESC LIMIT ?"
-	args = append(args, opts.Limit)
+	query += " ORDER BY first_seen DESC LIMIT ? OFFSET ?"
+	args = append(args, opts.Limit, opts.Offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -552,6 +566,10 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 		where = append(where, "asset_id = ?")
 		args = append(args, opts.AssetID)
 	}
+	if opts.TargetID != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE target_id = ?)")
+		args = append(args, opts.TargetID)
+	}
 	if opts.ScanID != "" {
 		where = append(where, "scan_id = ?")
 		args = append(args, opts.ScanID)
@@ -574,8 +592,8 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 	}
 	query += ` ORDER BY CASE severity
 		WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
-		WHEN 'low' THEN 3 WHEN 'info' THEN 4 END, last_seen DESC LIMIT ?`
-	args = append(args, opts.Limit)
+		WHEN 'low' THEN 3 WHEN 'info' THEN 4 END, last_seen DESC LIMIT ? OFFSET ?`
+	args = append(args, opts.Limit, opts.Offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -898,6 +916,115 @@ func (s *SQLiteStore) count(ctx context.Context, table string) (int, error) {
 	return n, err
 }
 
+func (s *SQLiteStore) CountFindingsFiltered(ctx context.Context, opts FindingListOptions) (int, error) {
+	query := `SELECT COUNT(*) FROM findings`
+	where := []string{}
+	args := []interface{}{}
+
+	if opts.AssetID != "" {
+		where = append(where, "asset_id = ?")
+		args = append(args, opts.AssetID)
+	}
+	if opts.TargetID != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE target_id = ?)")
+		args = append(args, opts.TargetID)
+	}
+	if opts.ScanID != "" {
+		where = append(where, "scan_id = ?")
+		args = append(args, opts.ScanID)
+	}
+	if opts.Severity != "" {
+		where = append(where, "severity = ?")
+		args = append(args, string(opts.Severity))
+	}
+	if opts.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, string(opts.Status))
+	}
+	if opts.SourceTool != "" {
+		where = append(where, "source_tool = ?")
+		args = append(args, opts.SourceTool)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountAssetsFiltered(ctx context.Context, opts AssetListOptions) (int, error) {
+	query := `SELECT COUNT(*) FROM assets`
+	where := []string{}
+	args := []interface{}{}
+
+	if opts.TargetID != "" {
+		where = append(where, "target_id = ?")
+		args = append(args, opts.TargetID)
+	}
+	if opts.Type != "" {
+		where = append(where, "type = ?")
+		args = append(args, string(opts.Type))
+	}
+	if opts.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, string(opts.Status))
+	}
+	if opts.NewOnly {
+		where = append(where, "status = 'new'")
+	}
+	if opts.Disappeared {
+		where = append(where, "status = 'disappeared'")
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountFindingsByTargetID(ctx context.Context, targetID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM findings WHERE asset_id IN (SELECT id FROM assets WHERE target_id = ?)`,
+		targetID).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountAssetsByTargetID(ctx context.Context, targetID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets WHERE target_id = ?`, targetID).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountScansByTargetID(ctx context.Context, targetID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scans WHERE target_id = ?`, targetID).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) CountFindingsByAssetIDs(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT asset_id, COUNT(*) FROM findings GROUP BY asset_id`)
+	if err != nil {
+		return nil, fmt.Errorf("counting findings by asset: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var assetID string
+		var n int
+		if err := rows.Scan(&assetID, &n); err != nil {
+			return nil, fmt.Errorf("scanning finding count: %w", err)
+		}
+		counts[assetID] = n
+	}
+	return counts, rows.Err()
+}
+
 func (s *SQLiteStore) LastScan(ctx context.Context) (*model.Scan, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, target_id, type, status, phase, progress, stats, started_at, finished_at, error, created_at, updated_at
@@ -924,6 +1051,156 @@ func (s *SQLiteStore) LastScan(ctx context.Context) (*model.Scan, error) {
 	sc.CreatedAt = parseTime(createdAt)
 	sc.UpdatedAt = parseTime(updatedAt)
 	return &sc, nil
+}
+
+// --- Single entity lookups ---
+
+func (s *SQLiteStore) GetAsset(ctx context.Context, id string) (*model.Asset, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, target_id, parent_id, type, value, status, tags, metadata, first_seen, last_seen, created_at, updated_at
+		 FROM assets WHERE id = ?`, id)
+
+	var a model.Asset
+	var parentID sql.NullString
+	var tagsJSON, metaJSON string
+	var firstSeen, lastSeen, createdAt, updatedAt sql.NullString
+
+	err := row.Scan(&a.ID, &a.TargetID, &parentID, &a.Type, &a.Value, &a.Status,
+		&tagsJSON, &metaJSON, &firstSeen, &lastSeen, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning asset row: %w", err)
+	}
+
+	a.ParentID = parentID.String
+	if err := json.Unmarshal([]byte(tagsJSON), &a.Tags); err != nil {
+		return nil, fmt.Errorf("unmarshaling tags: %w", err)
+	}
+	if err := json.Unmarshal([]byte(metaJSON), &a.Metadata); err != nil {
+		return nil, fmt.Errorf("unmarshaling metadata: %w", err)
+	}
+	a.FirstSeen = parseTime(firstSeen)
+	a.LastSeen = parseTime(lastSeen)
+	a.CreatedAt = parseTime(createdAt)
+	a.UpdatedAt = parseTime(updatedAt)
+	return &a, nil
+}
+
+func (s *SQLiteStore) GetFinding(ctx context.Context, id string) (*model.Finding, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, asset_id, scan_id, template_id, template_name, severity, title, description,
+		   "references", remediation, evidence, cvss, cve, status, source_tool, confidence,
+		   first_seen, last_seen, resolved_at, created_at, updated_at
+		 FROM findings WHERE id = ?`, id)
+
+	var f model.Finding
+	var scanID, cve, resolvedAt sql.NullString
+	var refsJSON string
+	var firstSeen, lastSeen, createdAt, updatedAt sql.NullString
+	var cvss sql.NullFloat64
+
+	err := row.Scan(&f.ID, &f.AssetID, &scanID, &f.TemplateID, &f.TemplateName,
+		&f.Severity, &f.Title, &f.Description, &refsJSON, &f.Remediation,
+		&f.Evidence, &cvss, &cve, &f.Status, &f.SourceTool, &f.Confidence,
+		&firstSeen, &lastSeen, &resolvedAt, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning finding row: %w", err)
+	}
+
+	f.ScanID = scanID.String
+	f.CVE = cve.String
+	if cvss.Valid {
+		f.CVSS = cvss.Float64
+	}
+	if err := json.Unmarshal([]byte(refsJSON), &f.References); err != nil {
+		return nil, fmt.Errorf("unmarshaling references: %w", err)
+	}
+	f.FirstSeen = parseTime(firstSeen)
+	f.LastSeen = parseTime(lastSeen)
+	f.ResolvedAt = parseTimePtr(resolvedAt)
+	f.CreatedAt = parseTime(createdAt)
+	f.UpdatedAt = parseTime(updatedAt)
+	return &f, nil
+}
+
+func (s *SQLiteStore) ListToolRuns(ctx context.Context, scanID string) ([]model.ToolRun, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, scan_id, tool_name, phase, status, started_at, finished_at,
+		   duration_ms, targets_count, findings_count, output_summary, error_message, exit_code, config, created_at, updated_at
+		 FROM tool_runs WHERE scan_id = ? ORDER BY started_at ASC`, scanID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tool runs: %w", err)
+	}
+	defer rows.Close()
+
+	runs := make([]model.ToolRun, 0)
+	for rows.Next() {
+		var tr model.ToolRun
+		var finishedAt, startedAt, createdAt, updatedAt sql.NullString
+		var configJSON string
+
+		if err := rows.Scan(&tr.ID, &tr.ScanID, &tr.ToolName, &tr.Phase, &tr.Status,
+			&startedAt, &finishedAt, &tr.DurationMs, &tr.TargetsCount, &tr.FindingsCount,
+			&tr.OutputSummary, &tr.ErrorMessage, &tr.ExitCode, &configJSON,
+			&createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scanning tool run row: %w", err)
+		}
+
+		if err := json.Unmarshal([]byte(configJSON), &tr.Config); err != nil {
+			return nil, fmt.Errorf("unmarshaling config: %w", err)
+		}
+		tr.StartedAt = parseTime(startedAt)
+		tr.FinishedAt = parseTimePtr(finishedAt)
+		tr.CreatedAt = parseTime(createdAt)
+		tr.UpdatedAt = parseTime(updatedAt)
+		runs = append(runs, tr)
+	}
+	return runs, rows.Err()
+}
+
+func (s *SQLiteStore) CountFindingsBySeverity(ctx context.Context) (map[model.Severity]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT severity, COUNT(*) FROM findings GROUP BY severity`)
+	if err != nil {
+		return nil, fmt.Errorf("counting findings by severity: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[model.Severity]int)
+	for rows.Next() {
+		var sev model.Severity
+		var n int
+		if err := rows.Scan(&sev, &n); err != nil {
+			return nil, fmt.Errorf("scanning severity count: %w", err)
+		}
+		counts[sev] = n
+	}
+	return counts, rows.Err()
+}
+
+func (s *SQLiteStore) CountAssetsByType(ctx context.Context) (map[model.AssetType]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT type, COUNT(*) FROM assets GROUP BY type`)
+	if err != nil {
+		return nil, fmt.Errorf("counting assets by type: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[model.AssetType]int)
+	for rows.Next() {
+		var typ model.AssetType
+		var n int
+		if err := rows.Scan(&typ, &n); err != nil {
+			return nil, fmt.Errorf("scanning type count: %w", err)
+		}
+		counts[typ] = n
+	}
+	return counts, rows.Err()
 }
 
 // --- Helpers ---

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="32" height="32">
+  <!-- Surfbot Favicon - Simplified robot head -->
+  <rect x="148" y="30" width="35" height="38" fill="#5CE0B0"/>
+  <rect x="329" y="30" width="35" height="38" fill="#5CE0B0"/>
+  <rect x="100" y="68" width="312" height="248" fill="#5CE0B0"/>
+  <rect x="168" y="155" width="48" height="48" fill="#2D7A60"/>
+  <rect x="296" y="155" width="48" height="48" fill="#2D7A60"/>
+  <rect x="168" y="248" width="176" height="40" fill="#3E9E7E"/>
+  <rect x="72" y="345" width="368" height="32" fill="#5CE0B0"/>
+  <rect x="100" y="397" width="312" height="40" fill="#3E9E7E"/>
+</svg>
