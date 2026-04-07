@@ -50,13 +50,16 @@ func buildBinary(t *testing.T) string {
 // writeConfig drops a YAML config into a temp HOME so the daemon picks it
 // up via viper's `~/.surfbot/config.yaml` lookup. Returns the HOME path
 // the caller must export to the binary's environment.
+// writeConfig writes a YAML config to a temp path and returns the absolute
+// path. The caller passes it to `daemon install --config <path>` so kardianos
+// bakes it into the systemd unit's ExecStart args (HOME does not propagate
+// from the test process to the unit).
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
-	home := t.TempDir()
-	dir := filepath.Join(home, ".surfbot")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644))
-	return home
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+	return path
 }
 
 func runCmd(t *testing.T, name string, args ...string) (string, error) {
@@ -129,7 +132,7 @@ type schedulerStatus struct {
 func TestDaemon_Scheduler_TicksWithin90s(t *testing.T) {
 	requireRoot(t)
 	bin := buildBinary(t)
-	home := writeConfig(t, `
+	cfgPath := writeConfig(t, `
 daemon:
   scheduler:
     enabled: true
@@ -139,13 +142,12 @@ daemon:
     run_on_start: true
     quick_check_tools: [httpx, nuclei]
 `)
-	t.Setenv("HOME", home)
 	t.Cleanup(func() {
 		_, _ = runCmd(t, bin, "daemon", "stop")
 		_, _ = runCmd(t, bin, "daemon", "uninstall")
 	})
 
-	if out, err := runCmd(t, bin, "daemon", "install"); err != nil {
+	if out, err := runCmd(t, bin, "--config", cfgPath, "daemon", "install"); err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
 	if out, err := runCmd(t, bin, "daemon", "start"); err != nil {
@@ -189,14 +191,13 @@ daemon:
       end: "` + end.Format("15:04") + `"
       timezone: "UTC"
 `
-	home := writeConfig(t, cfgBody)
-	t.Setenv("HOME", home)
+	cfgPath := writeConfig(t, cfgBody)
 	t.Cleanup(func() {
 		_, _ = runCmd(t, bin, "daemon", "stop")
 		_, _ = runCmd(t, bin, "daemon", "uninstall")
 	})
 
-	if out, err := runCmd(t, bin, "daemon", "install"); err != nil {
+	if out, err := runCmd(t, bin, "--config", cfgPath, "daemon", "install"); err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
 	if out, err := runCmd(t, bin, "daemon", "start"); err != nil {
