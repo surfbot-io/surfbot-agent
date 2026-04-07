@@ -1,18 +1,22 @@
+version: "2"
+
 linters:
+  default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+  settings:
+    misspell:
+      locale: US
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-
-linters-settings:
-  misspell:
-    locale: US
 
 run:
   timeout: 5m
