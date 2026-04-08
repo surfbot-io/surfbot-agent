@@ -23,6 +23,10 @@ type ServerOptions struct {
 	Port     int
 	Version  string
 	Registry *detection.Registry // optional: enables scan triggering from web UI
+	// Daemon is optional; when populated the /api/daemon/* routes expose
+	// the agent status card and on-demand trigger (SPEC-X3.1). When nil
+	// the routes still respond but always report `installed: false`.
+	Daemon *DaemonView
 }
 
 // NewServer creates an HTTP server for the web UI dashboard.
@@ -30,7 +34,13 @@ type ServerOptions struct {
 // Use srv.Serve(ln) instead of srv.ListenAndServe() to avoid TOCTOU race.
 func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, net.Listener, error) {
 	mux := http.NewServeMux()
-	h := &handler{store: store, version: opts.Version, registry: opts.Registry}
+	h := &handler{store: store, version: opts.Version, registry: opts.Registry, daemon: opts.Daemon}
+
+	// SPEC-X3.1 Agent card endpoints. Note the /api/daemon/* prefix —
+	// these live outside /api/v1/ because they describe the daemon
+	// process, not versioned domain data.
+	mux.HandleFunc("/api/daemon/status", h.handleDaemonStatus)
+	mux.HandleFunc("/api/daemon/trigger", h.handleDaemonTrigger)
 
 	// Read-only API routes
 	mux.HandleFunc("/api/v1/overview", h.handleOverview)
