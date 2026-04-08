@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +13,8 @@ var connectorsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List configured connectors",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("connectors list: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented — see roadmap L6 (MCP connectors).")
 	},
 }
 
@@ -24,7 +23,8 @@ var connectorsAddCmd = &cobra.Command{
 	Short: "Add a connector",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("connectors add: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented — see roadmap L6 (MCP connectors).")
 	},
 }
 
@@ -33,7 +33,8 @@ var connectorsRemoveCmd = &cobra.Command{
 	Short: "Remove a connector",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("connectors remove: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented — see roadmap L6 (MCP connectors).")
 	},
 }
 

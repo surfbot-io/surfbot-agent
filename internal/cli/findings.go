@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -35,7 +34,6 @@ var findingsListCmd = &cobra.Command{
 			limit = 50
 		}
 
-		// --resolved overrides status filter
 		if resolvedOnly {
 			status = string(model.FindingStatusResolved)
 		}
@@ -53,7 +51,6 @@ var findingsListCmd = &cobra.Command{
 			return fmt.Errorf("listing findings: %w", err)
 		}
 
-		// --new: filter to findings where first_seen == last_seen
 		if newOnly {
 			var filtered []model.Finding
 			for _, f := range findings {
@@ -64,23 +61,23 @@ var findingsListCmd = &cobra.Command{
 			findings = filtered
 		}
 
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 
 		if len(findings) == 0 {
 			if resolvedOnly {
 				p.EmptyState("No resolved findings.",
 					"Findings are auto-resolved when no longer detected in subsequent scans.")
 			} else {
-				p.EmptyState("No findings found.",
-					"Run `surfbot scan <target>` first, or check targets with `surfbot target list`.")
+				p.EmptyState("No findings.",
+					"Run 'surfbot scan <domain>' to generate findings.")
 			}
 			return nil
 		}
 
 		w := p.NewTable()
-		if resolvedOnly {
+		switch {
+		case resolvedOnly:
 			p.Theme.Bold.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tRESOLVED AT")
-			p.Divider(70)
 			for _, f := range findings {
 				title := truncate(f.Title, 50)
 				resolvedAt := ""
@@ -88,27 +85,18 @@ var findingsListCmd = &cobra.Command{
 					resolvedAt = f.ResolvedAt.Format("2006-01-02 15:04:05")
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					p.Severity(f.Severity),
-					title,
-					f.SourceTool,
-					resolvedAt,
-				)
+					p.Severity(f.Severity), title, f.SourceTool, resolvedAt)
 			}
-		} else if newOnly {
+		case newOnly:
 			p.Theme.Bold.Fprintln(w, "SEVERITY\tTITLE\tTOOL\tFIRST SEEN")
-			p.Divider(70)
 			for _, f := range findings {
 				title := truncate(f.Title, 50)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					p.Severity(f.Severity),
-					title,
-					f.SourceTool,
-					f.FirstSeen.Format("2006-01-02 15:04:05"),
-				)
+					p.Severity(f.Severity), title, f.SourceTool,
+					f.FirstSeen.Format("2006-01-02 15:04:05"))
 			}
-		} else {
+		default:
 			p.Theme.Bold.Fprintln(w, "ID\tSEVERITY\tTITLE\tTOOL\tSTATUS")
-			p.Divider(70)
 			for _, f := range findings {
 				short := f.ID
 				if len(short) > 8 {
@@ -116,17 +104,11 @@ var findingsListCmd = &cobra.Command{
 				}
 				title := truncate(f.Title, 50)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					short,
-					p.Severity(f.Severity),
-					title,
-					f.SourceTool,
-					f.Status,
-				)
+					short, p.Severity(f.Severity), title, f.SourceTool, f.Status)
 			}
 		}
 		w.Flush()
 
-		// Summary with colored severity counts
 		crit, high, med := 0, 0, 0
 		for _, f := range findings {
 			switch f.Severity {
@@ -138,18 +120,19 @@ var findingsListCmd = &cobra.Command{
 				med++
 			}
 		}
-		fmt.Fprintf(os.Stdout, "\n%d findings", len(findings))
-		if crit > 0 {
-			p.Theme.Critical.Fprintf(os.Stdout, " (%d critical)", crit)
-		} else if high > 0 {
-			p.Theme.High.Fprintf(os.Stdout, " (%d high)", high)
-		} else if med > 0 {
-			p.Theme.Medium.Fprintf(os.Stdout, " (%d medium)", med)
+		fmt.Fprintf(p.W, "\n%d findings", len(findings))
+		switch {
+		case crit > 0:
+			p.Theme.Critical.Fprintf(p.W, " (%d critical)", crit)
+		case high > 0:
+			p.Theme.High.Fprintf(p.W, " (%d high)", high)
+		case med > 0:
+			p.Theme.Medium.Fprintf(p.W, " (%d medium)", med)
 		}
-		fmt.Fprintln(os.Stdout, "")
+		fmt.Fprintln(p.W, "")
 
 		if !newOnly && !resolvedOnly {
-			p.Muted("Use `surfbot findings show <id>` for full details.\n")
+			p.ActionHint("use 'surfbot findings show <id>' for full details.")
 		}
 
 		return nil
@@ -164,7 +147,6 @@ var findingsShowCmd = &cobra.Command{
 		ctx := context.Background()
 		id := args[0]
 
-		// Search by prefix if short ID given
 		findings, err := store.ListFindings(ctx, storage.FindingListOptions{Limit: 500})
 		if err != nil {
 			return fmt.Errorf("listing findings: %w", err)
@@ -181,37 +163,37 @@ var findingsShowCmd = &cobra.Command{
 			return fmt.Errorf("finding not found: %s", id)
 		}
 
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 
-		p.Theme.Bold.Fprintf(os.Stdout, "Finding: %s\n", found.ID)
-		fmt.Fprintf(os.Stdout, "Severity: %s\n", p.Severity(found.Severity))
-		fmt.Printf("Title: %s\n", found.Title)
-		fmt.Printf("Template: %s (%s)\n", found.TemplateID, found.TemplateName)
-		fmt.Printf("Tool: %s\n", found.SourceTool)
-		fmt.Printf("Status: %s\n", found.Status)
-		fmt.Printf("Confidence: %.0f%%\n", found.Confidence)
+		p.Theme.Bold.Fprintf(p.W, "Finding: %s\n", found.ID)
+		fmt.Fprintf(p.W, "Severity: %s\n", p.Severity(found.Severity))
+		p.Keyf("Title", "%s", found.Title)
+		p.Keyf("Template", "%s (%s)", found.TemplateID, found.TemplateName)
+		p.Keyf("Tool", "%s", found.SourceTool)
+		p.Keyf("Status", "%s", found.Status)
+		p.Keyf("Confidence", "%.0f%%", found.Confidence)
 		if found.CVE != "" {
-			fmt.Printf("CVE: %s\n", found.CVE)
+			p.Keyf("CVE", "%s", found.CVE)
 		}
 		if found.CVSS > 0 {
-			fmt.Printf("CVSS: %.1f\n", found.CVSS)
+			p.Keyf("CVSS", "%.1f", found.CVSS)
 		}
 		if found.Description != "" {
-			p.Theme.Bold.Fprintf(os.Stdout, "\nDescription:\n")
-			fmt.Printf("  %s\n", found.Description)
+			p.SectionHeader("Description")
+			fmt.Fprintf(p.W, "  %s\n", found.Description)
 		}
 		if found.Evidence != "" {
-			p.Theme.Bold.Fprintf(os.Stdout, "\nEvidence:\n")
-			fmt.Printf("  %s\n", found.Evidence)
+			p.SectionHeader("Evidence")
+			fmt.Fprintf(p.W, "  %s\n", found.Evidence)
 		}
 		if found.Remediation != "" {
-			p.Theme.Bold.Fprintf(os.Stdout, "\nRemediation:\n")
-			fmt.Printf("  %s\n", found.Remediation)
+			p.SectionHeader("Remediation")
+			fmt.Fprintf(p.W, "  %s\n", found.Remediation)
 		}
 		if len(found.References) > 0 {
-			p.Theme.Bold.Fprintf(os.Stdout, "\nReferences:\n")
+			p.SectionHeader("References")
 			for _, ref := range found.References {
-				fmt.Printf("  - %s\n", ref)
+				p.Bullet("%s", ref)
 			}
 		}
 		p.Muted("\nFirst seen: %s\n", found.FirstSeen.Format("2006-01-02 15:04:05"))

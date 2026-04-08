@@ -232,7 +232,8 @@ func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage
 	if warn, verr := icfg.Validate(); verr != nil {
 		return nil, verr
 	} else if warn != "" {
-		_, _ = fmt.Fprintln(os.Stderr, "scheduler:", warn)
+		errp := NewPrinter(os.Stderr)
+		errp.Warn("scheduler: %s", warn)
 	}
 
 	registry := detection.NewRegistry()
@@ -360,7 +361,7 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 	if err := svc.Install(); err != nil {
 		// Idempotent: kardianos returns "Init already exists" or similar.
 		if isAlreadyInstalled(err) {
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon already installed")
+			NewPrinter(cmd.OutOrStdout()).Info("surfbot daemon already installed")
 			return nil
 		}
 		if isPermissionError(err) {
@@ -368,7 +369,7 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("installing service: %w", err)
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "surfbot daemon installed (%s mode)\n", mode)
+	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon installed (%s mode)", mode)
 	return nil
 }
 
@@ -383,7 +384,7 @@ func runDaemonUninstall(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("uninstalling service: %w", err)
 	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon uninstalled")
+	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon uninstalled")
 	return nil
 }
 
@@ -395,7 +396,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	if err := svc.Start(); err != nil {
 		return fmt.Errorf("starting service: %w", err)
 	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon started")
+	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon started")
 	return nil
 }
 
@@ -407,7 +408,7 @@ func runDaemonStop(cmd *cobra.Command, _ []string) error {
 	if err := svc.Stop(); err != nil {
 		return fmt.Errorf("stopping service: %w", err)
 	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon stopped")
+	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon stopped")
 	return nil
 }
 
@@ -425,7 +426,7 @@ func runDaemonRestart(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("restart fallback failed: %w (original: %v)", serr, rerr)
 		}
 	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "surfbot daemon restarted")
+	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon restarted")
 	return nil
 }
 

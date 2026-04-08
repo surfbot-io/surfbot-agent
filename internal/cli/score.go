@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +9,8 @@ var scoreCmd = &cobra.Command{
 	Short: "Show security score",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("score: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.EmptyState("No score yet.", "Run a scan first: 'surfbot scan <domain>'.")
 	},
 }
 

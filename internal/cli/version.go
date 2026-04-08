@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +14,10 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version, commit, and build date",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("surfbot %s (commit: %s, built: %s)\n", Version, Commit, BuildDate)
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Keyf("surfbot", "%s", Version)
+		p.Keyf("commit", "%s", Commit)
+		p.Keyf("built", "%s", BuildDate)
 	},
 }
 

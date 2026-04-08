@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +9,8 @@ var fixCmd = &cobra.Command{
 	Short: "Apply remediation for a finding",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("fix: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented — see roadmap L6 (MCP connectors).")
 	},
 }
 

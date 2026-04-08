@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -36,7 +35,7 @@ var targetAddCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 		err := store.CreateTarget(ctx, t)
 		if err != nil {
 			if errors.Is(err, storage.ErrAlreadyExists) {
@@ -66,22 +65,21 @@ var targetListCmd = &cobra.Command{
 		}
 
 		if jsonOut {
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(cmd.OutOrStdout())
 			enc.SetIndent("", "  ")
 			return enc.Encode(targets)
 		}
 
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 
 		if len(targets) == 0 {
 			p.EmptyState("No targets configured.",
-				"Add one with: surfbot target add <domain|ip|cidr>")
+				"Add one with 'surfbot target add <domain>'.")
 			return nil
 		}
 
 		w := p.NewTable()
 		p.Theme.Bold.Fprintln(w, "ID\tVALUE\tTYPE\tSCOPE\tLAST SCAN\tCREATED")
-		p.Divider(70)
 		for _, t := range targets {
 			lastScan := "never"
 			if t.LastScanAt != nil {
@@ -114,20 +112,21 @@ var targetRemoveCmd = &cobra.Command{
 			t, err = store.GetTargetByValue(ctx, args[0])
 		}
 		if errors.Is(err, storage.ErrNotFound) {
-			fmt.Fprintf(os.Stderr, "Target not found: %s\n", args[0])
+			errp := NewPrinter(cmd.ErrOrStderr())
+			errp.Warn("target not found: %s", args[0])
 			return nil
 		}
 		if err != nil {
 			return err
 		}
 
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 		if !force {
-			fmt.Printf("Remove target %s and all associated data? [y/N] ", t.Value)
+			fmt.Fprintf(p.W, "Remove target %s and all associated data? [y/N] ", t.Value)
 			var answer string
-			fmt.Scanln(&answer)
+			fmt.Fscanln(cmd.InOrStdin(), &answer)
 			if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
-				fmt.Println("Cancelled.")
+				p.Muted("Cancelled.\n")
 				return nil
 			}
 		}
@@ -135,7 +134,7 @@ var targetRemoveCmd = &cobra.Command{
 		if err := store.DeleteTarget(ctx, t.ID); err != nil {
 			return err
 		}
-		p.Theme.Warning.Fprintf(os.Stdout, "Target removed: %s\n", t.Value)
+		p.Warn("Target removed: %s", t.Value)
 		return nil
 	},
 }

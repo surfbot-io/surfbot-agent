@@ -92,8 +92,9 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}
 
 	url := fmt.Sprintf("http://%s:%d", bind, port)
-	fmt.Printf("Surfbot UI running at %s\n", url)
-	fmt.Println("Press Ctrl+C to stop")
+	p := NewPrinter(cmd.OutOrStdout())
+	p.Success("Surfbot UI running at %s", url)
+	p.Muted("Press Ctrl+C to stop\n")
 
 	if !noOpen {
 		go browser.OpenURL(url)
@@ -111,7 +112,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("\nShutting down...")
+		p.Muted("\nShutting down...\n")
 		return srv.Shutdown(context.Background())
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {

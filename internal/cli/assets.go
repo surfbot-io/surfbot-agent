@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -59,20 +59,19 @@ func runAssetsList(cmd *cobra.Command) error {
 	}
 
 	if asJSON {
-		return printAssetsJSON(assets)
+		return printAssetsJSON(cmd.OutOrStdout(), assets)
 	}
 
-	p := NewPrinter(os.Stdout)
+	p := NewPrinter(cmd.OutOrStdout())
 
 	if len(assets) == 0 {
-		p.EmptyState("No assets found.",
-			"Run `surfbot scan <target>` to discover assets.")
+		p.EmptyState("No assets.",
+			"Run 'surfbot discover <domain>' or 'surfbot scan <domain>'.")
 		return nil
 	}
 
 	w := p.NewTable()
 	p.Theme.Bold.Fprintln(w, "TYPE\tVALUE\tSTATUS\tFIRST SEEN\tLAST SEEN")
-	p.Divider(70)
 	for _, a := range assets {
 		value := truncate(a.Value, 50)
 		statusStr := string(a.Status)
@@ -105,11 +104,11 @@ func runAssetsDiff(cmd *cobra.Command) error {
 		return fmt.Errorf("getting last scan: %w", err)
 	}
 
-	p := NewPrinter(os.Stdout)
+	p := NewPrinter(cmd.OutOrStdout())
 
 	if lastScan == nil {
 		p.EmptyState("No scans found.",
-			"Run `surfbot scan <target>` first.")
+			"Run 'surfbot scan <domain>' first.")
 		return nil
 	}
 
@@ -122,7 +121,7 @@ func runAssetsDiff(cmd *cobra.Command) error {
 	}
 
 	if asJSON {
-		return printChangesJSON(changes)
+		return printChangesJSON(cmd.OutOrStdout(), changes)
 	}
 
 	if len(changes) == 0 {
@@ -133,7 +132,6 @@ func runAssetsDiff(cmd *cobra.Command) error {
 
 	w := p.NewTable()
 	p.Theme.Bold.Fprintln(w, "TYPE\tVALUE\tCHANGE\tSIGNIFICANCE\tSUMMARY")
-	p.Divider(70)
 	for _, c := range changes {
 		if c.Baseline {
 			continue
@@ -161,20 +159,20 @@ func runAssetsDiff(cmd *cobra.Command) error {
 	return nil
 }
 
-func printAssetsJSON(assets []model.Asset) error {
+func printAssetsJSON(w io.Writer, assets []model.Asset) error {
 	data, err := json.MarshalIndent(assets, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling assets: %w", err)
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(w, string(data))
 	return nil
 }
 
-func printChangesJSON(changes []model.AssetChange) error {
+func printChangesJSON(w io.Writer, changes []model.AssetChange) error {
 	data, err := json.MarshalIndent(changes, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling changes: %w", err)
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(w, string(data))
 	return nil
 }

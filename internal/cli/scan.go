@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -62,7 +61,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	outputPath, _ := cmd.Flags().GetString("output")
 	if outputPath != "" {
 		if err := pipeline.WriteJSONResult(result, outputPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write output file: %v\n", err)
+			errp := NewPrinter(cmd.ErrOrStderr())
+			errp.Warn("failed to write output file: %v", err)
 		}
 	}
 

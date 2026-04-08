@@ -69,7 +69,6 @@ var toolsListCmd = &cobra.Command{
 
 		w := p.NewTable()
 		p.Theme.Bold.Fprintln(w, "NAME\tCOMMAND\tPHASE\tINPUT\tOUTPUT\tSTATUS")
-		p.Divider(70)
 		for _, t := range infos {
 			var status string
 			if t.Available {
@@ -92,7 +91,8 @@ var toolsEnableCmd = &cobra.Command{
 	Short: "Enable a tool",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("tools enable: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented")
 	},
 }
 
@@ -101,7 +101,8 @@ var toolsDisableCmd = &cobra.Command{
 	Short: "Disable a tool",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("tools disable: not yet implemented")
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Warn("not yet implemented")
 	},
 }
 

@@ -17,54 +17,50 @@ var statusCmd = &cobra.Command{
 	Short: "Show agent status: DB path, targets count, last scan, findings summary",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-		p := NewPrinter(os.Stdout)
+		p := NewPrinter(cmd.OutOrStdout())
 
-		p.Theme.Bold.Fprintf(os.Stdout, "Surfbot Agent %s\n\n", Version)
+		p.Theme.Bold.Fprintf(p.W, "Surfbot Agent %s\n\n", Version)
 
-		// DB info
 		dbPath := store.DBPath()
 		dbSize := "unknown"
 		if info, err := os.Stat(dbPath); err == nil {
 			dbSize = formatBytes(info.Size())
 		}
-		fmt.Printf("Database:    %s (%s)\n", dbPath, dbSize)
+		p.Keyf("Database   ", "%s (%s)", dbPath, dbSize)
 
-		// Counts
 		targets, _ := store.CountTargets(ctx)
 		assets, _ := store.CountAssets(ctx)
+		p.Keyf("Targets    ", "%d", targets)
+		p.Keyf("Assets     ", "%d", assets)
 
-		fmt.Printf("Targets:     %d\n", targets)
-		fmt.Printf("Assets:      %d\n", assets)
-
-		// Findings with colored severity breakdown
 		findings, _ := store.CountFindings(ctx)
-		fmt.Fprintf(os.Stdout, "Findings:    %d", findings)
+		fmt.Fprintf(p.W, "Findings   : %d", findings)
 		if findings > 0 {
 			allFindings, _ := store.ListFindings(ctx, storage.FindingListOptions{Limit: findings})
 			parts := countSeveritiesColored(p, allFindings)
 			if len(parts) > 0 {
-				fmt.Fprintf(os.Stdout, " (%s)", joinColoredParts(parts))
+				fmt.Fprintf(p.W, " (%s)", joinColoredParts(parts))
 			}
 		}
-		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(p.W)
 
-		// Last scan
-		lastScanStr := "never"
-		if last, err := store.LastScan(ctx); err == nil && last != nil {
+		last, _ := store.LastScan(ctx)
+		if last == nil {
+			p.EmptyState("No scans recorded.",
+				"Start a scan with 'surfbot scan <domain>'.")
+		} else {
 			ago := time.Since(last.CreatedAt)
 			target, _ := store.GetTarget(ctx, last.TargetID)
 			targetName := last.TargetID
 			if target != nil {
 				targetName = target.Value
 			}
-			lastScanStr = fmt.Sprintf("%s — %s ago (%s)", targetName, formatDurationShort(ago), last.Status)
+			p.Keyf("Last scan  ", "%s — %s ago (%s)", targetName, formatDurationShort(ago), last.Status)
 		}
-		fmt.Printf("Last scan:   %s\n", lastScanStr)
 
-		// Tools
 		allTools := registry.Tools()
 		availTools := registry.AvailableTools()
-		fmt.Printf("Tools:       %d/%d available\n", len(availTools), len(allTools))
+		p.Keyf("Tools      ", "%d/%d available", len(availTools), len(allTools))
 
 		return nil
 	},
