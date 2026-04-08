@@ -227,6 +227,7 @@ func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage
 		Window:        window,
 		QuickTools:    sc.QuickCheckTools,
 		RunOnStart:    sc.RunOnStart,
+		TriggerDir:    paths.StateDir, // SPEC-X3.1: on-demand trigger flag file
 	}
 	if warn, verr := icfg.Validate(); verr != nil {
 		return nil, verr

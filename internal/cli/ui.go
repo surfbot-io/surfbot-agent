@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 
+	"github.com/surfbot-io/surfbot-agent/internal/config"
+	"github.com/surfbot-io/surfbot-agent/internal/daemon"
 	"github.com/surfbot-io/surfbot-agent/internal/webui"
 )
 
@@ -28,6 +31,36 @@ func init() {
 	rootCmd.AddCommand(uiCmd)
 }
 
+// buildUIDaemonView resolves the daemon state file paths and config so the
+// embedded UI can render the SPEC-X3.1 Agent card. It is best-effort:
+// errors collapse to a partially-populated view that the UI renders as
+// "agent not running" rather than failing the whole `surfbot ui` command.
+func buildUIDaemonView() *webui.DaemonView {
+	mode := daemon.DefaultMode()
+	paths := daemon.Resolve(daemon.Default(mode))
+	view := &webui.DaemonView{
+		DaemonStatePath:   paths.StateFile(),
+		ScheduleStatePath: scheduleStatePath(paths),
+		Heartbeat:         30 * time.Second,
+	}
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return view
+	}
+	if cfg.Daemon.StateHeartbeat > 0 {
+		view.Heartbeat = cfg.Daemon.StateHeartbeat
+	}
+	view.SchedulerEnabled = cfg.Daemon.Scheduler.Enabled
+	mw := cfg.Daemon.Scheduler.MaintenanceWindow
+	view.WindowStart = mw.Start
+	view.WindowEnd = mw.End
+	view.WindowTimezone = mw.Timezone
+	if w, werr := buildWindow(mw); werr == nil {
+		view.Window = w
+	}
+	return view
+}
+
 func runUI(cmd *cobra.Command, args []string) error {
 	port, _ := cmd.Flags().GetInt("port")
 	noOpen, _ := cmd.Flags().GetBool("no-open")
@@ -38,6 +71,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 		Port:     port,
 		Version:  Version,
 		Registry: registry,
+		Daemon:   buildUIDaemonView(),
 	})
 	if err != nil {
 		return err

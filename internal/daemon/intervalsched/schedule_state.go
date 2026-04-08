@@ -22,6 +22,9 @@ type ScheduleState struct {
 	LastQuickError  string    `json:"last_quick_error,omitempty"`
 	NextFullAt      time.Time `json:"next_full_at,omitempty"`
 	NextQuickAt     time.Time `json:"next_quick_at,omitempty"`
+	// LastTrigger holds the most recent on-demand trigger outcome
+	// (SPEC-X3.1 §8). Nil until the first trigger fires.
+	LastTrigger *LastTriggerRecord `json:"last_trigger,omitempty"`
 }
 
 // ScheduleStateStore reads/writes ScheduleState atomically.

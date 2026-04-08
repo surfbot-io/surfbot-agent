@@ -130,8 +130,10 @@ func (r *Runner) writeState() error {
 	return r.state.Update(func(s *State) {
 		s.Version = r.version
 		s.PID = os.Getpid()
+		now := time.Now().UTC()
+		s.WrittenAt = now
 		if s.StartedAt.IsZero() {
-			s.StartedAt = time.Now().UTC()
+			s.StartedAt = now
 		}
 		if r.sched != nil {
 			s.NextScanAt = r.sched.Next()

@@ -23,9 +23,10 @@ type handler struct {
 	store    *storage.SQLiteStore
 	version  string
 	registry *detection.Registry
+	daemon   *DaemonView // optional: SPEC-X3.1 agent card data source
 
 	// scanMu protects runningScan to prevent concurrent scans.
-	scanMu     sync.Mutex
+	scanMu      sync.Mutex
 	runningScan string // scan ID of the currently running scan, empty if idle
 }
 

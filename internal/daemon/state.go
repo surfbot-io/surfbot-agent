@@ -19,6 +19,12 @@ type State struct {
 	LastScanStatus string    `json:"last_scan_status,omitempty"`
 	LastError      string    `json:"last_error,omitempty"`
 	NextScanAt     time.Time `json:"next_scan_at,omitempty"`
+	// WrittenAt is refreshed on every heartbeat write. The embedded UI
+	// (SPEC-X3.1) infers daemon liveness by comparing this to the
+	// configured heartbeat interval — see internal/webui daemon status
+	// handler. Older state files predating SPEC-X3.1 may omit it; readers
+	// must treat the zero value as "unknown" and fall back to running.
+	WrittenAt time.Time `json:"written_at,omitempty"`
 }
 
 // StateStore reads and writes the daemon state file atomically.

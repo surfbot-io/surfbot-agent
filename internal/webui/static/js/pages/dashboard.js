@@ -8,6 +8,10 @@ const DashboardPage = {
       app.innerHTML = this.template(data);
       updateSidebarBadge(data.findings_by_severity);
       updateLastRefresh();
+      // SPEC-X3.1 — top-of-dashboard agent card. Mounts and starts its
+      // own poll loop, independent of the dashboard refresh.
+      const slot = document.getElementById('agent-card-slot');
+      if (slot && typeof AgentCard !== 'undefined') AgentCard.mount(slot);
     } catch (err) {
       app.innerHTML = Components.emptyState('Error', 'Failed to load dashboard: ' + err.message);
     }
@@ -50,6 +54,8 @@ const DashboardPage = {
         <h2>Dashboard</h2>
         <p>Security posture overview</p>
       </div>
+
+      <div id="agent-card-slot"></div>
 
       <div class="refresh-bar">
         <span id="last-refresh"></span>
