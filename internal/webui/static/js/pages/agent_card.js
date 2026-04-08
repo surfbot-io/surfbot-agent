@@ -51,10 +51,10 @@ const AgentCard = {
   // template() renders the four spec §2 states from a status payload.
   template(d) {
     if (!d.installed) {
-      return this.stoppedTemplate('Agent is not installed.', false);
+      return this.stoppedTemplate('Agent is not installed.', false, d.install_hint);
     }
     if (!d.running) {
-      return this.stoppedTemplate(d.reason || 'Agent is not running.', true);
+      return this.stoppedTemplate(d.reason || 'Agent is not running.', true, d.install_hint);
     }
     return this.runningTemplate(d);
   },
@@ -144,10 +144,25 @@ const AgentCard = {
       <span class="detail-value">${desc} <span class="text-muted">${stateLabel}</span></span>`;
   },
 
-  stoppedTemplate(reason, installed) {
-    const cmd = 'surfbot daemon start';
+  stoppedTemplate(reason, installed, hint) {
     const dotClass = installed ? 'agent-dot-err' : 'agent-dot-warn';
     const headerLabel = installed ? 'stopped' : 'not installed';
+    // Server-supplied commands. The UI never invents flags or sudo
+    // prefixes — different OSes need different things.
+    const h = hint || {};
+    const cmd = installed
+      ? (h.start_command || 'surfbot daemon start')
+      : (h.install_command || 'surfbot daemon install');
+    const adminNote = h.requires_admin
+      ? `<div class="text-muted" style="margin-top:4px;font-size:12px">${
+          installed
+            ? 'Run from a terminal with administrator privileges.'
+            : 'Run from a terminal with administrator privileges, then start the service.'
+        }</div>`
+      : '';
+    const docsLink = h.docs_url
+      ? ` <a href="${escapeHtml(h.docs_url)}" target="_blank" rel="noopener noreferrer">docs</a>`
+      : '';
     return `<section class="card agent-card" aria-label="Agent status">
       <div class="agent-header">
         <div class="card-label">Agent</div>
@@ -159,11 +174,12 @@ const AgentCard = {
       </div>
       <p class="text-muted" style="margin-top:8px">${escapeHtml(reason)}</p>
       <p style="margin-top:8px">
-        Run <code id="agent-start-cmd">${cmd}</code>
-        <button id="agent-copy-cmd" class="refresh-btn" data-cmd="${cmd}"
+        Run <code id="agent-start-cmd">${escapeHtml(cmd)}</code>
+        <button id="agent-copy-cmd" class="refresh-btn" data-cmd="${escapeHtml(cmd)}"
           aria-label="Copy command to clipboard">Copy</button>
-        <span id="agent-copy-feedback" class="text-muted" style="margin-left:6px"></span>
+        <span id="agent-copy-feedback" class="text-muted" style="margin-left:6px"></span>${docsLink}
       </p>
+      ${adminNote}
     </section>`;
   },
 
