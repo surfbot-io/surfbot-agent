@@ -124,9 +124,40 @@ Rules:
 ## Embedded UI
 
 `surfbot ui` runs a localhost-only web dashboard at `http://127.0.0.1:8470`
-backed by the same SQLite database and config files as the CLI. The UI is
-unauthenticated by design — it binds to `127.0.0.1` only and exposes no
-remote access.
+backed by the same SQLite database and config files as the CLI.
+
+### Security model
+
+The UI binds to `127.0.0.1` only, but loopback alone is not a sufficient
+boundary on a multi-user host or against DNS-rebinding attacks from
+malicious web pages the user might visit. The server applies four
+defenses in depth:
+
+1. **Bearer token on every `/api/*` request.** On first launch
+   `surfbot ui` generates a 32-byte hex token and stores it in
+   `<state_dir>/ui.token` (mode `0600`, user-mode state dir, never
+   touched by the daemon). The token is reused across restarts. The
+   served `index.html` carries it in a `<meta name="surfbot-token">`
+   tag; the SPA reads it once and forwards `Authorization: Bearer …`
+   on every fetch. Other local users cannot read the token file and
+   therefore cannot reach the API.
+2. **Origin / Referer check on mutating requests.** `POST`, `PUT`,
+   `PATCH`, and `DELETE` are rejected with `403` unless the request
+   carries an `Origin` (or, failing that, `Referer`) that points back
+   at `http://127.0.0.1:8470` or `http://localhost:8470`. This blocks
+   CSRF from any other origin even if the attacker guesses the token.
+3. **Host header allowlist.** Requests whose `Host` header is not one
+   of the loopback aliases are rejected with `421 Misdirected Request`.
+   This is the anti-DNS-rebinding gate: even after a rebind the
+   attacker page still sends its own hostname, so the kernel-accepted
+   request never reaches a handler.
+4. **Strict response headers.** Every response carries
+   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+   `Referrer-Policy: no-referrer`, and a CSP that allows only same-
+   origin scripts/styles, forbids inline scripts and styles, and sets
+   `frame-ancestors 'none'`, `base-uri 'none'`, and
+   `form-action 'none'`. JSON responses under `/api/` additionally
+   carry `Cache-Control: no-store`.
 
 ### Agent card
 

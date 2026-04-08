@@ -1,7 +1,19 @@
 // API client for /api/v1/*
 const API = {
+  // Token is injected by the Go server into <head> as
+  //   <meta name="surfbot-token" content="...">
+  // and read once at load. requireToken on the server gates every /api/*
+  // request, so the SPA cannot talk to the backend without it.
+  _token: (document.querySelector('meta[name="surfbot-token"]') || {}).content || '',
+
+  _headers(extra) {
+    const h = Object.assign({}, extra || {});
+    if (this._token) h['Authorization'] = 'Bearer ' + this._token;
+    return h;
+  },
+
   async get(path) {
-    const resp = await fetch('/api/v1' + path);
+    const resp = await fetch('/api/v1' + path, { headers: this._headers() });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: resp.statusText }));
       throw new Error(err.error || 'Request failed');
@@ -12,7 +24,7 @@ const API = {
   async post(path, body) {
     const resp = await fetch('/api/v1' + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     const data = await resp.json().catch(() => ({ error: resp.statusText }));
@@ -23,7 +35,7 @@ const API = {
   async patch(path, body) {
     const resp = await fetch('/api/v1' + path, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     const data = await resp.json().catch(() => ({ error: resp.statusText }));
@@ -32,7 +44,7 @@ const API = {
   },
 
   async del(path) {
-    const resp = await fetch('/api/v1' + path, { method: 'DELETE' });
+    const resp = await fetch('/api/v1' + path, { method: 'DELETE', headers: this._headers() });
     const data = await resp.json().catch(() => ({ error: resp.statusText }));
     if (!resp.ok) throw new Error(data.error || 'Request failed');
     return data;
@@ -65,7 +77,7 @@ const API = {
 
   // SPEC-X3.1 — daemon endpoints live outside /api/v1/.
   daemonStatus() {
-    return fetch('/api/daemon/status').then(r => {
+    return fetch('/api/daemon/status', { headers: this._headers() }).then(r => {
       if (!r.ok) throw new Error('daemon status failed: ' + r.status);
       return r.json();
     });
@@ -73,7 +85,7 @@ const API = {
   daemonTrigger(profile) {
     return fetch('/api/daemon/trigger', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ profile: profile || 'full' }),
     }).then(async r => {
       const data = await r.json().catch(() => ({}));
