@@ -32,7 +32,7 @@ const AgentCard = {
   },
 
   skeleton() {
-    return `<section class="card agent-card" aria-label="Agent status">
+    return `<section class="card agent-card" aria-label="Agent status" aria-live="polite">
       <div class="card-label">Agent</div>
       <div class="text-muted" style="padding:8px 0">Loading…</div>
     </section>`;
@@ -71,7 +71,7 @@ const AgentCard = {
         : this.schedulerHtml(sched);
 
     const uptime = this.formatUptime(d.uptime_seconds || 0);
-    return `<section class="card agent-card" aria-label="Agent status">
+    return `<section class="card agent-card" aria-label="Agent status" aria-live="polite">
       <div class="agent-header">
         <div class="card-label">Agent</div>
         <div class="agent-status">${srOnly}${dot}<span>running</span></div>
@@ -163,7 +163,7 @@ const AgentCard = {
     const docsLink = h.docs_url
       ? ` <a href="${escapeHtml(h.docs_url)}" target="_blank" rel="noopener noreferrer">docs</a>`
       : '';
-    return `<section class="card agent-card" aria-label="Agent status">
+    return `<section class="card agent-card" aria-label="Agent status" aria-live="polite">
       <div class="agent-header">
         <div class="card-label">Agent</div>
         <div class="agent-status">
@@ -184,7 +184,7 @@ const AgentCard = {
   },
 
   errorTemplate(msg) {
-    return `<section class="card agent-card" aria-label="Agent status">
+    return `<section class="card agent-card" aria-label="Agent status" aria-live="polite">
       <div class="card-label">Agent</div>
       <p class="text-muted">UI can't read agent state: ${escapeHtml(msg)}</p>
     </section>`;

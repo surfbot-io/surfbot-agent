@@ -116,7 +116,14 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 			return
 		}
 
-		// SPA fallback: serve index.html for unknown paths
+		// SPA fallback: serve index.html for unknown *route* paths only.
+		// Asset directories must 404 cleanly so that a typo'd image or
+		// missing JS file does not silently return the HTML shell — that
+		// would mask bugs and let MIME-sniffing edge cases bite us.
+		if isAssetPath(path) {
+			http.NotFound(w, r)
+			return
+		}
 		serveIndex(w, indexHTML, opts.AuthToken)
 	})
 
@@ -149,6 +156,18 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 	}
 
 	return srv, ln, nil
+}
+
+// isAssetPath reports whether a request path lives under one of the
+// static-asset directory prefixes the SPA serves. The SPA fallback skips
+// these so that missing assets return 404 instead of HTML.
+func isAssetPath(p string) bool {
+	for _, pfx := range []string{"/static/", "/js/", "/css/", "/img/", "/assets/", "/fonts/"} {
+		if strings.HasPrefix(p, pfx) {
+			return true
+		}
+	}
+	return false
 }
 
 // serveIndex writes index.html with a <meta name="surfbot-token"> tag
