@@ -169,6 +169,83 @@ func TestHandleFindingsSeverityFilter(t *testing.T) {
 	assert.Equal(t, model.SeverityCritical, resp.Findings[0].Severity)
 }
 
+func TestHandleFindingsScanIDFilter(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedTestData(t, s)
+
+	// Seed a second scan with its own finding so we can prove the
+	// filter scopes results to the requested scan_id only.
+	ctx := context.Background()
+	target, err := s.GetTargetByValue(ctx, "example.com")
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	started := now.Add(-2 * time.Minute)
+	scan2 := &model.Scan{
+		TargetID:   target.ID,
+		Type:       model.ScanTypeQuick,
+		Status:     model.ScanStatusCompleted,
+		Phase:      "completed",
+		Progress:   100,
+		StartedAt:  &started,
+		FinishedAt: &now,
+	}
+	require.NoError(t, s.CreateScan(ctx, scan2))
+
+	assets, err := s.ListAssets(ctx, storage.AssetListOptions{TargetID: target.ID, Limit: 1})
+	require.NoError(t, err)
+	require.NotEmpty(t, assets)
+
+	scan2Finding := &model.Finding{
+		AssetID:      assets[0].ID,
+		ScanID:       scan2.ID,
+		TemplateID:   "exposed-env-file",
+		TemplateName: "Exposed .env",
+		Severity:     model.SeverityHigh,
+		Title:        "Exposed environment file",
+		Description:  "found .env at web root",
+		Status:       model.FindingStatusOpen,
+		SourceTool:   "nuclei",
+		Confidence:   90,
+	}
+	require.NoError(t, s.UpsertFinding(ctx, scan2Finding))
+
+	// Sanity: without scan_id we see all 3 findings.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings", nil)
+	w := httptest.NewRecorder()
+	h.handleFindings(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var all findingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &all))
+	assert.Equal(t, 3, all.Total)
+
+	// Filter by scan2.ID — must return only the single finding tied to it.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/findings?scan_id="+scan2.ID, nil)
+	w2 := httptest.NewRecorder()
+	h.handleFindings(w2, req2)
+	assert.Equal(t, http.StatusOK, w2.Code)
+	var filtered findingsResponse
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &filtered))
+	assert.Equal(t, 1, filtered.Total)
+	require.Len(t, filtered.Findings, 1)
+	assert.Equal(t, scan2.ID, filtered.Findings[0].ScanID)
+	assert.Equal(t, "exposed-env-file", filtered.Findings[0].TemplateID)
+}
+
+func TestHandleFindingsScanIDInvalid(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedTestData(t, s)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings?scan_id=not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	h.handleFindings(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body["error"], "scan_id")
+}
+
 func TestHandleFindingsPagination(t *testing.T) {
 	h, s := newTestHandler(t)
 	seedTestData(t, s)

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/pipeline"
@@ -286,6 +288,13 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 	}
 	if targetID := r.URL.Query().Get("target_id"); targetID != "" {
 		opts.TargetID = targetID
+	}
+	if scanID := r.URL.Query().Get("scan_id"); scanID != "" {
+		if _, err := uuid.Parse(scanID); err != nil {
+			writeError(w, http.StatusBadRequest, "scan_id must be a valid UUID")
+			return
+		}
+		opts.ScanID = scanID
 	}
 
 	findings, err := h.store.ListFindings(r.Context(), opts)
