@@ -56,14 +56,14 @@ type DaemonView struct {
 // --- Response shapes ---
 
 type daemonStatusResponse struct {
-	Installed     bool                   `json:"installed"`
-	Running       bool                   `json:"running"`
-	Reason        string                 `json:"reason,omitempty"`
-	PID           int                    `json:"pid,omitempty"`
-	Version       string                 `json:"version,omitempty"`
-	StartedAt     *time.Time             `json:"started_at,omitempty"`
-	UptimeSeconds int64                  `json:"uptime_seconds,omitempty"`
-	Scheduler     *schedulerStatusBlock  `json:"scheduler,omitempty"`
+	Installed     bool                  `json:"installed"`
+	Running       bool                  `json:"running"`
+	Reason        string                `json:"reason,omitempty"`
+	PID           int                   `json:"pid,omitempty"`
+	Version       string                `json:"version,omitempty"`
+	StartedAt     *time.Time            `json:"started_at,omitempty"`
+	UptimeSeconds int64                 `json:"uptime_seconds,omitempty"`
+	Scheduler     *schedulerStatusBlock `json:"scheduler,omitempty"`
 }
 
 type schedulerStatusBlock struct {
@@ -82,13 +82,13 @@ type scanResultBlock struct {
 }
 
 type windowBlock struct {
-	Enabled    bool       `json:"enabled"`
-	Start      string     `json:"start,omitempty"`
-	End        string     `json:"end,omitempty"`
-	Timezone   string     `json:"timezone,omitempty"`
-	OpenNow    bool       `json:"open_now"`
-	NextOpen   *time.Time `json:"next_open,omitempty"`
-	NextClose  *time.Time `json:"next_close,omitempty"`
+	Enabled   bool       `json:"enabled"`
+	Start     string     `json:"start,omitempty"`
+	End       string     `json:"end,omitempty"`
+	Timezone  string     `json:"timezone,omitempty"`
+	OpenNow   bool       `json:"open_now"`
+	NextOpen  *time.Time `json:"next_open,omitempty"`
+	NextClose *time.Time `json:"next_close,omitempty"`
 }
 
 // --- Handler ---
@@ -390,7 +390,7 @@ func nonEmpty(s, def string) string {
 // the X1 logger should be doing the heavy lifting; this is a second
 // line of defense before exposing errors over HTTP.
 var (
-	errorRedactKVPattern  = regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|password|passwd|secret|authorization|bearer)([=:\s]+)([^\s,;"']+)`)
+	errorRedactKVPattern   = regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|password|passwd|secret|authorization|bearer)([=:\s]+)([^\s,;"']+)`)
 	errorRedactBlobPattern = regexp.MustCompile(`\b[A-Za-z0-9_\-]{32,}\b`)
 )
 
