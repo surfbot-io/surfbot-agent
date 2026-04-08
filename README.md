@@ -169,8 +169,11 @@ The dashboard's top card mirrors `surfbot daemon status`. It polls
 2. **Running, window open** — same, but the "Window" line shows `open`.
 3. **Running, scheduler disabled** — header is green; scheduler block
    collapses to "Scheduler disabled".
-4. **Stopped or not installed** — red/amber dot with the exact command
-   `surfbot daemon start` and a one-click copy-to-clipboard button.
+4. **Stopped or not installed** — red/amber dot with a one-click
+   copy-to-clipboard button. The exact command shown is supplied by the
+   server in the `install_hint` block (see the response shape below) so
+   the UI never has to guess between `install` / `start` or whether to
+   prefix `sudo`.
 
 The endpoint never shells out to systemctl/launchctl. Liveness is
 inferred from the freshness of `daemon.state.json`'s `written_at` field;
@@ -180,6 +183,63 @@ the daemon is reported as stopped when the heartbeat is older than
 Sensitive substrings (`api_key=`, `Authorization: Bearer …`, long
 opaque blobs) in the scheduler's `last_error` fields are redacted server
 side before being returned.
+
+#### `/api/daemon/status` response shape
+
+The endpoint always returns 200; failure modes are expressed in the
+body. `HEAD` is also accepted for liveness probes (no body, same status
+code).
+
+```json
+{
+  "installed": true,
+  "running": true,
+  "pid": 4317,
+  "version": "0.4.0",
+  "started_at": "2026-04-08T08:12:03Z",
+  "uptime_seconds": 7421,
+  "scheduler": {
+    "enabled": true,
+    "last_full":  { "at": "2026-04-07T03:00:11Z", "status": "ok" },
+    "last_quick": { "at": "2026-04-08T09:30:02Z", "status": "ok" },
+    "next_full":  "2026-04-08T03:00:00Z",
+    "next_quick": "2026-04-08T10:30:00Z",
+    "window": {
+      "enabled":   true,
+      "start":     "02:00",
+      "end":       "06:00",
+      "timezone":  "Europe/Madrid",
+      "open_now":  false,
+      "next_open": "2026-04-09T02:00:00+02:00"
+    }
+  }
+}
+```
+
+When the daemon is not running, `running` is `false`, the `scheduler`
+block is omitted, and an `install_hint` block is attached:
+
+```json
+{
+  "installed": false,
+  "running": false,
+  "install_hint": {
+    "install_command": "sudo surfbot daemon install",
+    "start_command":   "sudo surfbot daemon start",
+    "docs_url":        "https://github.com/surfbot-io/surfbot-agent#run-as-a-service",
+    "requires_admin":  true
+  }
+}
+```
+
+`install_hint.install_command` is empty when the daemon is installed but
+stopped — only `start_command` is meaningful in that case. The strings
+are derived server-side from `runtime.GOOS`: Linux gets `sudo` prefixes
+and `requires_admin: true`; macOS gets unprefixed user-mode commands and
+`requires_admin: false`; Windows gets unprefixed commands but
+`requires_admin: true` because the binary cannot self-elevate from the
+CLI (the UI surfaces a "run from an elevated terminal" hint instead of
+inventing a `sudo` equivalent).
 
 ### Scan now
 
@@ -201,10 +261,15 @@ button itself is also disabled for one poll cycle after firing.
 
 ### Endpoints
 
-| Method | Path                  | Notes                                              |
-| ------ | --------------------- | -------------------------------------------------- |
-| GET    | `/api/daemon/status`  | always 200; status in body                         |
-| POST   | `/api/daemon/trigger` | body: `{"profile":"full"\|"quick"}`; 202 / 409     |
+| Method     | Path                  | Notes                                              |
+| ---------- | --------------------- | -------------------------------------------------- |
+| GET / HEAD | `/api/daemon/status`  | always 200; status in body (HEAD has empty body)   |
+| POST       | `/api/daemon/trigger` | body: `{"profile":"full"\|"quick"}`; 202 / 409     |
+
+Both endpoints sit behind the same loopback token and CSRF / Host /
+header defenses described in the [Security model](#security-model)
+section. `/api/daemon/trigger` is a mutating route, so it additionally
+requires a same-origin `Origin` (or `Referer`) header.
 
 These live outside `/api/v1/` because they describe the daemon process,
 not versioned domain data.
