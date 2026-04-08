@@ -22,6 +22,13 @@ const Router = {
       else if (hash.startsWith('#/' + page)) link.classList.add('active');
     });
 
+    // Stop the AgentCard poll loop on every navigation. Dashboard
+    // re-mounts it; every other route leaves it stopped so the
+    // background fetch does not leak across pages.
+    if (typeof AgentCard !== 'undefined' && AgentCard.unmount) {
+      AgentCard.unmount();
+    }
+
     for (const route of this.routes) {
       const match = hash.match(route.pattern);
       if (match) {

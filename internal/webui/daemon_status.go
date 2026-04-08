@@ -141,8 +141,15 @@ type windowBlock struct {
 // any error fields before returning. Always 200 — failure modes are
 // expressed in the body.
 func (h *handler) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if r.Method == http.MethodHead {
+		// HEAD is useful for liveness probes (curl -I, k8s readiness)
+		// without parsing JSON. Same status, no body.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if h.daemon == nil || h.daemon.DaemonStatePath == "" {

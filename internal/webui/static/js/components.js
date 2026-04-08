@@ -90,7 +90,9 @@ const Components = {
   },
 
   table(headers, rows, opts = {}) {
-    const ths = headers.map(h => `<th>${h}</th>`).join('');
+    // scope="col" lets screen readers announce the column header for
+    // every cell underneath, which is the WCAG-recommended marker.
+    const ths = headers.map(h => `<th scope="col">${h}</th>`).join('');
     const trs = rows.length === 0
       ? `<tr><td colspan="${headers.length}" class="empty-state">No data</td></tr>`
       : rows.join('');

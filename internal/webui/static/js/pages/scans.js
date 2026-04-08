@@ -197,7 +197,7 @@ const ScansPage = {
         <div class="detail-panel">
           <div class="detail-header">
             ${Components.statusBadge(s.status)}
-            <h3>Scan ${Components.truncateID(s.id)}</h3>
+            <h2>Scan ${Components.truncateID(s.id)}</h2>
           </div>
           <div class="detail-grid">
             <span class="detail-label">ID</span>
