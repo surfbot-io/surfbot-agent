@@ -121,6 +121,63 @@ Rules:
 - Cursors persist across restarts in `schedule.state.json`, alongside
   `daemon.state.json`.
 
+## Embedded UI
+
+`surfbot ui` runs a localhost-only web dashboard at `http://127.0.0.1:8470`
+backed by the same SQLite database and config files as the CLI. The UI is
+unauthenticated by design — it binds to `127.0.0.1` only and exposes no
+remote access.
+
+### Agent card
+
+The dashboard's top card mirrors `surfbot daemon status`. It polls
+`GET /api/daemon/status` every 8 seconds and renders one of four states:
+
+1. **Running, window closed** — green dot, version, uptime, last/next
+   full and quick scan times, and the configured maintenance window.
+2. **Running, window open** — same, but the "Window" line shows `open`.
+3. **Running, scheduler disabled** — header is green; scheduler block
+   collapses to "Scheduler disabled".
+4. **Stopped or not installed** — red/amber dot with the exact command
+   `surfbot daemon start` and a one-click copy-to-clipboard button.
+
+The endpoint never shells out to systemctl/launchctl. Liveness is
+inferred from the freshness of `daemon.state.json`'s `written_at` field;
+the daemon is reported as stopped when the heartbeat is older than
+`3 × daemon.state_heartbeat` (90 s with default config).
+
+Sensitive substrings (`api_key=`, `Authorization: Bearer …`, long
+opaque blobs) in the scheduler's `last_error` fields are redacted server
+side before being returned.
+
+### Scan now
+
+The Agent card has a profile selector (full / quick) and a **Scan now**
+button. Clicking it `POST`s to `/api/daemon/trigger`, which writes a
+`trigger.json` flag file into the daemon's state directory. The
+scheduler picks the file up on its next idle poll (≤ 2 s), claims it via
+atomic rename, runs the requested profile, and writes the result back to
+`schedule.state.json`. The next status poll then surfaces the updated
+`last_full_at` / `last_quick_at`.
+
+**Triggers bypass the maintenance window.** This is intentional — a
+manual click is an explicit user override of the configured silence
+period. The button's tooltip and this paragraph are the only places this
+behavior is documented; do not change it without updating both.
+
+A second click while a trigger is in flight returns `409 Conflict`. The
+button itself is also disabled for one poll cycle after firing.
+
+### Endpoints
+
+| Method | Path                  | Notes                                              |
+| ------ | --------------------- | -------------------------------------------------- |
+| GET    | `/api/daemon/status`  | always 200; status in body                         |
+| POST   | `/api/daemon/trigger` | body: `{"profile":"full"\|"quick"}`; 202 / 409     |
+
+These live outside `/api/v1/` because they describe the daemon process,
+not versioned domain data.
+
 ## Architecture
 
 See [ADR-001](../surfbot-strategy/ADR-001-surfbot-agent-architecture.md).

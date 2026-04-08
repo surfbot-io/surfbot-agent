@@ -783,3 +783,51 @@ tr.clickable { cursor: pointer; }
   .content { padding: 16px; }
   .card-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* === SPEC-X3.1 Agent card === */
+.agent-card { margin-bottom: 16px; }
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted, #888);
+}
+.agent-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #888;
+}
+.agent-dot-ok   { background: var(--success, #00e599); box-shadow: 0 0 6px rgba(0,229,153,0.6); }
+.agent-dot-warn { background: var(--sev-medium, #f5a623); }
+.agent-dot-err  { background: var(--danger, #ff4d4f); }
+.agent-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-actions select {
+  padding: 4px 8px;
+  background: var(--bg-elevated, #1a1a1a);
+  color: inherit;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}

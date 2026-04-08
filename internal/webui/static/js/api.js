@@ -62,6 +62,25 @@ const API = {
   startScan(targetId, type) {
     return this.post('/scans', { target_id: targetId, type: type || 'full' });
   },
+
+  // SPEC-X3.1 — daemon endpoints live outside /api/v1/.
+  daemonStatus() {
+    return fetch('/api/daemon/status').then(r => {
+      if (!r.ok) throw new Error('daemon status failed: ' + r.status);
+      return r.json();
+    });
+  },
+  daemonTrigger(profile) {
+    return fetch('/api/daemon/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: profile || 'full' }),
+    }).then(async r => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ('trigger failed: ' + r.status));
+      return data;
+    });
+  },
 };
 
 function toQuery(params) {

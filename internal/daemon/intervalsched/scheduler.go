@@ -20,6 +20,12 @@ type Config struct {
 	Window        MaintenanceWindow
 	QuickTools    []string
 	RunOnStart    bool
+	// TriggerDir, when non-empty, enables on-demand trigger via a flag
+	// file at <TriggerDir>/trigger.json (SPEC-X3.1 §8.2). The scheduler
+	// claims the file via atomic rename to trigger.json.processing,
+	// runs the requested profile bypassing the maintenance window, then
+	// deletes the processing file.
+	TriggerDir string
 }
 
 // Validate enforces the rules from spec §2. Returns a soft warning string
@@ -186,6 +192,12 @@ func (s *IntervalScheduler) Run(ctx context.Context) error {
 			s.state = st
 			s.mu.Unlock()
 		}
+	}
+
+	// SPEC-X3.1 §8: spawn the trigger watcher when configured. The
+	// goroutine exits when ctx is canceled, same as the main loop.
+	if s.cfg.TriggerDir != "" {
+		go s.runTriggerLoop(ctx)
 	}
 
 	if s.cfg.RunOnStart {
