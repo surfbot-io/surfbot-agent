@@ -114,7 +114,7 @@ func TestSecurityHeaders_PresentOnEveryResponse(t *testing.T) {
 	defer stop()
 
 	resp := doReq(t, http.MethodGet, base+"/", nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
 	assert.Equal(t, "DENY", resp.Header.Get("X-Frame-Options"))
@@ -132,7 +132,7 @@ func TestSecurityHeaders_NoStoreOnAPI(t *testing.T) {
 	resp := doReq(t, http.MethodGet, base+"/api/daemon/status", map[string]string{
 		"Authorization": "Bearer tok",
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
 }
 
@@ -152,7 +152,7 @@ func TestRequireToken(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := doReq(t, http.MethodGet, base+"/api/daemon/status", tc.headers)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			assert.Equal(t, tc.want, resp.StatusCode)
 		})
 	}
@@ -164,7 +164,7 @@ func TestRequireToken_StaticAssetsBypass(t *testing.T) {
 
 	// GET / serves the SPA shell without an Authorization header.
 	resp := doReq(t, http.MethodGet, base+"/", nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	body, _ := io.ReadAll(resp.Body)
@@ -219,7 +219,7 @@ func TestValidateOrigin(t *testing.T) {
 			}
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if tc.want == -1 {
 				assert.NotEqual(t, http.StatusForbidden, resp.StatusCode)
 				return
@@ -236,7 +236,7 @@ func TestValidateOrigin_GETBypass(t *testing.T) {
 	resp := doReq(t, http.MethodGet, base+"/api/daemon/status", map[string]string{
 		"Authorization": "Bearer tok",
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -248,7 +248,7 @@ func TestValidateHost(t *testing.T) {
 	resp := doReq(t, http.MethodGet, base+"/api/daemon/status", map[string]string{
 		"Authorization": "Bearer tok",
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Bad host: spoof Host header.
@@ -258,7 +258,7 @@ func TestValidateHost(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer tok")
 	resp2, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusMisdirectedRequest, resp2.StatusCode)
 }
 
@@ -267,7 +267,7 @@ func TestServeIndex_InjectsToken(t *testing.T) {
 	defer stop()
 
 	resp := doReq(t, http.MethodGet, base+"/", nil)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
