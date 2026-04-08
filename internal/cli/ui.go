@@ -66,12 +66,26 @@ func runUI(cmd *cobra.Command, args []string) error {
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	bind, _ := cmd.Flags().GetString("bind")
 
+	// The UI token always lives under the user-mode state dir. `surfbot ui`
+	// is invoked by an interactive user, never by the system service
+	// manager, so the system-mode default of /var/lib/surfbot would not be
+	// writable on Linux.
+	uiPaths := daemon.Resolve(daemon.Default(daemon.ModeUser))
+	if err := uiPaths.EnsureDirs(daemon.ModeUser); err != nil {
+		return fmt.Errorf("preparing ui state dir: %w", err)
+	}
+	authToken, err := webui.LoadOrCreateUIToken(uiPaths.StateDir)
+	if err != nil {
+		return err
+	}
+
 	srv, ln, err := webui.NewServer(store, webui.ServerOptions{
-		Bind:     bind,
-		Port:     port,
-		Version:  Version,
-		Registry: registry,
-		Daemon:   buildUIDaemonView(),
+		Bind:      bind,
+		Port:      port,
+		Version:   Version,
+		Registry:  registry,
+		Daemon:    buildUIDaemonView(),
+		AuthToken: authToken,
 	})
 	if err != nil {
 		return err

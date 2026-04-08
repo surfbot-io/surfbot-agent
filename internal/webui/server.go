@@ -1,8 +1,10 @@
 package webui
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
+	"html"
 	"io/fs"
 	"log"
 	"net"
@@ -27,6 +29,12 @@ type ServerOptions struct {
 	// the agent status card and on-demand trigger (SPEC-X3.1). When nil
 	// the routes still respond but always report `installed: false`.
 	Daemon *DaemonView
+	// AuthToken protects /api/*. When non-empty, every /api/* request must
+	// supply Authorization: Bearer <token>. The same token is injected into
+	// the SPA shell via a <meta name="surfbot-token"> tag so the frontend
+	// can read it on load and pass it on every fetch. Empty token disables
+	// the gate (used by handler unit tests).
+	AuthToken string
 }
 
 // NewServer creates an HTTP server for the web UI dashboard.
@@ -89,13 +97,16 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 		h.handleScanDetail(w, r)
 	})
 
-	// Static files with SPA fallback
+	// Static files with SPA fallback. The SPA shell (index.html) gets the
+	// auth token injected as a <meta> tag at serve time so the frontend
+	// can read it on load and forward it on every /api/* fetch.
 	sub, _ := fs.Sub(staticFS, "static")
 	fileServer := http.FileServer(http.FS(sub))
+	indexHTML, _ := fs.ReadFile(sub, "index.html")
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if path == "/" {
-			fileServer.ServeHTTP(w, r)
+		if path == "/" || path == "/index.html" {
+			serveIndex(w, indexHTML, opts.AuthToken)
 			return
 		}
 
@@ -106,8 +117,7 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 		}
 
 		// SPA fallback: serve index.html for unknown paths
-		r.URL.Path = "/"
-		fileServer.ServeHTTP(w, r)
+		serveIndex(w, indexHTML, opts.AuthToken)
 	})
 
 	addr := fmt.Sprintf("%s:%d", opts.Bind, opts.Port)
@@ -118,15 +128,41 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 		return nil, nil, fmt.Errorf("port %d is already in use: %w", opts.Port, err)
 	}
 
+	// Build the middleware chain. Outermost is logging so every request
+	// (including 421/403/401 rejects) ends up in the access log; innermost
+	// is the mux. Order: log → headers → host → origin → token → mux.
+	var handler http.Handler = mux
+	if opts.AuthToken != "" {
+		handler = requireToken(opts.AuthToken)(handler)
+	}
+	handler = validateOrigin(allowedOrigins(opts.Port))(handler)
+	handler = validateHost(allowedHosts(opts.Port))(handler)
+	handler = securityHeaders(handler)
+	handler = loggingMiddleware(handler)
+
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      loggingMiddleware(mux),
+		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,
 	}
 
 	return srv, ln, nil
+}
+
+// serveIndex writes index.html with a <meta name="surfbot-token"> tag
+// injected into <head>. The token is HTML-escaped defensively even though
+// it is hex-only by construction.
+func serveIndex(w http.ResponseWriter, indexHTML []byte, token string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if token == "" {
+		_, _ = w.Write(indexHTML)
+		return
+	}
+	meta := []byte(`  <meta name="surfbot-token" content="` + html.EscapeString(token) + `">` + "\n")
+	out := bytes.Replace(indexHTML, []byte("</head>"), append(meta, []byte("</head>")...), 1)
+	_, _ = w.Write(out)
 }
 
 // loggingMiddleware logs each HTTP request.
