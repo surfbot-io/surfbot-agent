@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sync"
 	"time"
 
@@ -64,6 +65,47 @@ type daemonStatusResponse struct {
 	StartedAt     *time.Time            `json:"started_at,omitempty"`
 	UptimeSeconds int64                 `json:"uptime_seconds,omitempty"`
 	Scheduler     *schedulerStatusBlock `json:"scheduler,omitempty"`
+	InstallHint   *installHint          `json:"install_hint,omitempty"`
+}
+
+// installHint tells the UI exactly which command to surface when the
+// daemon is not installed or not running. The server is the source of
+// truth: it knows the OS and install mode, the UI does not.
+type installHint struct {
+	InstallCommand string `json:"install_command,omitempty"`
+	StartCommand   string `json:"start_command,omitempty"`
+	DocsURL        string `json:"docs_url,omitempty"`
+	RequiresAdmin  bool   `json:"requires_admin"`
+}
+
+const docsRunAsService = "https://github.com/surfbot-io/surfbot-agent#run-as-a-service"
+
+// buildInstallHint returns the install/start commands for the current OS
+// and install mode. Linux defaults to system-mode (sudo), macOS to user-
+// mode (no sudo), Windows always to system-mode but the binary cannot
+// self-elevate from the CLI — the UI is told via requires_admin so it
+// can render an "elevated PowerShell" hint instead of inventing a prefix.
+func buildInstallHint(installed bool) *installHint {
+	hint := &installHint{DocsURL: docsRunAsService}
+	switch runtime.GOOS {
+	case "linux":
+		hint.RequiresAdmin = true
+		hint.InstallCommand = "sudo surfbot daemon install"
+		hint.StartCommand = "sudo surfbot daemon start"
+	case "windows":
+		hint.RequiresAdmin = true
+		hint.InstallCommand = "surfbot daemon install"
+		hint.StartCommand = "surfbot daemon start"
+	default: // darwin and others fall through to user-mode
+		hint.RequiresAdmin = false
+		hint.InstallCommand = "surfbot daemon install"
+		hint.StartCommand = "surfbot daemon start"
+	}
+	if installed {
+		// Already installed: only the start command is meaningful.
+		hint.InstallCommand = ""
+	}
+	return hint
 }
 
 type schedulerStatusBlock struct {
@@ -104,11 +146,15 @@ func (h *handler) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.daemon == nil || h.daemon.DaemonStatePath == "" {
-		writeJSON(w, http.StatusOK, daemonStatusResponse{Installed: false})
+		writeJSON(w, http.StatusOK, daemonStatusResponse{
+			Installed:   false,
+			InstallHint: buildInstallHint(false),
+		})
 		return
 	}
 
 	resp := buildDaemonStatus(h.daemon, time.Now())
+	attachInstallHint(&resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -173,6 +219,17 @@ func buildDaemonStatus(d *DaemonView, now time.Time) daemonStatusResponse {
 
 	resp.Scheduler = buildSchedulerBlock(d, now)
 	return resp
+}
+
+// attachInstallHint fills in the install_hint block on responses where
+// the daemon is missing or stopped. Kept separate from buildDaemonStatus
+// so the existing tests on the pure status payload don't have to deal
+// with the OS-dependent string.
+func attachInstallHint(resp *daemonStatusResponse) {
+	if resp.Running {
+		return
+	}
+	resp.InstallHint = buildInstallHint(resp.Installed)
 }
 
 func buildSchedulerBlock(d *DaemonView, now time.Time) *schedulerStatusBlock {
