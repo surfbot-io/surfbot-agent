@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/fatih/color"
 
@@ -132,6 +135,96 @@ func (p *Printer) EmptyState(message string, hint string) {
 	if hint != "" {
 		p.Theme.Muted.Fprintf(p.W, "Hint: %s\n", hint)
 	}
+}
+
+// Info prints "[i] message" in the default style (no color).
+func (p *Printer) Info(format string, args ...interface{}) {
+	fmt.Fprintf(p.W, "[i] "+format+"\n", args...)
+}
+
+// Keyf prints a key/value pair: "<key>: <value>" with the key dim.
+func (p *Printer) Keyf(key, format string, args ...interface{}) {
+	p.Theme.Muted.Fprintf(p.W, "%s: ", key)
+	fmt.Fprintf(p.W, format+"\n", args...)
+}
+
+// Bullet prints a single bullet line: "  • message".
+func (p *Printer) Bullet(format string, args ...interface{}) {
+	fmt.Fprintf(p.W, "  • "+format+"\n", args...)
+}
+
+// SeverityCount prints a severity tally line: "CRITICAL  3" with color.
+func (p *Printer) SeverityCount(sev model.Severity, count int) {
+	c := p.Theme.SeverityColor(sev)
+	label := c.Sprintf("%-8s", strings.ToUpper(string(sev)))
+	if count == 0 {
+		p.Theme.Muted.Fprintf(p.W, "%s  %d\n", label, count)
+		return
+	}
+	fmt.Fprintf(p.W, "%s  %d\n", label, count)
+}
+
+// Elapsed formats a duration as "2m34s" with muted styling.
+func (p *Printer) Elapsed(d time.Duration) string {
+	d = d.Round(time.Second)
+	return p.Theme.Muted.Sprint(d.String())
+}
+
+// ActionHint prints a muted "→ next: <hint>" line for empty/completion states.
+func (p *Printer) ActionHint(format string, args ...interface{}) {
+	p.Theme.Muted.Fprintf(p.W, "→ next: "+format+"\n", args...)
+}
+
+// ScoreBar renders a security score as a colored 34-cell bar plus a risk
+// band label. Bands: 0–40 red CRITICAL, 41–70 yellow MEDIUM, 71–90 green
+// LOW, 91–100 bold green MINIMAL.
+func (p *Printer) ScoreBar(score int) {
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	const width = 34
+	filled := score * width / 100
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+
+	var c *color.Color
+	var band string
+	switch {
+	case score <= 40:
+		c, band = p.Theme.Critical, "CRITICAL risk"
+	case score <= 70:
+		c, band = p.Theme.Medium, "HIGH risk"
+	case score <= 90:
+		c, band = p.Theme.Success, "LOW risk"
+	default:
+		c, band = color.New(color.FgGreen, color.Bold), "MINIMAL risk"
+	}
+	fmt.Fprintf(p.W, "Security score: %d/100\n", score)
+	fmt.Fprintf(p.W, "  %s\n", c.Sprint(bar))
+	fmt.Fprintf(p.W, "  %s\n", c.Sprint(band))
+}
+
+// themeFingerprint returns a stable hash of the theme's color attributes,
+// used to detect accidental drift in golden theme tests.
+func themeFingerprint(t *Theme) string {
+	parts := []string{
+		fmt.Sprintf("critical=%v", t.Critical),
+		fmt.Sprintf("high=%v", t.High),
+		fmt.Sprintf("medium=%v", t.Medium),
+		fmt.Sprintf("low=%v", t.Low),
+		fmt.Sprintf("info=%v", t.Info),
+		fmt.Sprintf("success=%v", t.Success),
+		fmt.Sprintf("warning=%v", t.Warning),
+		fmt.Sprintf("error=%v", t.Error),
+		fmt.Sprintf("progress=%v", t.Progress),
+		fmt.Sprintf("muted=%v", t.Muted),
+		fmt.Sprintf("bold=%v", t.Bold),
+		fmt.Sprintf("header=%v", t.Header),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(sum[:])
 }
 
 // truncate shortens s to max characters, appending "..." if truncated.

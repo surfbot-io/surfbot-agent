@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
@@ -130,6 +131,101 @@ func TestNewTablePadding(t *testing.T) {
 	output := buf.String()
 	// With padding=3, "A" should be followed by at least 3 spaces before "B"
 	assert.Contains(t, output, "A   B")
+}
+
+func TestInfo(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	p.Info("hello %s", "world")
+	assert.Equal(t, "[i] hello world\n", buf.String())
+}
+
+func TestKeyf(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	p.Keyf("version", "%s", "1.2.3")
+	assert.Equal(t, "version: 1.2.3\n", buf.String())
+}
+
+func TestBullet(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	p.Bullet("item %d", 1)
+	assert.Equal(t, "  • item 1\n", buf.String())
+}
+
+func TestSeverityCount(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	p.SeverityCount(model.SeverityCritical, 3)
+	p.SeverityCount(model.SeverityLow, 0)
+	out := buf.String()
+	assert.Contains(t, out, "CRITICAL")
+	assert.Contains(t, out, "3")
+	assert.Contains(t, out, "LOW")
+	assert.Contains(t, out, "0")
+}
+
+func TestElapsed(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	got := p.Elapsed(2*time.Minute + 34*time.Second)
+	assert.Equal(t, "2m34s", got)
+}
+
+func TestActionHint(t *testing.T) {
+	color.NoColor = true
+	defer func() { color.NoColor = false }()
+
+	var buf bytes.Buffer
+	p := NewPrinter(&buf)
+	p.ActionHint("run scan")
+	assert.Equal(t, "→ next: run scan\n", buf.String())
+}
+
+func TestSeverityColorMap(t *testing.T) {
+	theme := DefaultTheme()
+	tests := []struct {
+		sev  model.Severity
+		want *color.Color
+	}{
+		{model.SeverityCritical, theme.Critical},
+		{model.SeverityHigh, theme.High},
+		{model.SeverityMedium, theme.Medium},
+		{model.SeverityLow, theme.Low},
+		{model.SeverityInfo, theme.Info},
+	}
+	for _, tt := range tests {
+		assert.Same(t, tt.want, theme.SeverityColor(tt.sev))
+	}
+}
+
+// TestThemeUnchanged freezes the v1 theme fingerprint. Any theme color change
+// requires deliberately updating this value alongside a roadmap entry.
+func TestThemeUnchanged(t *testing.T) {
+	got := themeFingerprint(DefaultTheme())
+	// Regenerate with -update if the theme is intentionally changed.
+	const want = "2691d0954dff6d4528c671b59b6387a1befa8595577aacc78fe5216a56cbb0b3"
+	if got != want {
+		t.Fatalf("theme fingerprint changed:\n  got:  %s\n  want: %s", got, want)
+	}
+	// Sanity: fingerprint is stable across calls.
+	assert.Equal(t, got, themeFingerprint(DefaultTheme()))
 }
 
 func TestDivider(t *testing.T) {
