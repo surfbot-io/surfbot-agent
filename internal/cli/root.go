@@ -27,6 +27,7 @@ var skipDBCommands = map[string]bool{
 	"version":    true,
 	"help":       true,
 	"completion": true,
+	"agent-spec": true,
 }
 
 // skipDB returns true if the given cobra command should NOT have the
@@ -104,6 +105,9 @@ func init() {
 // Execute runs the root command.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if e, ok := err.(errExit); ok {
+			os.Exit(int(e))
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
