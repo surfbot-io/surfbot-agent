@@ -32,6 +32,7 @@ func (s *SubfinderTool) Available() bool {
 func (s *SubfinderTool) Command() string       { return "discover" }
 func (s *SubfinderTool) Description() string   { return "Discover subdomains for a target domain using passive sources" }
 func (s *SubfinderTool) InputType() string     { return "domains" }
+func (s *SubfinderTool) InputTypes() []string  { return []string{"domains"} }
 func (s *SubfinderTool) OutputTypes() []string { return []string{"subdomain"} }
 
 func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {

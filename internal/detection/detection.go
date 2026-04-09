@@ -40,8 +40,19 @@ type DetectionTool interface {
 	// Description returns a one-line description for --help and LLM discovery.
 	Description() string
 
-	// InputType returns what inputs this tool expects: "domains", "ips", "hostports", "urls".
+	// InputType returns the primary input type this tool expects:
+	// "domains", "ips", "hostports", "urls". For tools that accept
+	// more than one input type, this is the "canonical" type — the
+	// one the scan recipe uses. Consumers that care about the full
+	// set should call InputTypes().
 	InputType() string
+
+	// InputTypes returns every asset type this tool can accept as
+	// input. Single-input tools return a one-element slice whose sole
+	// entry equals InputType(). Multi-input tools (e.g. httpx, which
+	// accepts both hostports and bare domains) return all accepted
+	// types, with the primary type first.
+	InputTypes() []string
 
 	// OutputTypes returns the asset types this tool produces.
 	OutputTypes() []string

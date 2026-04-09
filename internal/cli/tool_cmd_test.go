@@ -36,6 +36,7 @@ func (m *mockTool) Available() bool                { return m.available }
 func (m *mockTool) Command() string                { return m.command }
 func (m *mockTool) Description() string            { return m.description }
 func (m *mockTool) InputType() string              { return m.inputType }
+func (m *mockTool) InputTypes() []string           { return []string{m.inputType} }
 func (m *mockTool) OutputTypes() []string          { return m.outputTypes }
 
 func (m *mockTool) Run(ctx context.Context, inputs []string, opts detection.RunOptions) (*detection.RunResult, error) {

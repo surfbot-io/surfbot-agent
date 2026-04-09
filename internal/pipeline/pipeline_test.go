@@ -31,6 +31,7 @@ func (m *mockTool) Available() bool             { return true }
 func (m *mockTool) Command() string             { return m.name }
 func (m *mockTool) Description() string         { return "mock tool" }
 func (m *mockTool) InputType() string           { return "domains" }
+func (m *mockTool) InputTypes() []string        { return []string{"domains"} }
 func (m *mockTool) OutputTypes() []string       { return nil }
 func (m *mockTool) Run(_ context.Context, _ []string, _ detection.RunOptions) (*detection.RunResult, error) {
 	if m.err != nil {
