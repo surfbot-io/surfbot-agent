@@ -274,6 +274,19 @@ requires a same-origin `Origin` (or `Referer`) header.
 These live outside `/api/v1/` because they describe the daemon process,
 not versioned domain data.
 
+## LLM integration — `surfbot agent-spec`
+
+`surfbot agent-spec` emits a machine-readable contract of every command,
+flag, input/output schema, and composition rule. Pipe it into any LLM to
+give it a complete picture of Surfbot with zero prior knowledge:
+
+```sh
+surfbot agent-spec --format json > surfbot.spec.json
+```
+
+See [docs/agent-spec.md](docs/agent-spec.md) for the document shape and
+stability guarantees.
+
 ## Architecture
 
 See [ADR-001](../surfbot-strategy/ADR-001-surfbot-agent-architecture.md).
