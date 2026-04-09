@@ -53,6 +53,14 @@ func (h *HTTPXTool) Available() bool { return true }
 func (h *HTTPXTool) Command() string       { return "probe" }
 func (h *HTTPXTool) Description() string   { return "Probe host:port pairs for live HTTP services and detect technologies" }
 func (h *HTTPXTool) InputType() string     { return "hostports" }
+
+// InputTypes reflects that httpx.Run tolerates bare domains in
+// addition to host:port pairs — when given a domain with no port,
+// it probes :80 and :443 (standard ProjectDiscovery behavior,
+// preserved by buildProbeURLs below). Declaring both lets the
+// agent-spec pipe graph include a direct discover→probe shortcut
+// alongside the full portscan→probe chain.
+func (h *HTTPXTool) InputTypes() []string  { return []string{"hostports", "domains"} }
 func (h *HTTPXTool) OutputTypes() []string { return []string{"url", "technology"} }
 
 type probeResult struct {
