@@ -80,6 +80,7 @@ func (w *walker) commandFrom(cmd *cobra.Command, path []string) Command {
 		c.Input = IOContract{
 			Source:    "argv",
 			Type:      tool.InputType(),
+			Types:     tool.InputTypes(),
 			SchemaRef: schemaRefForInputType(tool.InputType()),
 		}
 		c.Output = IOContract{

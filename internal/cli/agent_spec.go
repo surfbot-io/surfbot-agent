@@ -68,12 +68,20 @@ type PosArg struct {
 }
 
 // IOContract declares where a command reads input from or writes output to.
+//
+// `type` is the primary (canonical) input/output type — the one the
+// scan recipe uses and the field every existing consumer already reads.
+// `types` is the full list for tools that accept or produce more than
+// one type (e.g. httpx probe accepts both "hostports" and "domains").
+// For single-type commands, `types` contains exactly one element equal
+// to `type`, so consumers can read either field.
 type IOContract struct {
-	Source       string `json:"source,omitempty"`
-	StdoutFormat string `json:"stdout_format,omitempty"`
-	Type         string `json:"type"`
-	SchemaRef    string `json:"schema_ref,omitempty"`
-	TextStable   bool   `json:"text_stable,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	StdoutFormat string   `json:"stdout_format,omitempty"`
+	Type         string   `json:"type"`
+	Types        []string `json:"types,omitempty"`
+	SchemaRef    string   `json:"schema_ref,omitempty"`
+	TextStable   bool     `json:"text_stable,omitempty"`
 }
 
 // ErrorDoc documents an exit code.

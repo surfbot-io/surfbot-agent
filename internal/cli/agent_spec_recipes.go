@@ -33,27 +33,27 @@ func BuildRecipes() []Recipe {
 func BuildPipeRules(reg *detection.Registry) []PipeRule {
 	tools := reg.Tools()
 
-	// Map each tool's command name → inputType for fast lookup.
-	inputOf := map[string]string{}
-	for _, t := range tools {
-		inputOf[t.Command()] = t.InputType()
-	}
-
 	var rules []PipeRule
 	for _, t := range tools {
 		outs := t.OutputTypes()
 		if len(outs) == 0 {
 			continue
 		}
-		// Find every tool whose input type matches any of this tool's outputs.
+		// Find every tool whose accepted input types match any of
+		// this tool's outputs. Multi-input consumers (e.g. httpx,
+		// which accepts both hostports and domains) match against
+		// every declared input type.
 		toSet := map[string]bool{}
 		for _, out := range outs {
 			for _, other := range tools {
 				if other.Command() == t.Command() {
 					continue
 				}
-				if matchesType(out, other.InputType()) {
-					toSet[other.Command()] = true
+				for _, in := range other.InputTypes() {
+					if matchesType(out, in) {
+						toSet[other.Command()] = true
+						break
+					}
 				}
 			}
 		}

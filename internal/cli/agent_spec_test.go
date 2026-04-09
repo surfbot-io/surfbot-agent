@@ -109,47 +109,106 @@ func TestPipeConsistency(t *testing.T) {
 			continue
 		}
 		if len(fedBy[tool.Command()]) == 0 {
-			t.Errorf("tool %q (InputType=%q) has no upstream producer in pipe rules",
-				tool.Command(), tool.InputType())
+			t.Errorf("tool %q (InputTypes=%v) has no upstream producer in pipe rules",
+				tool.Command(), tool.InputTypes())
 		}
 	}
 }
 
 // TestAllInputTypesHaveProducer walks the detection registry directly
-// and asserts that every non-initial tool's InputType is produced by
-// at least one other tool's OutputTypes. This is the structural
-// counterpart to TestPipeConsistency: it would catch a regression even
-// if BuildPipeRules were swapped out.
+// and asserts that every declared input type on every non-initial tool
+// is produced by at least one other tool's OutputTypes. Multi-input
+// tools must have a producer for EACH declared input type — otherwise
+// the alternative input is a paper promise.
 func TestAllInputTypesHaveProducer(t *testing.T) {
 	tools := detection.NewRegistry().Tools()
 	for _, consumer := range tools {
 		if consumer.Command() == "discover" {
 			continue
 		}
-		in := consumer.InputType()
-		if in == "" {
-			t.Errorf("tool %q has empty InputType", consumer.Command())
+		ins := consumer.InputTypes()
+		if len(ins) == 0 {
+			t.Errorf("tool %q has empty InputTypes", consumer.Command())
 			continue
 		}
-		found := false
-		for _, producer := range tools {
-			if producer.Command() == consumer.Command() {
-				continue
-			}
-			for _, out := range producer.OutputTypes() {
-				if matchesType(out, in) {
-					found = true
+		for _, in := range ins {
+			found := false
+			for _, producer := range tools {
+				if producer.Command() == consumer.Command() {
+					continue
+				}
+				for _, out := range producer.OutputTypes() {
+					if matchesType(out, in) {
+						found = true
+						break
+					}
+				}
+				if found {
 					break
 				}
 			}
-			if found {
+			if !found {
+				t.Errorf("tool %q declared input type %q has no producer in the registry",
+					consumer.Command(), in)
+			}
+		}
+	}
+}
+
+// TestHTTPXAcceptsDomainsAndHostports locks in the SUR-238 decision
+// that probe is a multi-input tool: it accepts both host:port pairs
+// (from portscan) and bare domains (directly from discover). If a
+// future refactor accidentally narrows InputTypes() back to a single
+// value, this test fails loudly.
+func TestHTTPXAcceptsDomainsAndHostports(t *testing.T) {
+	var httpx detection.DetectionTool
+	for _, tool := range detection.NewRegistry().Tools() {
+		if tool.Command() == "probe" {
+			httpx = tool
+			break
+		}
+	}
+	if httpx == nil {
+		t.Fatal("probe tool not found in registry")
+	}
+
+	got := httpx.InputTypes()
+	want := map[string]bool{"hostports": false, "domains": false}
+	for _, in := range got {
+		if _, ok := want[in]; ok {
+			want[in] = true
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("httpx.InputTypes() = %v, missing %q", got, k)
+		}
+	}
+
+	// Primary type stays "hostports" for backward compat — the scan
+	// recipe uses the portscan→probe chain, and every existing
+	// consumer reads `input.type` singular.
+	if httpx.InputType() != "hostports" {
+		t.Errorf("httpx.InputType() = %q, want %q (primary type must stay stable)",
+			httpx.InputType(), "hostports")
+	}
+
+	// The pipe graph must contain a direct discover→probe edge.
+	spec := BuildSpec(rootCmd)
+	found := false
+	for _, rule := range spec.Composition.Pipes {
+		if rule.From != "discover" {
+			continue
+		}
+		for _, to := range rule.To {
+			if to == "probe" {
+				found = true
 				break
 			}
 		}
-		if !found {
-			t.Errorf("tool %q InputType %q has no producer in the registry",
-				consumer.Command(), in)
-		}
+	}
+	if !found {
+		t.Error("expected a discover→probe edge in composition.pipes; got none")
 	}
 }
 
