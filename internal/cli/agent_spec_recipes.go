@@ -88,16 +88,19 @@ func matchesType(out, in string) bool {
 	if out == in {
 		return true
 	}
-	// Common carriers.
+	// Each consumer input type lists every producer output type that
+	// feeds it. Keep this table honest: adding a new tool without
+	// listing its outputs here means TestAllInputTypesHaveProducer
+	// will fail loudly.
 	switch in {
 	case "domains":
-		return out == "subdomains" || out == "domains"
+		return out == "subdomain" || out == "subdomains" || out == "domain" || out == "domains"
 	case "ips":
-		return out == "ips" || out == "resolved"
+		return out == "ipv4" || out == "ipv6" || out == "ips" || out == "resolved"
 	case "hostports":
-		return out == "hostports" || out == "ports"
+		return out == "hostport" || out == "hostports"
 	case "urls":
-		return out == "urls" || out == "http"
+		return out == "url" || out == "urls" || out == "http"
 	}
 	return false
 }

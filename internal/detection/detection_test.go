@@ -87,7 +87,7 @@ func TestToolCLIMetadata(t *testing.T) {
 	}{
 		{"subfinder", "discover", "Discover subdomains for a target domain using passive sources", "domains", []string{"subdomain"}},
 		{"dnsx", "resolve", "Resolve domains to IP addresses via DNS lookup", "domains", []string{"ipv4", "ipv6"}},
-		{"naabu", "portscan", "Scan hosts for open TCP ports", "ips", []string{"port"}},
+		{"naabu", "portscan", "Scan hosts for open TCP ports", "ips", []string{"hostport"}},
 		{"httpx", "probe", "Probe host:port pairs for live HTTP services and detect technologies", "hostports", []string{"url", "technology"}},
 		{"nuclei", "assess", "Run vulnerability assessment using nuclei templates", "urls", []string{"finding"}},
 	}

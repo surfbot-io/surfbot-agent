@@ -73,7 +73,11 @@ func TestDetectionCoverage(t *testing.T) {
 }
 
 // TestPipeConsistency enforces that every pipe rule's producer exists
-// as a command in the spec and every consumer does too.
+// as a command in the spec, every consumer does too, and every declared
+// InputType on a detection tool has at least one pipe rule feeding it.
+// The last check is the real invariant: a tool whose InputType has no
+// producer is unreachable through composition, which is exactly the
+// bug SUR-237 surfaced.
 func TestPipeConsistency(t *testing.T) {
 	spec := BuildSpec(rootCmd)
 	known := map[string]bool{}
@@ -88,6 +92,63 @@ func TestPipeConsistency(t *testing.T) {
 			if !known[to] {
 				t.Errorf("pipe %q → %q: consumer not in spec", rule.From, to)
 			}
+		}
+	}
+
+	// Every non-initial tool must be the target of at least one pipe.
+	// "discover" is the sole initial tool (its InputType "domains" is
+	// supplied by the user on the CLI, not by another tool).
+	fedBy := map[string][]string{}
+	for _, rule := range spec.Composition.Pipes {
+		for _, to := range rule.To {
+			fedBy[to] = append(fedBy[to], rule.From)
+		}
+	}
+	for _, tool := range detection.NewRegistry().Tools() {
+		if tool.Command() == "discover" {
+			continue
+		}
+		if len(fedBy[tool.Command()]) == 0 {
+			t.Errorf("tool %q (InputType=%q) has no upstream producer in pipe rules",
+				tool.Command(), tool.InputType())
+		}
+	}
+}
+
+// TestAllInputTypesHaveProducer walks the detection registry directly
+// and asserts that every non-initial tool's InputType is produced by
+// at least one other tool's OutputTypes. This is the structural
+// counterpart to TestPipeConsistency: it would catch a regression even
+// if BuildPipeRules were swapped out.
+func TestAllInputTypesHaveProducer(t *testing.T) {
+	tools := detection.NewRegistry().Tools()
+	for _, consumer := range tools {
+		if consumer.Command() == "discover" {
+			continue
+		}
+		in := consumer.InputType()
+		if in == "" {
+			t.Errorf("tool %q has empty InputType", consumer.Command())
+			continue
+		}
+		found := false
+		for _, producer := range tools {
+			if producer.Command() == consumer.Command() {
+				continue
+			}
+			for _, out := range producer.OutputTypes() {
+				if matchesType(out, in) {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			t.Errorf("tool %q InputType %q has no producer in the registry",
+				consumer.Command(), in)
 		}
 	}
 }
