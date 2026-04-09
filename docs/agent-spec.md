@@ -60,6 +60,37 @@ a consumer's `input.type` is compatible with a producer's `output.type`.
 `composition.recipes` declares canonical named compositions — today only
 `scan`, which mirrors the live `surfbot scan` pipeline.
 
+#### Multi-input commands
+
+Most commands accept one input type, so `input.type` is a single string
+(e.g. `"domains"`, `"ips"`) and `input.types` is a one-element array
+containing the same value. A handful of commands accept more than one
+input type — `probe` is the canonical example, accepting both `hostports`
+(from `portscan`) and `domains` (directly from `discover`). For these,
+`input.type` keeps the primary (recipe-canonical) type and `input.types`
+lists every accepted type:
+
+```json
+{
+  "name": "probe",
+  "input": {
+    "source": "argv",
+    "type": "hostports",
+    "types": ["hostports", "domains"],
+    "schema_ref": "#/types/AssetList"
+  }
+}
+```
+
+The derived pipe graph honours every entry in `input.types`, so the same
+`probe` command appears as a downstream of both `portscan` (the long
+chain) and `discover` (the short chain). A planning LLM can pick either
+depending on whether port-scan coverage matters for the task.
+
+Consumers that only read `input.type` keep working unchanged — the
+primary type is always set, and it matches the recipe. Consumers that
+want the full set should read `input.types`.
+
 ## Stability
 
 `spec_version` is semver:
