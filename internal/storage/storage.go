@@ -62,6 +62,7 @@ type Store interface {
 	GetTargetByValue(ctx context.Context, value string) (*model.Target, error)
 	ListTargets(ctx context.Context) ([]model.Target, error)
 	DeleteTarget(ctx context.Context, id string) error
+	UpdateTargetLastScan(ctx context.Context, targetID, scanID string, at time.Time) error
 
 	CreateScan(ctx context.Context, s *model.Scan) error
 	GetScan(ctx context.Context, id string) (*model.Scan, error)
@@ -251,6 +252,20 @@ func (s *SQLiteStore) ListTargets(ctx context.Context) ([]model.Target, error) {
 		targets = append(targets, *t)
 	}
 	return targets, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateTargetLastScan(ctx context.Context, targetID, scanID string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE targets SET last_scan_id = ?, last_scan_at = ?, updated_at = ? WHERE id = ?`,
+		scanID, at.Format(timeFormat), time.Now().UTC().Format(timeFormat), targetID)
+	if err != nil {
+		return fmt.Errorf("updating target last scan: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) DeleteTarget(ctx context.Context, id string) error {
