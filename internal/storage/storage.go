@@ -141,6 +141,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
+	// Restrict DB file permissions — it may contain sensitive scan data.
+	if dbPath != ":memory:" {
+		_ = os.Chmod(dbPath, 0o600)
+	}
+
 	s := &SQLiteStore{db: db, dbPath: dbPath}
 	if err := s.runMigrations(); err != nil {
 		db.Close()
