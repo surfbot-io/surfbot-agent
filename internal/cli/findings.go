@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -59,6 +60,12 @@ var findingsListCmd = &cobra.Command{
 				}
 			}
 			findings = filtered
+		}
+
+		if jsonOut {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(findings)
 		}
 
 		p := NewPrinter(cmd.OutOrStdout())
