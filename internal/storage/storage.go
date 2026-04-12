@@ -48,6 +48,8 @@ type FindingListOptions struct {
 	AssetID    string
 	ScanID     string
 	TargetID   string
+	TemplateID string
+	Host       string
 	Severity   model.Severity
 	Status     model.FindingStatus
 	SourceTool string
@@ -601,6 +603,14 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 		where = append(where, "source_tool = ?")
 		args = append(args, opts.SourceTool)
 	}
+	if opts.TemplateID != "" {
+		where = append(where, "template_id = ?")
+		args = append(args, opts.TemplateID)
+	}
+	if opts.Host != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE value LIKE ? OR value LIKE ?)")
+		args = append(args, opts.Host, opts.Host+":%")
+	}
 
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -959,6 +969,14 @@ func (s *SQLiteStore) CountFindingsFiltered(ctx context.Context, opts FindingLis
 	if opts.SourceTool != "" {
 		where = append(where, "source_tool = ?")
 		args = append(args, opts.SourceTool)
+	}
+	if opts.TemplateID != "" {
+		where = append(where, "template_id = ?")
+		args = append(args, opts.TemplateID)
+	}
+	if opts.Host != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE value LIKE ? OR value LIKE ?)")
+		args = append(args, opts.Host, opts.Host+":%")
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")

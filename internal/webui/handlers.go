@@ -262,6 +262,12 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.ScanID = scanID
 	}
+	if tmpl := r.URL.Query().Get("template_id"); tmpl != "" {
+		opts.TemplateID = tmpl
+	}
+	if host := r.URL.Query().Get("host"); host != "" {
+		opts.Host = host
+	}
 
 	findings, err := h.store.ListFindings(r.Context(), opts)
 	if err != nil {
