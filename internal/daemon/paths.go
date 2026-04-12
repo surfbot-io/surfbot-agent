@@ -47,6 +47,26 @@ func (p Paths) StateFile() string { return filepath.Join(p.StateDir, "daemon.sta
 // LogFile returns the absolute path to the daemon log file.
 func (p Paths) LogFile() string { return filepath.Join(p.LogDir, "daemon.log") }
 
+// ServiceFile returns the absolute path to the service manager definition file
+// when the current platform uses one. Windows returns an empty string because
+// the Service Control Manager does not expose a plist/unit-style file path.
+func ServiceFile(o Options) string {
+	switch o.GOOS {
+	case "linux":
+		if o.Mode == ModeUser {
+			return filepath.Join(o.Home, ".config", "systemd", "user", ServiceName+".service")
+		}
+		return filepath.Join("/etc", "systemd", "system", ServiceName+".service")
+	case "darwin":
+		if o.Mode == ModeUser {
+			return filepath.Join(o.Home, "Library", "LaunchAgents", ServiceName+".plist")
+		}
+		return filepath.Join("/Library", "LaunchDaemons", ServiceName+".plist")
+	default:
+		return ""
+	}
+}
+
 // Options is the injectable input for Resolve. Tests pass synthetic values;
 // production code uses Default().
 type Options struct {

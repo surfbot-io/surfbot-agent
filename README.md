@@ -52,7 +52,7 @@ sudo surfbot daemon uninstall
 ### macOS (launchd)
 
 By default `daemon install` registers a per-user LaunchAgent
-(`~/Library/LaunchAgents/io.surfbot.plist`) — no `sudo` required. The
+(`~/Library/LaunchAgents/surfbot.plist`) — no `sudo` required. The
 agent runs as your user so it can read your `~/Library/Application
 Support/surfbot/` config and database. Pass `--system` to install a
 system-wide LaunchDaemon instead (requires `sudo`, runs as root).
@@ -64,6 +64,9 @@ surfbot daemon status
 surfbot daemon logs -f
 surfbot daemon stop
 ```
+
+Manual release verification for macOS lives in
+[`docs/daemon-macos-qa.md`](docs/daemon-macos-qa.md).
 
 ### Windows (Service Control Manager)
 

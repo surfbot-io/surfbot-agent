@@ -358,10 +358,15 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	serviceFile := daemon.ServiceFile(daemon.Default(mode))
 	if err := svc.Install(); err != nil {
 		// Idempotent: kardianos returns "Init already exists" or similar.
 		if isAlreadyInstalled(err) {
-			NewPrinter(cmd.OutOrStdout()).Info("surfbot daemon already installed")
+			p := NewPrinter(cmd.OutOrStdout())
+			p.Info("surfbot daemon already installed")
+			if serviceFile != "" {
+				p.Keyf("service file", "%s", serviceFile)
+			}
 			return nil
 		}
 		if isPermissionError(err) {
@@ -369,7 +374,11 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("installing service: %w", err)
 	}
-	NewPrinter(cmd.OutOrStdout()).Success("surfbot daemon installed (%s mode)", mode)
+	p := NewPrinter(cmd.OutOrStdout())
+	p.Success("surfbot daemon installed (%s mode)", mode)
+	if serviceFile != "" {
+		p.Keyf("service file", "%s", serviceFile)
+	}
 	return nil
 }
 
