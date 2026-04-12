@@ -9,6 +9,7 @@ const Router = {
     { pattern: /^#\/scans/, page: 'scans', render: () => ScansPage.render(app, parseQueryParams()) },
     { pattern: /^#\/targets/, page: 'targets', render: () => TargetsPage.render(app) },
     { pattern: /^#\/tools/, page: 'tools', render: () => ToolsPage.render(app) },
+    { pattern: /^#\/settings\/schedule/, page: 'settings', render: () => SettingsSchedulePage.render(app) },
   ],
 
   navigate() {
