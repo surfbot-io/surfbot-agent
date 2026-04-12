@@ -18,6 +18,7 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/pipeline"
+	"github.com/surfbot-io/surfbot-agent/internal/scoring"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
@@ -68,7 +69,7 @@ func queryInt(r *http.Request, key string, def int) int {
 
 type overviewResponse struct {
 	SecurityScore      int                     `json:"security_score"`
-	ScoreBreakdown     []scoreComponent        `json:"score_breakdown"`
+	ScoreBreakdown     []scoring.Component     `json:"score_breakdown"`
 	TotalFindings      int                     `json:"total_findings"`
 	UniqueFindings     int                     `json:"unique_findings"`
 	FindingsBySeverity map[model.Severity]int  `json:"findings_by_severity"`
@@ -79,12 +80,6 @@ type overviewResponse struct {
 	Agent              agentInfo               `json:"agent"`
 }
 
-type scoreComponent struct {
-	Severity string `json:"severity"`
-	Count    int    `json:"count"`
-	Weight   int    `json:"weight"`
-	Penalty  int    `json:"penalty"`
-}
 
 type scanSummary struct {
 	ID              string     `json:"id"`
@@ -156,7 +151,7 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 		typeCounts = make(map[model.AssetType]int)
 	}
 
-	score, breakdown := computeSecurityScore(sevCounts)
+	score, breakdown := scoring.ComputeSecurityScore(sevCounts)
 
 	resp := overviewResponse{
 		SecurityScore:      score,
@@ -221,41 +216,6 @@ func (h *handler) getChangeSummary(ctx context.Context, scanID string) *changeSu
 		}
 	}
 	return cs
-}
-
-func computeSecurityScore(sevCounts map[model.Severity]int) (int, []scoreComponent) {
-	weights := []struct {
-		sev    model.Severity
-		weight int
-	}{
-		{model.SeverityCritical, 25},
-		{model.SeverityHigh, 10},
-		{model.SeverityMedium, 3},
-		{model.SeverityLow, 1},
-	}
-
-	var breakdown []scoreComponent
-	score := 100
-	for _, w := range weights {
-		count := sevCounts[w.sev]
-		penalty := count * w.weight
-		score -= penalty
-		if count > 0 {
-			breakdown = append(breakdown, scoreComponent{
-				Severity: string(w.sev),
-				Count:    count,
-				Weight:   w.weight,
-				Penalty:  penalty,
-			})
-		}
-	}
-	if score < 0 {
-		score = 0
-	}
-	if score > 100 {
-		score = 100
-	}
-	return score, breakdown
 }
 
 // --- Findings ---
