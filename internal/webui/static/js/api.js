@@ -85,8 +85,14 @@ const API = {
   updateFindingStatus(id, status) {
     return this.patch('/findings/' + id + '/status', { status });
   },
-  startScan(targetId, type) {
-    return this.post('/scans', { target_id: targetId, type: type || 'full' });
+  startScan(targetId, type, opts) {
+    const body = { target_id: targetId, type: type || 'full' };
+    if (opts) {
+      if (opts.tools && opts.tools.length > 0) body.tools = opts.tools;
+      if (opts.rate_limit > 0) body.rate_limit = opts.rate_limit;
+      if (opts.timeout > 0) body.timeout = opts.timeout;
+    }
+    return this.post('/scans', body);
   },
 
   // SPEC-X3.1 — daemon endpoints live outside /api/v1/.

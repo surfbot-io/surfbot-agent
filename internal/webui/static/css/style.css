@@ -648,6 +648,13 @@ tr.clickable { cursor: pointer; }
 .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-primary:disabled { background: var(--accent); opacity: 0.5; }
 
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.btn-secondary:hover { background: var(--bg-secondary); border-color: var(--text-muted); }
+
 .btn-accent {
   background: rgba(0,229,153,0.1);
   color: var(--accent);
@@ -768,6 +775,14 @@ tr.clickable { cursor: pointer; }
 }
 
 /* === Scan Progress Banner === */
+.scan-advanced {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  margin-top: 12px;
+}
+
 .scan-banner {
   background: var(--bg-secondary);
   border: 1px solid rgba(0,229,153,0.3);
