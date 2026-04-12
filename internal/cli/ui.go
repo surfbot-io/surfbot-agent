@@ -14,6 +14,7 @@ import (
 
 	"github.com/surfbot-io/surfbot-agent/internal/config"
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
+	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
 	"github.com/surfbot-io/surfbot-agent/internal/webui"
 )
 
@@ -39,9 +40,10 @@ func buildUIDaemonView() *webui.DaemonView {
 	mode := daemon.DefaultMode()
 	paths := daemon.Resolve(daemon.Default(mode))
 	view := &webui.DaemonView{
-		DaemonStatePath:   paths.StateFile(),
-		ScheduleStatePath: scheduleStatePath(paths),
-		Heartbeat:         30 * time.Second,
+		DaemonStatePath:     paths.StateFile(),
+		ScheduleStatePath:   scheduleStatePath(paths),
+		Heartbeat:           30 * time.Second,
+		ScheduleConfigStore: intervalsched.NewScheduleConfigStore(scheduleConfigPath(paths)),
 	}
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -58,7 +60,45 @@ func buildUIDaemonView() *webui.DaemonView {
 	if w, werr := buildWindow(mw); werr == nil {
 		view.Window = w
 	}
+
+	// If schedule.config.json exists, use its values instead.
+	if view.ScheduleConfigStore.Exists() {
+		sc, serr := view.ScheduleConfigStore.Load()
+		if serr == nil {
+			view.SchedulerEnabled = sc.Enabled
+			view.WindowStart = sc.MaintenanceWindow.Start
+			view.WindowEnd = sc.MaintenanceWindow.End
+			view.WindowTimezone = sc.MaintenanceWindow.Timezone
+			if w, werr := buildWindowFromConfig(sc.MaintenanceWindow); werr == nil {
+				view.Window = w
+			}
+		}
+	}
 	return view
+}
+
+func buildWindowFromConfig(mw intervalsched.ScheduleConfigWindow) (intervalsched.MaintenanceWindow, error) {
+	w := intervalsched.MaintenanceWindow{Enabled: mw.Enabled}
+	if !mw.Enabled {
+		return w, nil
+	}
+	start, err := intervalsched.ParseTimeOfDay(mw.Start)
+	if err != nil {
+		return w, err
+	}
+	end, err := intervalsched.ParseTimeOfDay(mw.End)
+	if err != nil {
+		return w, err
+	}
+	loc := time.Local
+	if mw.Timezone != "" {
+		loc, err = time.LoadLocation(mw.Timezone)
+		if err != nil {
+			return w, err
+		}
+	}
+	w.Start, w.End, w.Loc = start, end, loc
+	return w, nil
 }
 
 func runUI(cmd *cobra.Command, args []string) error {

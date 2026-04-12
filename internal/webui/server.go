@@ -82,6 +82,9 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 	})
 	mux.HandleFunc("/api/v1/targets/", h.handleDeleteTarget)
 
+	// Schedule: GET config, PUT config
+	mux.HandleFunc("/api/v1/schedule", h.handleSchedule)
+
 	// Scans: GET list, GET detail, POST trigger
 	mux.HandleFunc("/api/v1/scans", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

@@ -43,6 +43,17 @@ const API = {
     return data;
   },
 
+  async put(path, body) {
+    const resp = await fetch('/api/v1' + path, {
+      method: 'PUT',
+      headers: this._headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({ error: resp.statusText }));
+    if (!resp.ok) throw new Error(data.error || data.errors ? JSON.stringify(data.errors) : 'Request failed');
+    return data;
+  },
+
   async del(path) {
     const resp = await fetch('/api/v1' + path, { method: 'DELETE', headers: this._headers() });
     const data = await resp.json().catch(() => ({ error: resp.statusText }));
@@ -63,6 +74,8 @@ const API = {
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
   scanStatus()          { return this.get('/scans/status'); },
+  schedule()            { return this.get('/schedule'); },
+  updateSchedule(cfg)   { return this.put('/schedule', cfg); },
 
   // Write endpoints
   createTarget(value, type, scope) {
