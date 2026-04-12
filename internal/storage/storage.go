@@ -1203,6 +1203,152 @@ func (s *SQLiteStore) CountAssetsByType(ctx context.Context) (map[model.AssetTyp
 	return counts, rows.Err()
 }
 
+// GroupedFindingOptions configures the host-grouped findings query.
+type GroupedFindingOptions struct {
+	Severity   model.Severity
+	SourceTool string
+	Host       string
+	SortBy     string // "last_seen", "severity", "affected_assets_count"
+	Limit      int
+	Offset     int
+}
+
+// GroupedFinding is one row of the host-aggregated findings view.
+type GroupedFinding struct {
+	Host                string   `json:"host"`
+	TemplateID          string   `json:"template_id"`
+	SourceTool          string   `json:"source_tool"`
+	Title               string   `json:"title"`
+	Severity            string   `json:"severity"`
+	FirstSeen           string   `json:"first_seen"`
+	LastSeen            string   `json:"last_seen"`
+	AffectedAssetsCount int      `json:"affected_assets_count"`
+	FindingIDs          []string `json:"finding_ids"`
+}
+
+// ListGroupedFindings returns findings grouped by (host, template_id, source_tool).
+// Host is derived from the asset value by stripping the ":port/tcp" suffix.
+func (s *SQLiteStore) ListGroupedFindings(ctx context.Context, opts GroupedFindingOptions) ([]GroupedFinding, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+
+	// host = everything before the first ":" in asset.value, falling back
+	// to the full value when there's no colon (e.g. bare domains).
+	const hostExpr = `CASE WHEN instr(a.value,':')>0 THEN substr(a.value,1,instr(a.value,':')-1) ELSE a.value END`
+
+	query := `SELECT ` + hostExpr + ` AS host,
+		f.template_id, f.source_tool,
+		MAX(f.title) AS title, MAX(f.severity) AS severity,
+		MIN(f.first_seen) AS first_seen, MAX(f.last_seen) AS last_seen,
+		COUNT(DISTINCT f.asset_id) AS affected_assets_count,
+		GROUP_CONCAT(f.id) AS finding_ids
+		FROM findings f
+		JOIN assets a ON f.asset_id = a.id`
+
+	where := []string{}
+	args := []interface{}{}
+
+	if opts.Severity != "" {
+		where = append(where, "f.severity = ?")
+		args = append(args, string(opts.Severity))
+	}
+	if opts.SourceTool != "" {
+		where = append(where, "f.source_tool = ?")
+		args = append(args, opts.SourceTool)
+	}
+	if opts.Host != "" {
+		where = append(where, hostExpr+" LIKE ?")
+		args = append(args, "%"+opts.Host+"%")
+	}
+
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	query += ` GROUP BY host, f.template_id, f.source_tool`
+
+	switch opts.SortBy {
+	case "severity":
+		query += ` ORDER BY CASE MAX(f.severity)
+			WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+			WHEN 'low' THEN 3 WHEN 'info' THEN 4 END, MAX(f.last_seen) DESC`
+	case "affected_assets_count":
+		query += ` ORDER BY affected_assets_count DESC, MAX(f.last_seen) DESC`
+	default:
+		query += ` ORDER BY MAX(f.last_seen) DESC`
+	}
+
+	query += ` LIMIT ? OFFSET ?`
+	args = append(args, opts.Limit, opts.Offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing grouped findings: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]GroupedFinding, 0)
+	for rows.Next() {
+		var g GroupedFinding
+		var idsConcat string
+		if err := rows.Scan(&g.Host, &g.TemplateID, &g.SourceTool,
+			&g.Title, &g.Severity, &g.FirstSeen, &g.LastSeen,
+			&g.AffectedAssetsCount, &idsConcat); err != nil {
+			return nil, fmt.Errorf("scanning grouped finding row: %w", err)
+		}
+		g.FindingIDs = strings.Split(idsConcat, ",")
+		results = append(results, g)
+	}
+	return results, rows.Err()
+}
+
+// CountGroupedFindings returns the total number of grouped rows for pagination.
+func (s *SQLiteStore) CountGroupedFindings(ctx context.Context, opts GroupedFindingOptions) (int, error) {
+	const hostExpr = `CASE WHEN instr(a.value,':')>0 THEN substr(a.value,1,instr(a.value,':')-1) ELSE a.value END`
+
+	query := `SELECT COUNT(*) FROM (
+		SELECT 1 FROM findings f JOIN assets a ON f.asset_id = a.id`
+
+	where := []string{}
+	args := []interface{}{}
+
+	if opts.Severity != "" {
+		where = append(where, "f.severity = ?")
+		args = append(args, string(opts.Severity))
+	}
+	if opts.SourceTool != "" {
+		where = append(where, "f.source_tool = ?")
+		args = append(args, opts.SourceTool)
+	}
+	if opts.Host != "" {
+		where = append(where, hostExpr+" LIKE ?")
+		args = append(args, "%"+opts.Host+"%")
+	}
+
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	query += ` GROUP BY ` + hostExpr + `, f.template_id, f.source_tool)`
+
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+// CountUniqueFindingsByHost returns the number of distinct (host, template_id, source_tool)
+// tuples across all findings. Used by the dashboard to show de-duplicated count.
+func (s *SQLiteStore) CountUniqueFindingsByHost(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM (
+		SELECT 1 FROM findings f JOIN assets a ON f.asset_id = a.id
+		GROUP BY CASE WHEN instr(a.value,':')>0 THEN substr(a.value,1,instr(a.value,':')-1) ELSE a.value END,
+		f.template_id, f.source_tool)`
+	var n int
+	err := s.db.QueryRowContext(ctx, query).Scan(&n)
+	return n, err
+}
+
 // --- Helpers ---
 
 func detectTargetType(value string) (model.TargetType, error) {

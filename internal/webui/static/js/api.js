@@ -53,6 +53,7 @@ const API = {
   // Read endpoints
   overview()            { return this.get('/overview'); },
   findings(params)      { return this.get('/findings' + toQuery(params)); },
+  findingsGrouped(params) { return this.get('/findings/grouped' + toQuery(params)); },
   finding(id)           { return this.get('/findings/' + id); },
   assets(params)        { return this.get('/assets' + toQuery(params)); },
   assetTree(targetId)   { return this.get('/assets/tree' + toQuery({ target_id: targetId })); },
