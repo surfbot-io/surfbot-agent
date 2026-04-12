@@ -8,6 +8,7 @@ const Router = {
     { pattern: /^#\/scans\/(.+)$/, page: 'scans', render: (m) => ScansPage.render(app, { id: m[1] }) },
     { pattern: /^#\/scans/, page: 'scans', render: () => ScansPage.render(app, parseQueryParams()) },
     { pattern: /^#\/targets/, page: 'targets', render: () => TargetsPage.render(app) },
+    { pattern: /^#\/tools/, page: 'tools', render: () => ToolsPage.render(app) },
   ],
 
   navigate() {

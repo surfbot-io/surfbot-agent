@@ -108,7 +108,7 @@ const AgentCard = {
     const nextQuick = s.next_quick
       ? this.timeRow('Next quick', s.next_quick, 'in ')
       : '';
-    const win = s.window && s.window.enabled ? this.windowRow(s.window) : '';
+    const win = s.window ? this.windowRow(s.window) : '';
     return `<div class="detail-grid" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
       ${lastFull}${lastQuick}${nextFull}${nextQuick}${win}
     </div>`;
@@ -137,6 +137,10 @@ const AgentCard = {
 
   windowRow(w) {
     const desc = `${escapeHtml(w.start || '')}–${escapeHtml(w.end || '')} ${escapeHtml(w.timezone || '')}`;
+    if (!w.enabled) {
+      return `<span class="detail-label">Window</span>
+        <span class="detail-value text-muted">disabled ${desc ? '(' + desc + ')' : ''}</span>`;
+    }
     const stateLabel = w.open_now
       ? `<span style="color:var(--sev-medium)">open</span>`
       : `closed`;

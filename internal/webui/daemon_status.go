@@ -293,7 +293,12 @@ func buildSchedulerBlock(d *DaemonView, now time.Time) *schedulerStatusBlock {
 
 func buildWindowBlock(d *DaemonView, now time.Time) *windowBlock {
 	if !d.Window.Enabled {
-		return &windowBlock{Enabled: false}
+		return &windowBlock{
+			Enabled:  false,
+			Start:    d.WindowStart,
+			End:      d.WindowEnd,
+			Timezone: d.WindowTimezone,
+		}
 	}
 	wb := &windowBlock{
 		Enabled:  true,
