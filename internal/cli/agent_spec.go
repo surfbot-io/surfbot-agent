@@ -14,7 +14,7 @@ import (
 
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
-const SpecVersion = "1.0.0"
+const SpecVersion = "1.1.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {

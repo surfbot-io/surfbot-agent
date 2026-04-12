@@ -98,7 +98,7 @@ want the full set should read `input.types`.
 - **minor** — additive (new commands, new optional fields)
 - **patch** — doc/description changes only
 
-Current: **1.0.0**.
+Current: **1.1.0**.
 
 ## Design notes
 
