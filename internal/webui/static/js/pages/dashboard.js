@@ -75,8 +75,11 @@ const DashboardPage = {
           ${Components.severityBars(d.findings_by_severity)}
         </div>
         <div class="card">
-          <div class="card-label">Total Findings</div>
-          <div class="card-value">${d.total_findings}</div>
+          <div class="card-label">Unique Findings</div>
+          <div class="card-value">${d.unique_findings != null ? d.unique_findings : d.total_findings}</div>
+          ${d.unique_findings != null && d.unique_findings !== d.total_findings
+            ? `<div class="card-sub">${d.total_findings} total across all ports</div>`
+            : ''}
         </div>
         <div class="card">
           <div class="card-label">Total Assets</div>

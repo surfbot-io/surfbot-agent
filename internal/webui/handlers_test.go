@@ -603,6 +603,151 @@ func TestHandleUpdateFindingStatusNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+// --- Grouped Findings Tests ---
+
+// seedGroupedData creates 3 port_service assets for the same host and
+// 2 templates per asset, resulting in 6 raw findings but 2 grouped rows.
+func seedGroupedData(t *testing.T, s *storage.SQLiteStore) {
+	t.Helper()
+	ctx := context.Background()
+
+	target := &model.Target{Value: "grouped.example.com"}
+	require.NoError(t, s.CreateTarget(ctx, target))
+
+	now := time.Now().UTC()
+	started := now.Add(-5 * time.Minute)
+	scan := &model.Scan{
+		TargetID:   target.ID,
+		Type:       model.ScanTypeFull,
+		Status:     model.ScanStatusCompleted,
+		Phase:      "assessment",
+		Progress:   100,
+		StartedAt:  &started,
+		FinishedAt: &now,
+	}
+	require.NoError(t, s.CreateScan(ctx, scan))
+
+	ports := []string{"grouped.example.com:80/tcp", "grouped.example.com:443/tcp", "grouped.example.com:8080/tcp"}
+	templates := []struct {
+		id       string
+		name     string
+		title    string
+		severity model.Severity
+	}{
+		{"apache-detect", "Apache Detection", "Apache HTTP Server Detected", model.SeverityInfo},
+		{"http-missing-headers", "Missing Headers", "Missing Security Headers", model.SeverityMedium},
+	}
+
+	for _, port := range ports {
+		asset := &model.Asset{
+			TargetID: target.ID,
+			Type:     model.AssetTypePort,
+			Value:    port,
+			Status:   model.AssetStatusActive,
+		}
+		require.NoError(t, s.UpsertAsset(ctx, asset))
+
+		for _, tmpl := range templates {
+			f := &model.Finding{
+				AssetID:      asset.ID,
+				ScanID:       scan.ID,
+				TemplateID:   tmpl.id,
+				TemplateName: tmpl.name,
+				Severity:     tmpl.severity,
+				Title:        tmpl.title,
+				Status:       model.FindingStatusOpen,
+				SourceTool:   "nuclei",
+				Confidence:   80,
+			}
+			require.NoError(t, s.UpsertFinding(ctx, f))
+		}
+	}
+}
+
+func TestHandleFindingsGrouped(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedGroupedData(t, s)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings/grouped", nil)
+	w := httptest.NewRecorder()
+	h.handleFindingsGrouped(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp groupedFindingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	// 2 templates x 1 host = 2 grouped rows
+	assert.Equal(t, 2, resp.Total)
+	require.Len(t, resp.Groups, 2)
+
+	for _, g := range resp.Groups {
+		assert.Equal(t, "grouped.example.com", g.Host)
+		assert.Equal(t, "nuclei", g.SourceTool)
+		// Each template matched all 3 port assets
+		assert.Equal(t, 3, g.AffectedAssetsCount)
+		assert.Len(t, g.FindingIDs, 3)
+	}
+}
+
+func TestHandleFindingsGroupedSeverityFilter(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedGroupedData(t, s)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings/grouped?severity=info", nil)
+	w := httptest.NewRecorder()
+	h.handleFindingsGrouped(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp groupedFindingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 1, resp.Total)
+	require.Len(t, resp.Groups, 1)
+	assert.Equal(t, "apache-detect", resp.Groups[0].TemplateID)
+}
+
+func TestHandleFindingsRawUnchanged(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedTestData(t, s)
+
+	// Raw endpoint unchanged — same response shape.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings", nil)
+	w := httptest.NewRecorder()
+	h.handleFindings(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp findingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 2, len(resp.Findings))
+	assert.Equal(t, 2, resp.Total)
+	// Verify response has the expected fields (byte-compatible)
+	assert.NotEmpty(t, resp.Findings[0].ID)
+	assert.NotEmpty(t, resp.Findings[0].AssetID)
+}
+
+func TestHandleFindingsRawScanIDFilterStillWorks(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedTestData(t, s)
+
+	// Get the scan ID from seed data
+	scans, err := s.ListScans(context.Background(), "", 1)
+	require.NoError(t, err)
+	require.NotEmpty(t, scans)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings?scan_id="+scans[0].ID, nil)
+	w := httptest.NewRecorder()
+	h.handleFindings(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp findingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 2, resp.Total)
+	for _, f := range resp.Findings {
+		assert.Equal(t, scans[0].ID, f.ScanID)
+	}
+}
+
 // --- Scan Trigger Tests ---
 
 func TestHandleCreateScanNoRegistry(t *testing.T) {

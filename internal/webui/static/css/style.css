@@ -291,6 +291,27 @@ a:hover { color: var(--accent-hover); }
 .badge-low { background: var(--sev-low-bg); color: var(--sev-low); }
 .badge-info { background: var(--sev-info-bg); color: var(--sev-info); }
 
+.port-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.filter-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
 .badge-status {
   padding: 2px 8px;
   border-radius: 12px;

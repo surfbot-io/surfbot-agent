@@ -70,6 +70,7 @@ type overviewResponse struct {
 	SecurityScore      int                     `json:"security_score"`
 	ScoreBreakdown     []scoreComponent        `json:"score_breakdown"`
 	TotalFindings      int                     `json:"total_findings"`
+	UniqueFindings     int                     `json:"unique_findings"`
 	FindingsBySeverity map[model.Severity]int  `json:"findings_by_severity"`
 	TotalAssets        int                     `json:"total_assets"`
 	AssetsByType       map[model.AssetType]int `json:"assets_by_type"`
@@ -137,6 +138,10 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errs = append(errs, fmt.Errorf("count types: %w", err))
 	}
+	uniqueFindings, err := h.store.CountUniqueFindingsByHost(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("count unique findings: %w", err))
+	}
 
 	if len(errs) > 0 {
 		for _, e := range errs {
@@ -157,6 +162,7 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 		SecurityScore:      score,
 		ScoreBreakdown:     breakdown,
 		TotalFindings:      totalFindings,
+		UniqueFindings:     uniqueFindings,
 		FindingsBySeverity: sevCounts,
 		TotalAssets:        totalAssets,
 		AssetsByType:       typeCounts,
@@ -336,6 +342,58 @@ func (h *handler) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"finding": finding,
 		"asset":   asset,
+	})
+}
+
+// --- Grouped Findings ---
+
+type groupedFindingsResponse struct {
+	Groups []storage.GroupedFinding `json:"groups"`
+	Total  int                     `json:"total"`
+	Page   int                     `json:"page"`
+	Limit  int                     `json:"limit"`
+}
+
+func (h *handler) handleFindingsGrouped(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	page := queryInt(r, "page", 1)
+	limit := queryInt(r, "limit", 50)
+	if limit > 250 {
+		limit = 250
+	}
+
+	opts := storage.GroupedFindingOptions{
+		Limit:  limit,
+		Offset: (page - 1) * limit,
+		SortBy: r.URL.Query().Get("sort"),
+	}
+	if sev := r.URL.Query().Get("severity"); sev != "" {
+		opts.Severity = model.Severity(sev)
+	}
+	if tool := r.URL.Query().Get("tool"); tool != "" {
+		opts.SourceTool = tool
+	}
+	if host := r.URL.Query().Get("host"); host != "" {
+		opts.Host = host
+	}
+
+	groups, err := h.store.ListGroupedFindings(r.Context(), opts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list grouped findings")
+		return
+	}
+
+	total, _ := h.store.CountGroupedFindings(r.Context(), opts)
+
+	writeJSON(w, http.StatusOK, groupedFindingsResponse{
+		Groups: groups,
+		Total:  total,
+		Page:   page,
+		Limit:  limit,
 	})
 }
 

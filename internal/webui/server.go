@@ -58,7 +58,8 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 	mux.HandleFunc("/api/v1/tools/available", h.handleAvailableTools)
 	mux.HandleFunc("/api/v1/scans/status", h.handleScanStatus)
 
-	// Findings: GET list, GET detail, PATCH status
+	// Findings: GET list, GET grouped, GET detail, PATCH status
+	mux.HandleFunc("/api/v1/findings/grouped", h.handleFindingsGrouped)
 	mux.HandleFunc("/api/v1/findings", h.handleFindings)
 	mux.HandleFunc("/api/v1/findings/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/status") {
