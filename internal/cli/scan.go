@@ -25,16 +25,28 @@ func init() {
 	scanCmd.Flags().IntP("rate-limit", "r", 0, "Global rate limit (requests/second)")
 	scanCmd.Flags().Int("timeout", 300, "Per-phase timeout in seconds")
 	scanCmd.Flags().StringP("output", "o", "", "Output results to file (JSON)")
+	scanCmd.Flags().Bool("auto-create", false, "Auto-create target if it doesn't exist")
 	rootCmd.AddCommand(scanCmd)
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	targetValue := args[0]
+	autoCreate, _ := cmd.Flags().GetBool("auto-create")
 
-	target, err := autoCreateTarget(ctx, store, targetValue)
+	target, err := store.GetTargetByValue(ctx, targetValue)
 	if err != nil {
-		return fmt.Errorf("resolving target: %w", err)
+		if err != storage.ErrNotFound {
+			return fmt.Errorf("resolving target: %w", err)
+		}
+		if !autoCreate {
+			cmd.SilenceUsage = true
+			return fmt.Errorf("target %q not found; use 'surfbot target add %s' first, or pass --auto-create", targetValue, targetValue)
+		}
+		target, err = autoCreateTarget(ctx, store, targetValue)
+		if err != nil {
+			return fmt.Errorf("auto-creating target: %w", err)
+		}
 	}
 
 	pipe := pipeline.New(store, registry)

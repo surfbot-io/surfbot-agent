@@ -39,12 +39,12 @@ var targetAddCmd = &cobra.Command{
 		err := store.CreateTarget(ctx, t)
 		if err != nil {
 			if errors.Is(err, storage.ErrAlreadyExists) {
-				p.Warn("Target already exists: %s", args[0])
-				return nil
+				cmd.SilenceUsage = true
+				return fmt.Errorf("target already exists: %s", args[0])
 			}
 			if errors.Is(err, storage.ErrInvalidTarget) {
-				p.Errorf("%s", err)
-				return nil
+				cmd.SilenceUsage = true
+				return err
 			}
 			return err
 		}
