@@ -25,19 +25,20 @@ const AssetsPage = {
       `;
     }
 
+    const typ = params?.type || '';
     const viewToggle = `<div class="filters">
-      <select class="filter-select" onchange="location.hash='#/assets?view='+this.value">
+      <select class="filter-select" id="filter-view" onchange="AssetsPage.applyFilters()">
         <option value="tree" ${view === 'tree' ? 'selected' : ''}>Tree View</option>
         <option value="list" ${view === 'list' ? 'selected' : ''}>List View</option>
       </select>
-      <select class="filter-select" onchange="location.hash='#/assets?view=${view}&type='+this.value">
+      <select class="filter-select" id="filter-type" onchange="AssetsPage.applyFilters()">
         <option value="">All types</option>
-        <option value="subdomain">Subdomain</option>
-        <option value="ipv4">IPv4</option>
-        <option value="ipv6">IPv6</option>
-        <option value="port_service">Port/Service</option>
-        <option value="url">URL</option>
-        <option value="technology">Technology</option>
+        <option value="subdomain" ${typ === 'subdomain' ? 'selected' : ''}>Subdomain</option>
+        <option value="ipv4" ${typ === 'ipv4' ? 'selected' : ''}>IPv4</option>
+        <option value="ipv6" ${typ === 'ipv6' ? 'selected' : ''}>IPv6</option>
+        <option value="port_service" ${typ === 'port_service' ? 'selected' : ''}>Port/Service</option>
+        <option value="url" ${typ === 'url' ? 'selected' : ''}>URL</option>
+        <option value="technology" ${typ === 'technology' ? 'selected' : ''}>Technology</option>
       </select>
     </div>`;
 
@@ -71,5 +72,13 @@ const AssetsPage = {
       ${viewToggle}
       ${contentHtml}
     `;
+  },
+
+  applyFilters() {
+    const view = document.getElementById('filter-view')?.value || 'tree';
+    const type = document.getElementById('filter-type')?.value || '';
+    const q = ['view=' + view];
+    if (type) q.push('type=' + type);
+    location.hash = '#/assets?' + q.join('&');
   },
 };
