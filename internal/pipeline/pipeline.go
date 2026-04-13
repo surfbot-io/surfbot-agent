@@ -164,7 +164,30 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 				phaseTimeout = 5 * time.Minute
 			}
 		}
-		phaseCtx, cancel := context.WithTimeout(ctx, phaseTimeout)
+		phaseCtx, phaseCancel := context.WithTimeout(ctx, phaseTimeout)
+
+		// Poll DB for external cancellation while the tool runs.
+		// When detected, phaseCancel() kills the tool subprocess.
+		cancelDone := make(chan struct{})
+		go func() {
+			defer close(cancelDone)
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-phaseCtx.Done():
+					return
+				case <-ticker.C:
+					if fresh, err := p.store.GetScan(context.Background(), scan.ID); err == nil {
+						if fresh.Status == model.ScanStatusCancelled {
+							pp.warn("Scan cancelled externally — killing %s", tool.Name())
+							phaseCancel()
+							return
+						}
+					}
+				}
+			}
+		}()
 
 		runOpts := detection.RunOptions{
 			RateLimit: opts.RateLimit,
@@ -181,7 +204,22 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		startTime := time.Now()
 		toolResult, toolErr := tool.Run(phaseCtx, inputs, runOpts)
 		duration := time.Since(startTime)
-		cancel()
+		phaseCancel()
+		<-cancelDone // wait for poll goroutine to exit
+
+		// If the tool was killed by external cancellation, stop immediately
+		if toolErr != nil {
+			if fresh, fErr := p.store.GetScan(context.Background(), scan.ID); fErr == nil && fresh.Status == model.ScanStatusCancelled {
+				p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, "cancelled")
+				scan.Status = model.ScanStatusCancelled
+				scan.Phase = "cancelled"
+				nowt := time.Now().UTC()
+				scan.FinishedAt = &nowt
+				p.store.UpdateScan(context.Background(), scan) //nolint:errcheck
+				pp.warn("Scan cancelled — %s terminated", tool.Name())
+				return nil, fmt.Errorf("scan cancelled")
+			}
+		}
 
 		pr := PhaseResult{
 			ToolName:   tool.Name(),
