@@ -47,7 +47,7 @@ const FindingsPage = {
       const drillHref = '#/findings?view=raw&host=' + encodeURIComponent(g.host)
         + '&template_id=' + encodeURIComponent(g.template_id);
       return `
-        <tr>
+        <tr class="clickable" onclick="location.hash='${drillHref}'">
           <td>${Components.severityBadge(g.severity)}</td>
           <td class="text-truncate">${escapeHtml(g.title)} ${badge}</td>
           <td class="mono">${escapeHtml(g.host)}</td>
@@ -100,6 +100,8 @@ const FindingsPage = {
         status: params?.status,
         target_id: params?.target_id,
         scan_id: params?.scan_id,
+        host: params?.host,
+        template_id: params?.template_id,
         page: params?.page || 1,
         limit: 50,
       });
@@ -122,6 +124,7 @@ const FindingsPage = {
       <tr>
         <td>${Components.severityBadge(f.severity)}</td>
         <td class="text-truncate clickable" onclick="location.hash='#/findings/${f.id}'">${escapeHtml(f.title)}</td>
+        <td class="mono text-truncate">${escapeHtml(f.evidence || '')}</td>
         <td class="mono">${escapeHtml(f.source_tool)}</td>
         <td>
           <select class="status-select status-${f.status}" onchange="FindingsPage.changeStatus('${f.id}', this.value, this)" data-original="${f.status}">
@@ -146,7 +149,7 @@ const FindingsPage = {
       </div>
       ${this.viewToggle('raw')}
       ${this.rawFiltersHtml(params)}
-      ${Components.table(['Severity', 'Title', 'Tool', 'Status', 'Last Seen'], [rows])}
+      ${Components.table(['Severity', 'Title', 'Asset', 'Tool', 'Status', 'Last Seen'], [rows])}
       ${totalPages > 1 ? this.paginationHtml(page, totalPages, params) : ''}
     `;
   },
@@ -190,7 +193,12 @@ const FindingsPage = {
     // Reset page when switching views
     const q = ['view=' + view];
     if (params.severity) q.push('severity=' + params.severity);
-    location.hash = '#/findings?' + q.join('&');
+    const newHash = '#/findings?' + q.join('&');
+    if (location.hash === newHash) {
+      Router.navigate();
+    } else {
+      location.hash = newHash;
+    }
   },
 
   // --- Shared helpers ---

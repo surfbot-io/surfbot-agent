@@ -648,6 +648,13 @@ tr.clickable { cursor: pointer; }
 .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-primary:disabled { background: var(--accent); opacity: 0.5; }
 
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.btn-secondary:hover { background: var(--bg-secondary); border-color: var(--text-muted); }
+
 .btn-accent {
   background: rgba(0,229,153,0.1);
   color: var(--accent);
@@ -713,6 +720,21 @@ tr.clickable { cursor: pointer; }
 
 .add-form { margin-bottom: 20px; }
 
+/* Settings forms */
+.settings-form { max-width: 640px; }
+.form-section { margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.form-section h3 { font-size: 15px; margin: 0 0 12px; color: var(--text-primary); }
+.form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.form-row label:not(.checkbox-label) { font-size: 12px; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.form-input-sm { max-width: 200px; flex: unset; }
+.form-hint { font-size: 11px; color: var(--text-muted); }
+.checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
+.checkbox-label input[type="checkbox"] { accent-color: var(--accent); }
+.checkbox-group { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.form-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.form-status { font-size: 13px; }
+.form-status-ok { color: var(--success); }
+
 /* === Status Select === */
 .status-select {
   background: var(--bg-primary);
@@ -753,6 +775,14 @@ tr.clickable { cursor: pointer; }
 }
 
 /* === Scan Progress Banner === */
+.scan-advanced {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  margin-top: 12px;
+}
+
 .scan-banner {
   background: var(--bg-secondary);
   border: 1px solid rgba(0,229,153,0.3);

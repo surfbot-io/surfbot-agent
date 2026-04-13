@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -12,28 +13,62 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
+type statusJSON struct {
+	Version            string                 `json:"version"`
+	DBPath             string                 `json:"db_path"`
+	DBSizeBytes        int64                  `json:"db_size_bytes"`
+	Targets            int                    `json:"targets"`
+	Assets             int                    `json:"assets"`
+	Findings           int                    `json:"findings"`
+	FindingsBySeverity map[model.Severity]int `json:"findings_by_severity"`
+	LastScan           *model.Scan            `json:"last_scan"`
+	ToolsAvailable     int                    `json:"tools_available"`
+	ToolsTotal         int                    `json:"tools_total"`
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show agent status: DB path, targets count, last scan, findings summary",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-		p := NewPrinter(cmd.OutOrStdout())
-
-		p.Theme.Bold.Fprintf(p.W, "Surfbot Agent %s\n\n", Version)
 
 		dbPath := store.DBPath()
-		dbSize := "unknown"
+		var dbSizeBytes int64
 		if info, err := os.Stat(dbPath); err == nil {
-			dbSize = formatBytes(info.Size())
+			dbSizeBytes = info.Size()
 		}
-		p.Keyf("Database   ", "%s (%s)", dbPath, dbSize)
 
 		targets, _ := store.CountTargets(ctx)
 		assets, _ := store.CountAssets(ctx)
+		findings, _ := store.CountFindings(ctx)
+		sevCounts, _ := store.CountFindingsBySeverity(ctx)
+		last, _ := store.LastScan(ctx)
+		allTools := registry.Tools()
+		availTools := registry.AvailableTools()
+
+		if jsonOut {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(statusJSON{
+				Version:            Version,
+				DBPath:             dbPath,
+				DBSizeBytes:        dbSizeBytes,
+				Targets:            targets,
+				Assets:             assets,
+				Findings:           findings,
+				FindingsBySeverity: sevCounts,
+				LastScan:           last,
+				ToolsAvailable:     len(availTools),
+				ToolsTotal:         len(allTools),
+			})
+		}
+
+		p := NewPrinter(cmd.OutOrStdout())
+		p.Theme.Bold.Fprintf(p.W, "Surfbot Agent %s\n\n", Version)
+		p.Keyf("Database   ", "%s (%s)", dbPath, formatBytes(dbSizeBytes))
 		p.Keyf("Targets    ", "%d", targets)
 		p.Keyf("Assets     ", "%d", assets)
 
-		findings, _ := store.CountFindings(ctx)
 		fmt.Fprintf(p.W, "Findings   : %d", findings)
 		if findings > 0 {
 			allFindings, _ := store.ListFindings(ctx, storage.FindingListOptions{Limit: findings})
@@ -44,7 +79,6 @@ var statusCmd = &cobra.Command{
 		}
 		fmt.Fprintln(p.W)
 
-		last, _ := store.LastScan(ctx)
 		if last == nil {
 			p.EmptyState("No scans recorded.",
 				"Start a scan with 'surfbot scan <domain>'.")
@@ -58,8 +92,6 @@ var statusCmd = &cobra.Command{
 			p.Keyf("Last scan  ", "%s — %s ago (%s)", targetName, formatDurationShort(ago), last.Status)
 		}
 
-		allTools := registry.Tools()
-		availTools := registry.AvailableTools()
 		p.Keyf("Tools      ", "%d/%d available", len(availTools), len(allTools))
 
 		return nil

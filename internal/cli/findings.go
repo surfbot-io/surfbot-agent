@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -27,11 +28,15 @@ var findingsListCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 		scanID, _ := cmd.Flags().GetString("scan")
 		limit, _ := cmd.Flags().GetInt("limit")
+		page, _ := cmd.Flags().GetInt("page")
 		newOnly, _ := cmd.Flags().GetBool("new")
 		resolvedOnly, _ := cmd.Flags().GetBool("resolved")
 
 		if limit <= 0 {
 			limit = 50
+		}
+		if page <= 0 {
+			page = 1
 		}
 
 		if resolvedOnly {
@@ -44,6 +49,7 @@ var findingsListCmd = &cobra.Command{
 			Status:     model.FindingStatus(status),
 			ScanID:     scanID,
 			Limit:      limit,
+			Offset:     (page - 1) * limit,
 		}
 
 		findings, err := store.ListFindings(ctx, opts)
@@ -59,6 +65,12 @@ var findingsListCmd = &cobra.Command{
 				}
 			}
 			findings = filtered
+		}
+
+		if jsonOut {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(findings)
 		}
 
 		p := NewPrinter(cmd.OutOrStdout())
@@ -109,6 +121,9 @@ var findingsListCmd = &cobra.Command{
 		}
 		w.Flush()
 
+		total, _ := store.CountFindingsFiltered(ctx, opts)
+		totalPages := (total + limit - 1) / limit
+
 		crit, high, med := 0, 0, 0
 		for _, f := range findings {
 			switch f.Severity {
@@ -120,7 +135,12 @@ var findingsListCmd = &cobra.Command{
 				med++
 			}
 		}
-		fmt.Fprintf(p.W, "\n%d findings", len(findings))
+
+		if totalPages > 1 {
+			fmt.Fprintf(p.W, "\n%d findings (page %d/%d, %d total)", len(findings), page, totalPages, total)
+		} else {
+			fmt.Fprintf(p.W, "\n%d findings", len(findings))
+		}
 		switch {
 		case crit > 0:
 			p.Theme.Critical.Fprintf(p.W, " (%d critical)", crit)
@@ -131,6 +151,9 @@ var findingsListCmd = &cobra.Command{
 		}
 		fmt.Fprintln(p.W, "")
 
+		if page < totalPages {
+			p.ActionHint("use --page %d to see more.", page+1)
+		}
 		if !newOnly && !resolvedOnly {
 			p.ActionHint("use 'surfbot findings show <id>' for full details.")
 		}
@@ -209,6 +232,7 @@ func init() {
 	findingsListCmd.Flags().String("status", "", "Filter by status: open|resolved|acknowledged|false_positive|ignored")
 	findingsListCmd.Flags().String("scan", "", "Filter by scan ID")
 	findingsListCmd.Flags().Int("limit", 50, "Max number of results")
+	findingsListCmd.Flags().Int("page", 1, "Page number for paginated results")
 	findingsListCmd.Flags().Bool("new", false, "Show only new findings from last scan")
 	findingsListCmd.Flags().Bool("resolved", false, "Show only recently resolved findings")
 

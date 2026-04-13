@@ -83,26 +83,29 @@ type ScanRunner interface {
 // scans on independent cadences, persists cursors across restarts, and
 // honors a maintenance window.
 type IntervalScheduler struct {
-	cfg     Config
-	clock   Clock
-	store   *ScheduleStateStore
-	scanner ScanRunner
-	logger  *slog.Logger
-	onTick  func(ScanResult)
-	rng     *rand.Rand
+	cfg         Config
+	clock       Clock
+	store       *ScheduleStateStore
+	configStore *ScheduleConfigStore
+	scanner     ScanRunner
+	logger      *slog.Logger
+	onTick      func(ScanResult)
+	rng         *rand.Rand
 
-	mu    sync.Mutex
-	state ScheduleState
+	mu       sync.Mutex
+	state    ScheduleState
+	reloadCh chan Config // signals Run loop to pick up new config
 }
 
 // Options bundles non-config dependencies for New.
 type Options struct {
-	Clock      Clock
-	StateStore *ScheduleStateStore
-	Scanner    ScanRunner
-	Logger     *slog.Logger
-	OnTick     func(ScanResult)
-	RandSeed   int64 // 0 → time.Now().UnixNano()
+	Clock       Clock
+	StateStore  *ScheduleStateStore
+	ConfigStore *ScheduleConfigStore // optional: enables config file watching
+	Scanner     ScanRunner
+	Logger      *slog.Logger
+	OnTick      func(ScanResult)
+	RandSeed    int64 // 0 → time.Now().UnixNano()
 }
 
 // New constructs an IntervalScheduler. Validate the Config before calling
@@ -119,14 +122,37 @@ func New(cfg Config, opts Options) *IntervalScheduler {
 		seed = time.Now().UnixNano()
 	}
 	return &IntervalScheduler{
-		cfg:     cfg,
-		clock:   opts.Clock,
-		store:   opts.StateStore,
-		scanner: opts.Scanner,
-		logger:  opts.Logger,
-		onTick:  opts.OnTick,
-		rng:     rand.New(rand.NewSource(seed)),
+		cfg:         cfg,
+		clock:       opts.Clock,
+		store:       opts.StateStore,
+		configStore: opts.ConfigStore,
+		scanner:     opts.Scanner,
+		logger:      opts.Logger,
+		onTick:      opts.OnTick,
+		rng:         rand.New(rand.NewSource(seed)),
+		reloadCh:    make(chan Config, 1),
 	}
+}
+
+// Reload applies a new Config to the running scheduler. The Run loop
+// picks it up on the next iteration and recalculates next scan times
+// using the existing cursors (last_full_at, last_quick_at).
+func (s *IntervalScheduler) Reload(cfg Config) {
+	// Non-blocking send — drop if the channel is full (a prior reload
+	// is already queued).
+	select {
+	case s.reloadCh <- cfg:
+		s.logger.Info("scheduler.reload_queued")
+	default:
+		s.logger.Warn("scheduler.reload_dropped", "reason", "channel_full")
+	}
+}
+
+// Config returns a snapshot of the current scheduler config.
+func (s *IntervalScheduler) Config() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
 }
 
 // State returns a snapshot of the current schedule cursors. Safe for
@@ -200,6 +226,11 @@ func (s *IntervalScheduler) Run(ctx context.Context) error {
 		go s.runTriggerLoop(ctx)
 	}
 
+	// Watch schedule.config.json for changes from the UI/CLI.
+	if s.configStore != nil {
+		go s.WatchConfig(ctx, s.configStore)
+	}
+
 	if s.cfg.RunOnStart {
 		now := s.clock.Now()
 		if !s.cfg.Window.Contains(now) {
@@ -248,6 +279,15 @@ func (s *IntervalScheduler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			timer.Stop()
 			return nil
+		case newCfg := <-s.reloadCh:
+			timer.Stop()
+			s.mu.Lock()
+			s.cfg = newCfg
+			s.mu.Unlock()
+			s.logger.Info("scheduler.reloaded",
+				"full_interval", newCfg.FullInterval,
+				"quick_interval", newCfg.QuickInterval)
+			continue // re-enter loop with new config
 		case <-timer.C():
 		}
 

@@ -10,7 +10,7 @@ var fixCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		p := NewPrinter(cmd.OutOrStdout())
-		p.Warn("not yet implemented — see roadmap L6 (MCP connectors).")
+		p.Warn("not yet implemented — see roadmap L5 (remediation framework).")
 	},
 }
 

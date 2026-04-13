@@ -326,6 +326,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	finishedAt := time.Now().UTC()
 	scan.FinishedAt = &finishedAt
 	p.store.UpdateScan(ctx, scan) //nolint:errcheck
+	p.store.UpdateTargetLastScan(ctx, scan.TargetID, scan.ID, finishedAt) //nolint:errcheck
 
 	result.Stats = scan.Stats
 	result.Duration = finishedAt.Sub(*scan.StartedAt)

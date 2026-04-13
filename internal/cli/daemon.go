@@ -213,6 +213,33 @@ func durationOr(d, fallback time.Duration) time.Duration {
 // Returns the X1 NoopScheduler when scheduling is disabled so the daemon
 // still stays up (UI / logs are useful even without scans).
 func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage.Store) (daemon.Scheduler, error) {
+	configStore := intervalsched.NewScheduleConfigStore(scheduleConfigPath(paths))
+
+	// schedule.config.json takes precedence over config.yaml when it exists.
+	if configStore.Exists() {
+		persisted, err := configStore.Load()
+		if err == nil {
+			sc.Enabled = persisted.Enabled
+			if d, e := time.ParseDuration(persisted.FullScanInterval); e == nil {
+				sc.FullScanInterval = d
+			}
+			if d, e := time.ParseDuration(persisted.QuickCheckInterval); e == nil {
+				sc.QuickCheckInterval = d
+			}
+			if d, e := time.ParseDuration(persisted.Jitter); e == nil {
+				sc.Jitter = d
+			}
+			sc.RunOnStart = persisted.RunOnStart
+			sc.QuickCheckTools = persisted.QuickCheckTools
+			sc.MaintenanceWindow = config.MaintenanceWindowConfig{
+				Enabled:  persisted.MaintenanceWindow.Enabled,
+				Start:    persisted.MaintenanceWindow.Start,
+				End:      persisted.MaintenanceWindow.End,
+				Timezone: persisted.MaintenanceWindow.Timezone,
+			}
+		}
+	}
+
 	if !sc.Enabled {
 		return daemon.NewNoopScheduler(), nil
 	}
@@ -244,8 +271,9 @@ func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage
 	scanRunner := newPipelineScanRunner(store, registry, icfg.QuickTools)
 	stateStore := intervalsched.NewScheduleStateStore(scheduleStatePath(paths))
 	return intervalsched.New(icfg, intervalsched.Options{
-		StateStore: stateStore,
-		Scanner:    scanRunner,
+		StateStore:  stateStore,
+		ConfigStore: configStore,
+		Scanner:     scanRunner,
 	}), nil
 }
 
@@ -351,6 +379,14 @@ func printSchedulerStatus(w io.Writer, s *schedulerStatus) {
 func scheduleStatePath(paths daemon.Paths) string {
 	dir := paths.StateDir
 	return dir + string(os.PathSeparator) + "schedule.state.json"
+}
+
+// scheduleConfigPath returns the path of schedule.config.json next to
+// daemon.state.json. This file takes precedence over config.yaml for
+// scheduler settings once the user edits via UI or CLI.
+func scheduleConfigPath(paths daemon.Paths) string {
+	dir := paths.StateDir
+	return dir + string(os.PathSeparator) + "schedule.config.json"
 }
 
 func runDaemonInstall(cmd *cobra.Command, _ []string) error {

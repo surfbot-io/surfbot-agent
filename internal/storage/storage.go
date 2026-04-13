@@ -48,6 +48,8 @@ type FindingListOptions struct {
 	AssetID    string
 	ScanID     string
 	TargetID   string
+	TemplateID string
+	Host       string
 	Severity   model.Severity
 	Status     model.FindingStatus
 	SourceTool string
@@ -62,6 +64,7 @@ type Store interface {
 	GetTargetByValue(ctx context.Context, value string) (*model.Target, error)
 	ListTargets(ctx context.Context) ([]model.Target, error)
 	DeleteTarget(ctx context.Context, id string) error
+	UpdateTargetLastScan(ctx context.Context, targetID, scanID string, at time.Time) error
 
 	CreateScan(ctx context.Context, s *model.Scan) error
 	GetScan(ctx context.Context, id string) (*model.Scan, error)
@@ -136,6 +139,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pinging database: %w", err)
+	}
+
+	// Restrict DB file permissions — it may contain sensitive scan data.
+	if dbPath != ":memory:" {
+		_ = os.Chmod(dbPath, 0o600)
 	}
 
 	s := &SQLiteStore{db: db, dbPath: dbPath}
@@ -251,6 +259,20 @@ func (s *SQLiteStore) ListTargets(ctx context.Context) ([]model.Target, error) {
 		targets = append(targets, *t)
 	}
 	return targets, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateTargetLastScan(ctx context.Context, targetID, scanID string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE targets SET last_scan_id = ?, last_scan_at = ?, updated_at = ? WHERE id = ?`,
+		scanID, at.Format(timeFormat), time.Now().UTC().Format(timeFormat), targetID)
+	if err != nil {
+		return fmt.Errorf("updating target last scan: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) DeleteTarget(ctx context.Context, id string) error {
@@ -585,6 +607,14 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 	if opts.SourceTool != "" {
 		where = append(where, "source_tool = ?")
 		args = append(args, opts.SourceTool)
+	}
+	if opts.TemplateID != "" {
+		where = append(where, "template_id = ?")
+		args = append(args, opts.TemplateID)
+	}
+	if opts.Host != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE value LIKE ? OR value LIKE ?)")
+		args = append(args, opts.Host, opts.Host+":%")
 	}
 
 	if len(where) > 0 {
@@ -944,6 +974,14 @@ func (s *SQLiteStore) CountFindingsFiltered(ctx context.Context, opts FindingLis
 	if opts.SourceTool != "" {
 		where = append(where, "source_tool = ?")
 		args = append(args, opts.SourceTool)
+	}
+	if opts.TemplateID != "" {
+		where = append(where, "template_id = ?")
+		args = append(args, opts.TemplateID)
+	}
+	if opts.Host != "" {
+		where = append(where, "asset_id IN (SELECT id FROM assets WHERE value LIKE ? OR value LIKE ?)")
+		args = append(args, opts.Host, opts.Host+":%")
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")

@@ -133,6 +133,35 @@ func TestTargetDuplicate(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAlreadyExists)
 }
 
+func TestUpdateTargetLastScan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	target := &model.Target{Value: "example.com"}
+	require.NoError(t, s.CreateTarget(ctx, target))
+
+	// Initially last_scan_at should be zero
+	got, err := s.GetTarget(ctx, target.ID)
+	require.NoError(t, err)
+	assert.True(t, got.LastScanAt == nil || got.LastScanAt.IsZero())
+
+	// Update last scan
+	scanID := "scan-123"
+	now := time.Now().UTC().Truncate(time.Second)
+	err = s.UpdateTargetLastScan(ctx, target.ID, scanID, now)
+	require.NoError(t, err)
+
+	got, err = s.GetTarget(ctx, target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, scanID, got.LastScanID)
+	assert.NotNil(t, got.LastScanAt)
+	assert.Equal(t, now, got.LastScanAt.Truncate(time.Second))
+
+	// Non-existent target returns ErrNotFound
+	err = s.UpdateTargetLastScan(ctx, "nonexistent", scanID, now)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestScanCRUD(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

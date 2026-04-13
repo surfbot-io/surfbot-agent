@@ -45,7 +45,30 @@ const ScansPage = {
           <button type="submit" class="btn btn-primary" ${scanRunning ? 'disabled' : ''}>
             ${scanRunning ? 'Scan running...' : 'Start Scan'}
           </button>
+          <button type="button" id="toggle-scan-opts" class="btn btn-secondary" style="margin-left:4px"
+            title="Advanced options">⚙</button>
         </form>
+        <div id="scan-advanced" class="scan-advanced" style="display:none">
+          <div class="form-section" style="margin-top:8px">
+            <h4 style="margin:0 0 8px">Advanced Options</h4>
+            <div class="form-row">
+              <label for="scan-rate-limit">Rate limit (req/s)</label>
+              <input type="number" id="scan-rate-limit" class="form-input form-input-sm"
+                     min="0" value="0" placeholder="0 = per-tool default">
+            </div>
+            <div class="form-row">
+              <label for="scan-timeout">Per-phase timeout (seconds)</label>
+              <input type="number" id="scan-timeout" class="form-input form-input-sm"
+                     min="0" value="0" placeholder="0 = default (300s)">
+            </div>
+            <div class="form-row">
+              <label>Tools</label>
+              <div id="scan-tools-group" class="checkbox-group">
+                <span class="text-muted">Loading tools...</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <div id="scan-error" class="form-error" style="display:none"></div>
       </div>
     ` : '';
@@ -104,6 +127,20 @@ const ScansPage = {
     const form = document.getElementById('new-scan-form');
     if (!form) return;
 
+    // Advanced options toggle.
+    const toggleBtn = document.getElementById('toggle-scan-opts');
+    const advPanel = document.getElementById('scan-advanced');
+    if (toggleBtn && advPanel) {
+      toggleBtn.addEventListener('click', () => {
+        const hidden = advPanel.style.display === 'none';
+        advPanel.style.display = hidden ? '' : 'none';
+        if (hidden) this.loadToolCheckboxes();
+      });
+    }
+
+    // Restore saved options from localStorage.
+    this.restoreScanOpts();
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const targetId = document.getElementById('scan-target').value;
@@ -115,8 +152,11 @@ const ScansPage = {
       btn.textContent = 'Starting...';
       errorEl.style.display = 'none';
 
+      const opts = this.collectScanOpts();
+      this.saveScanOpts(opts);
+
       try {
-        await API.startScan(targetId, scanType);
+        await API.startScan(targetId, scanType, opts);
         ScansPage.render(app);
       } catch (err) {
         errorEl.textContent = err.message;
@@ -125,6 +165,62 @@ const ScansPage = {
         btn.textContent = 'Start Scan';
       }
     });
+  },
+
+  async loadToolCheckboxes() {
+    const group = document.getElementById('scan-tools-group');
+    if (!group || group.dataset.loaded) return;
+    try {
+      const data = await API.availableTools();
+      const tools = data.tools || [];
+      const saved = this.getSavedTools();
+      group.innerHTML = tools.map(t => {
+        const checked = saved.includes(t.name) ? 'checked' : '';
+        return `<label class="checkbox-label">
+          <input type="checkbox" name="scan_tool" value="${escapeHtml(t.name)}" ${checked}>
+          ${escapeHtml(t.name)} <span class="text-muted">(${escapeHtml(t.phase)})</span>
+        </label>`;
+      }).join('');
+      group.dataset.loaded = '1';
+    } catch {
+      group.innerHTML = '<span class="text-muted">Failed to load tools</span>';
+    }
+  },
+
+  collectScanOpts() {
+    const rl = document.getElementById('scan-rate-limit');
+    const to = document.getElementById('scan-timeout');
+    const tools = Array.from(document.querySelectorAll('input[name="scan_tool"]:checked'))
+      .map(cb => cb.value);
+    return {
+      tools: tools,
+      rate_limit: rl ? parseInt(rl.value, 10) || 0 : 0,
+      timeout: to ? parseInt(to.value, 10) || 0 : 0,
+    };
+  },
+
+  saveScanOpts(opts) {
+    try { localStorage.setItem('surfbot_scan_opts', JSON.stringify(opts)); } catch {}
+  },
+
+  restoreScanOpts() {
+    try {
+      const raw = localStorage.getItem('surfbot_scan_opts');
+      if (!raw) return;
+      const opts = JSON.parse(raw);
+      const rl = document.getElementById('scan-rate-limit');
+      const to = document.getElementById('scan-timeout');
+      if (rl && opts.rate_limit) rl.value = opts.rate_limit;
+      if (to && opts.timeout) to.value = opts.timeout;
+    } catch {}
+  },
+
+  getSavedTools() {
+    try {
+      const raw = localStorage.getItem('surfbot_scan_opts');
+      if (!raw) return [];
+      return JSON.parse(raw).tools || [];
+    } catch { return []; }
   },
 
   startPolling(app) {

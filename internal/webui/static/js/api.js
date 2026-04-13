@@ -43,6 +43,17 @@ const API = {
     return data;
   },
 
+  async put(path, body) {
+    const resp = await fetch('/api/v1' + path, {
+      method: 'PUT',
+      headers: this._headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({ error: resp.statusText }));
+    if (!resp.ok) throw new Error(data.error || data.errors ? JSON.stringify(data.errors) : 'Request failed');
+    return data;
+  },
+
   async del(path) {
     const resp = await fetch('/api/v1' + path, { method: 'DELETE', headers: this._headers() });
     const data = await resp.json().catch(() => ({ error: resp.statusText }));
@@ -63,6 +74,8 @@ const API = {
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
   scanStatus()          { return this.get('/scans/status'); },
+  schedule()            { return this.get('/schedule'); },
+  updateSchedule(cfg)   { return this.put('/schedule', cfg); },
 
   // Write endpoints
   createTarget(value, type, scope) {
@@ -72,8 +85,14 @@ const API = {
   updateFindingStatus(id, status) {
     return this.patch('/findings/' + id + '/status', { status });
   },
-  startScan(targetId, type) {
-    return this.post('/scans', { target_id: targetId, type: type || 'full' });
+  startScan(targetId, type, opts) {
+    const body = { target_id: targetId, type: type || 'full' };
+    if (opts) {
+      if (opts.tools && opts.tools.length > 0) body.tools = opts.tools;
+      if (opts.rate_limit > 0) body.rate_limit = opts.rate_limit;
+      if (opts.timeout > 0) body.timeout = opts.timeout;
+    }
+    return this.post('/scans', body);
   },
 
   // SPEC-X3.1 — daemon endpoints live outside /api/v1/.

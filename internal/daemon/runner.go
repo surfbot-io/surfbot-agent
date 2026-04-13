@@ -22,6 +22,7 @@ type Runner struct {
 	logger    *Logger
 	heartbeat time.Duration
 	version   string
+	started   time.Time
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -62,6 +63,7 @@ func (r *Runner) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	r.done = make(chan struct{})
+	r.started = time.Now().UTC()
 
 	if err := r.writeState(); err != nil && r.logger != nil {
 		r.logger.Slog().Warn("initial state write failed", "err", err)
@@ -132,9 +134,7 @@ func (r *Runner) writeState() error {
 		s.PID = os.Getpid()
 		now := time.Now().UTC()
 		s.WrittenAt = now
-		if s.StartedAt.IsZero() {
-			s.StartedAt = now
-		}
+		s.StartedAt = r.started
 		if r.sched != nil {
 			s.NextScanAt = r.sched.Next()
 		}

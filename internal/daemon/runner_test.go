@@ -59,6 +59,43 @@ func TestRunner_ShutdownTimeout(t *testing.T) {
 	require.ErrorIs(t, err, ErrShutdownTimeout)
 }
 
+func TestRunner_StartedAtFreshOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	stateStore := NewStateStore(statePath)
+
+	// Seed an old state file with a stale StartedAt.
+	oldStart := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, stateStore.Save(State{
+		Version:   "old",
+		PID:       99999,
+		StartedAt: oldStart,
+		WrittenAt: oldStart,
+	}))
+
+	logger := NewLogger(filepath.Join(dir, "test.log"), LoggerOptions{MaxSizeMB: 1})
+	t.Cleanup(func() { _ = logger.Close() })
+
+	r := NewRunner(RunnerConfig{
+		Scheduler: NewNoopScheduler(),
+		State:     stateStore,
+		Logger:    logger,
+		Heartbeat: 50 * time.Millisecond,
+		Version:   "new",
+	})
+
+	before := time.Now().UTC()
+	require.NoError(t, r.Start())
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, r.Stop(2*time.Second))
+
+	st, err := stateStore.Load()
+	require.NoError(t, err)
+	require.Equal(t, "new", st.Version)
+	require.True(t, st.StartedAt.After(oldStart), "StartedAt should be newer than old state")
+	require.True(t, !st.StartedAt.Before(before), "StartedAt should be at or after runner start")
+}
+
 func TestRunner_DoubleStart(t *testing.T) {
 	r := newTestRunner(t, NewNoopScheduler())
 	require.NoError(t, r.Start())

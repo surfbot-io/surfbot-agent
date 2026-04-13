@@ -50,6 +50,13 @@ type DaemonView struct {
 	WindowEnd      string
 	WindowTimezone string
 
+	// Scheduler is the live scheduler instance. When non-nil, the
+	// schedule API can read its config and reload it on updates.
+	Scheduler *intervalsched.IntervalScheduler
+	// ScheduleConfigStore persists schedule.config.json. When non-nil,
+	// the schedule API can read/write persisted schedule config.
+	ScheduleConfigStore *intervalsched.ScheduleConfigStore
+
 	// triggerMu serializes write access to the trigger flag file.
 	triggerMu sync.Mutex
 }
@@ -293,7 +300,12 @@ func buildSchedulerBlock(d *DaemonView, now time.Time) *schedulerStatusBlock {
 
 func buildWindowBlock(d *DaemonView, now time.Time) *windowBlock {
 	if !d.Window.Enabled {
-		return &windowBlock{Enabled: false}
+		return &windowBlock{
+			Enabled:  false,
+			Start:    d.WindowStart,
+			End:      d.WindowEnd,
+			Timezone: d.WindowTimezone,
+		}
 	}
 	wb := &windowBlock{
 		Enabled:  true,

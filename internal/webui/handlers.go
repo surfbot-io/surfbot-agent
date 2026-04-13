@@ -18,6 +18,7 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/pipeline"
+	"github.com/surfbot-io/surfbot-agent/internal/scoring"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
@@ -68,7 +69,7 @@ func queryInt(r *http.Request, key string, def int) int {
 
 type overviewResponse struct {
 	SecurityScore      int                     `json:"security_score"`
-	ScoreBreakdown     []scoreComponent        `json:"score_breakdown"`
+	ScoreBreakdown     []scoring.Component     `json:"score_breakdown"`
 	TotalFindings      int                     `json:"total_findings"`
 	UniqueFindings     int                     `json:"unique_findings"`
 	FindingsBySeverity map[model.Severity]int  `json:"findings_by_severity"`
@@ -79,12 +80,6 @@ type overviewResponse struct {
 	Agent              agentInfo               `json:"agent"`
 }
 
-type scoreComponent struct {
-	Severity string `json:"severity"`
-	Count    int    `json:"count"`
-	Weight   int    `json:"weight"`
-	Penalty  int    `json:"penalty"`
-}
 
 type scanSummary struct {
 	ID              string     `json:"id"`
@@ -156,7 +151,7 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 		typeCounts = make(map[model.AssetType]int)
 	}
 
-	score, breakdown := computeSecurityScore(sevCounts)
+	score, breakdown := scoring.ComputeSecurityScore(sevCounts)
 
 	resp := overviewResponse{
 		SecurityScore:      score,
@@ -223,41 +218,6 @@ func (h *handler) getChangeSummary(ctx context.Context, scanID string) *changeSu
 	return cs
 }
 
-func computeSecurityScore(sevCounts map[model.Severity]int) (int, []scoreComponent) {
-	weights := []struct {
-		sev    model.Severity
-		weight int
-	}{
-		{model.SeverityCritical, 25},
-		{model.SeverityHigh, 10},
-		{model.SeverityMedium, 3},
-		{model.SeverityLow, 1},
-	}
-
-	var breakdown []scoreComponent
-	score := 100
-	for _, w := range weights {
-		count := sevCounts[w.sev]
-		penalty := count * w.weight
-		score -= penalty
-		if count > 0 {
-			breakdown = append(breakdown, scoreComponent{
-				Severity: string(w.sev),
-				Count:    count,
-				Weight:   w.weight,
-				Penalty:  penalty,
-			})
-		}
-	}
-	if score < 0 {
-		score = 0
-	}
-	if score > 100 {
-		score = 100
-	}
-	return score, breakdown
-}
-
 // --- Findings ---
 
 type findingsResponse struct {
@@ -301,6 +261,12 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.ScanID = scanID
+	}
+	if tmpl := r.URL.Query().Get("template_id"); tmpl != "" {
+		opts.TemplateID = tmpl
+	}
+	if host := r.URL.Query().Get("host"); host != "" {
+		opts.Host = host
 	}
 
 	findings, err := h.store.ListFindings(r.Context(), opts)
@@ -826,8 +792,11 @@ func (h *handler) handleUpdateFindingStatus(w http.ResponseWriter, r *http.Reque
 // --- Scan Trigger ---
 
 type createScanRequest struct {
-	TargetID string `json:"target_id"`
-	Type     string `json:"type,omitempty"` // full, quick, discovery
+	TargetID  string   `json:"target_id"`
+	Type      string   `json:"type,omitempty"`       // full, quick, discovery
+	Tools     []string `json:"tools,omitempty"`      // specific tools to run (empty = all)
+	RateLimit int      `json:"rate_limit,omitempty"` // global rate limit in req/s (0 = per-tool defaults)
+	Timeout   int      `json:"timeout,omitempty"`    // per-phase timeout in seconds (0 = default)
 }
 
 func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
@@ -867,6 +836,26 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		scanType = model.ScanTypeDiscovery
 	}
 
+	// Validate tools against registry.
+	if len(req.Tools) > 0 {
+		for _, name := range req.Tools {
+			if _, ok := h.registry.GetByName(name); !ok {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown tool: %s", name))
+				return
+			}
+		}
+	}
+
+	// Validate rate_limit and timeout.
+	if req.RateLimit < 0 {
+		writeError(w, http.StatusBadRequest, "rate_limit must be >= 0")
+		return
+	}
+	if req.Timeout < 0 {
+		writeError(w, http.StatusBadRequest, "timeout must be >= 0")
+		return
+	}
+
 	// Prevent concurrent scans
 	h.scanMu.Lock()
 	if h.runningScan != "" {
@@ -878,7 +867,10 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	// Create pipeline and run async
 	pipe := pipeline.New(h.store, h.registry)
 	opts := pipeline.PipelineOptions{
-		ScanType: scanType,
+		ScanType:  scanType,
+		Tools:     req.Tools,
+		RateLimit: req.RateLimit,
+		Timeout:   req.Timeout,
 	}
 
 	// Create a placeholder scan ID by peeking at the pipeline
@@ -902,12 +894,22 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 			target.Value, result.TotalFindings, result.TotalAssets, result.Duration)
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	resp := map[string]any{
 		"status":  "started",
 		"target":  target.Value,
 		"type":    string(scanType),
 		"message": "scan started in background",
-	})
+	}
+	if len(req.Tools) > 0 {
+		resp["tools"] = req.Tools
+	}
+	if req.RateLimit > 0 {
+		resp["rate_limit"] = req.RateLimit
+	}
+	if req.Timeout > 0 {
+		resp["timeout"] = req.Timeout
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // --- Scan Status ---

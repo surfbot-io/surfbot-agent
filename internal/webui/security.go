@@ -63,7 +63,7 @@ func allowedOrigins(port int) []string {
 // Cache-Control: no-store is added for /api/* so JSON snapshots are never
 // cached by intermediaries (or by the browser tab).
 func securityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; " +
 		"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
 		"base-uri 'none'; form-action 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
