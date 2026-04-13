@@ -253,6 +253,248 @@ const ScansPage = {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this._elapsedTimer) {
+      clearInterval(this._elapsedTimer);
+      this._elapsedTimer = null;
+    }
+  },
+
+  // --- Scan Detail View ---
+
+  PHASES: [
+    { key: 'discovery', label: 'Discovering' },
+    { key: 'resolution', label: 'DNS' },
+    { key: 'port_scan', label: 'Ports' },
+    { key: 'http_probe', label: 'HTTP' },
+    { key: 'assessment', label: 'Analyzing' },
+    { key: 'completed', label: 'Complete' },
+  ],
+
+  TOOL_ICONS: {
+    subfinder: '\u{1F50D}', dnsx: '\u{1F4CB}', naabu: '\u{1F4E1}',
+    httpx: '\u{1F310}', subjack: '\u{26A0}\uFE0F', nuclei: '\u{1F6E1}\uFE0F',
+  },
+
+  phaseIndex(phase) {
+    if (!phase) return -1;
+    const idx = this.PHASES.findIndex(p => p.key === phase);
+    if (idx >= 0) return idx;
+    // Map alternate names
+    if (phase === 'initializing') return -1;
+    if (phase === 'diffing') return 5;
+    if (phase === 'cancelled') return -1;
+    return -1;
+  },
+
+  renderPhaseIndicator(scan) {
+    const isTerminal = scan.status === 'completed' || scan.status === 'failed' || scan.status === 'cancelled';
+    const currentIdx = isTerminal && scan.status === 'completed' ? 6 : this.phaseIndex(scan.phase);
+
+    return `<div class="phase-indicator">${this.PHASES.map((p, i) => {
+      const num = i + 1;
+      let circleClass = 'phase-circle';
+      let content = num;
+      let stepClass = 'phase-step';
+
+      if (isTerminal && scan.status === 'completed') {
+        circleClass += ' phase-done';
+        content = '\u2713';
+        stepClass += ' done';
+      } else if (i < currentIdx) {
+        circleClass += ' phase-done';
+        content = '\u2713';
+        stepClass += ' done';
+      } else if (i === currentIdx) {
+        if (scan.status === 'failed') {
+          circleClass += ' phase-failed';
+          content = '\u2717';
+        } else if (scan.status === 'cancelled') {
+          circleClass += ' phase-cancelled';
+          content = '\u2013';
+        } else {
+          circleClass += ' phase-active';
+        }
+        stepClass += ' active';
+      }
+
+      const line = i < this.PHASES.length - 1
+        ? `<div class="phase-line${i < currentIdx ? ' phase-line-done' : ''}"></div>`
+        : '';
+
+      return `<div class="${stepClass}"><div class="${circleClass}">${content}</div><span class="phase-label">${p.label}</span></div>${line}`;
+    }).join('')}</div>`;
+  },
+
+  renderProgressBar(scan) {
+    if (scan.status !== 'running') return '';
+    const pct = Math.round(scan.progress || 0);
+    const phase = scan.phase || 'initializing';
+    const fillClass = pct === 0 ? 'progress-bar-fill progress-shimmer' : 'progress-bar-fill';
+
+    return `<div class="progress-bar-container">
+      <div class="progress-bar-header">
+        <span>Phase: ${phase}</span>
+        <span>${pct}%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="${fillClass}" style="width:${pct === 0 ? 100 : pct}%"></div>
+      </div>
+    </div>`;
+  },
+
+  renderPipeline(toolRuns) {
+    if (toolRuns.length === 0) return '';
+
+    const sorted = [...toolRuns].sort((a, b) => {
+      if (a.started_at && b.started_at) return new Date(a.started_at) - new Date(b.started_at);
+      return 0;
+    });
+
+    const nodes = sorted.map((tr, i) => {
+      const icon = this.TOOL_ICONS[tr.tool_name] || '\u{1F527}';
+      const isLast = i === sorted.length - 1;
+      const statusClass = 'status-' + (tr.status || 'pending');
+
+      let duration = '';
+      if (tr.status === 'running' && tr.started_at) {
+        const elapsed = Math.round((Date.now() - new Date(tr.started_at).getTime()) / 1000);
+        duration = `<span class="tool-duration mono" data-started="${tr.started_at}">${this.formatElapsed(elapsed)}</span>`;
+      } else if (tr.duration_ms > 0) {
+        duration = `<span class="tool-duration mono">${this.formatDurationMs(tr.duration_ms)}</span>`;
+      }
+
+      const stats = [];
+      if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} targets</span>`);
+      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding">${tr.findings_count} findings</span>`);
+
+      return `<div class="pipeline-node ${statusClass}">
+        <div class="pipeline-connector">
+          <div class="pipeline-dot"></div>
+          ${isLast ? '' : '<div class="pipeline-vline"></div>'}
+        </div>
+        <div class="pipeline-content">
+          <div class="pipeline-header">
+            <span class="tool-icon">${icon}</span>
+            <span class="tool-name">${escapeHtml(tr.tool_name)}</span>
+            ${Components.statusBadge(tr.status)}
+            ${duration}
+          </div>
+          ${stats.length > 0 ? `<div class="pipeline-stats">${stats.join('')}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="card" style="margin-bottom:16px">
+      <div class="card-label">Pipeline</div>
+      <div class="pipeline-view">${nodes}</div>
+    </div>`;
+  },
+
+  formatElapsed(seconds) {
+    if (seconds < 60) return seconds + 's';
+    return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  },
+
+  formatDurationMs(ms) {
+    if (ms < 1000) return ms + 'ms';
+    const s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + 's';
+    return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  },
+
+  renderDetailContent(app, data) {
+    const s = data.scan;
+    const isRunning = s.status === 'running';
+
+    let dur = '-';
+    if (s.started_at && s.finished_at) {
+      dur = Components.formatDuration(Math.floor((new Date(s.finished_at) - new Date(s.started_at)) / 1000));
+    } else if (isRunning && s.started_at) {
+      const elapsed = Math.round((Date.now() - new Date(s.started_at).getTime()) / 1000);
+      dur = this.formatElapsed(elapsed) + ' (running)';
+    }
+
+    const cancelBtn = isRunning
+      ? `<button class="btn btn-danger btn-sm" id="cancel-scan-btn">Cancel Scan</button>`
+      : '';
+
+    const errorCard = s.error
+      ? `<div class="card" style="margin-bottom:16px;border-color:rgba(248,81,73,0.3)">
+          <div style="color:var(--sev-critical);font-size:13px">${escapeHtml(s.error)}</div>
+        </div>`
+      : '';
+
+    const changeRows = data.changes.map(c => `
+      <tr>
+        <td><span class="change-${c.change_type}">${c.change_type}</span></td>
+        <td>${c.asset_type}</td>
+        <td class="mono">${escapeHtml(c.asset_value)}</td>
+        <td>${escapeHtml(c.summary || '-')}</td>
+      </tr>
+    `).join('');
+
+    app.innerHTML = `
+      ${Components.backLink('#/scans', 'Back to scans')}
+      <div class="detail-panel">
+        <div class="detail-header">
+          ${Components.statusBadge(s.status)}
+          <h2>Scan ${Components.truncateID(s.id)}</h2>
+          <span class="text-muted mono" style="font-size:12px">${escapeHtml(data.target)}</span>
+          <span class="text-muted" style="font-size:12px;margin-left:4px">${dur}</span>
+          <div style="margin-left:auto">${cancelBtn}</div>
+        </div>
+
+        ${this.renderPhaseIndicator(s)}
+        ${this.renderProgressBar(s)}
+        ${errorCard}
+      </div>
+
+      ${this.renderPipeline(data.tool_runs)}
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-label">Scan Stats</div>
+        <div class="detail-grid" style="margin-top:8px">
+          <span class="detail-label">Subdomains</span><span class="detail-value">${s.stats.subdomains_found || 0}</span>
+          <span class="detail-label">IPs Resolved</span><span class="detail-value">${s.stats.ips_resolved || 0}</span>
+          <span class="detail-label">Ports Scanned</span><span class="detail-value">${s.stats.ports_scanned || 0}</span>
+          <span class="detail-label">Open Ports</span><span class="detail-value">${s.stats.open_ports || 0}</span>
+          <span class="detail-label">HTTP Probed</span><span class="detail-value">${s.stats.http_probed || 0}</span>
+          <span class="detail-label">Findings</span><span class="detail-value">${s.stats.findings_total || 0}</span>
+        </div>
+        ${Components.severityBars({
+          critical: s.stats.findings_critical || 0,
+          high: s.stats.findings_high || 0,
+          medium: s.stats.findings_medium || 0,
+          low: s.stats.findings_low || 0,
+          info: s.stats.findings_info || 0,
+        })}
+      </div>
+
+      ${data.changes.length > 0 ? `
+        <h3 style="margin-bottom:12px">Asset Changes</h3>
+        ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
+      ` : ''}
+    `;
+
+    // Bind cancel button
+    if (isRunning) {
+      const cancelEl = document.getElementById('cancel-scan-btn');
+      if (cancelEl) {
+        cancelEl.addEventListener('click', async () => {
+          if (!confirm('Cancel this scan? Tools already running will be terminated.')) return;
+          cancelEl.disabled = true;
+          cancelEl.textContent = 'Cancelling...';
+          try {
+            await API.cancelScan(s.id);
+            setTimeout(() => this.renderDetail(app, s.id), 1000);
+          } catch (err) {
+            cancelEl.disabled = false;
+            cancelEl.textContent = 'Cancel Scan';
+            alert('Failed to cancel: ' + err.message);
+          }
+        });
+      }
+    }
   },
 
   async renderDetail(app, id) {
@@ -261,95 +503,37 @@ const ScansPage = {
 
     try {
       const data = await API.scan(id);
-      const s = data.scan;
-
-      let dur = '-';
-      if (s.started_at && s.finished_at) {
-        dur = Components.formatDuration(Math.floor((new Date(s.finished_at) - new Date(s.started_at)) / 1000));
-      }
-
-      const toolRows = data.tool_runs.map(tr => `
-        <tr>
-          <td class="mono">${escapeHtml(tr.tool_name)}</td>
-          <td>${tr.phase}</td>
-          <td>${Components.statusBadge(tr.status)}</td>
-          <td class="mono">${tr.duration_ms}ms</td>
-          <td>${tr.findings_count} findings</td>
-          <td>${tr.targets_count} targets</td>
-        </tr>
-      `).join('');
-
-      const changeRows = data.changes.map(c => `
-        <tr>
-          <td><span class="change-${c.change_type}">${c.change_type}</span></td>
-          <td>${c.asset_type}</td>
-          <td class="mono">${escapeHtml(c.asset_value)}</td>
-          <td>${escapeHtml(c.summary || '-')}</td>
-        </tr>
-      `).join('');
-
-      app.innerHTML = `
-        ${Components.backLink('#/scans', 'Back to scans')}
-        <div class="detail-panel">
-          <div class="detail-header">
-            ${Components.statusBadge(s.status)}
-            <h2>Scan ${Components.truncateID(s.id)}</h2>
-          </div>
-          <div class="detail-grid">
-            <span class="detail-label">ID</span>
-            <span class="detail-value mono">${s.id}</span>
-            <span class="detail-label">Target</span>
-            <span class="detail-value mono">${escapeHtml(data.target)}</span>
-            <span class="detail-label">Type</span>
-            <span class="detail-value">${s.type}</span>
-            <span class="detail-label">Status</span>
-            <span class="detail-value">${Components.statusBadge(s.status)}</span>
-            <span class="detail-label">Duration</span>
-            <span class="detail-value">${dur}</span>
-            <span class="detail-label">Started</span>
-            <span class="detail-value">${Components.formatDate(s.started_at)}</span>
-            <span class="detail-label">Finished</span>
-            <span class="detail-value">${Components.formatDate(s.finished_at)}</span>
-            ${s.error ? `<span class="detail-label">Error</span><span class="detail-value" style="color:var(--danger)">${escapeHtml(s.error)}</span>` : ''}
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-label">Scan Stats</div>
-          <div class="detail-grid" style="margin-top:8px">
-            <span class="detail-label">Subdomains</span><span class="detail-value">${s.stats.subdomains_found || 0}</span>
-            <span class="detail-label">IPs Resolved</span><span class="detail-value">${s.stats.ips_resolved || 0}</span>
-            <span class="detail-label">Ports Scanned</span><span class="detail-value">${s.stats.ports_scanned || 0}</span>
-            <span class="detail-label">Open Ports</span><span class="detail-value">${s.stats.open_ports || 0}</span>
-            <span class="detail-label">HTTP Probed</span><span class="detail-value">${s.stats.http_probed || 0}</span>
-            <span class="detail-label">Findings</span><span class="detail-value">${s.stats.findings_total || 0}</span>
-          </div>
-          ${Components.severityBars({
-            critical: s.stats.findings_critical || 0,
-            high: s.stats.findings_high || 0,
-            medium: s.stats.findings_medium || 0,
-            low: s.stats.findings_low || 0,
-            info: s.stats.findings_info || 0,
-          })}
-        </div>
-
-        ${data.tool_runs.length > 0 ? `
-          <h3 style="margin-bottom:12px">Tool Runs</h3>
-          ${Components.table(['Tool', 'Phase', 'Status', 'Duration', 'Findings', 'Targets'], [toolRows])}
-        ` : ''}
-
-        ${data.changes.length > 0 ? `
-          <h3 style="margin-bottom:12px">Asset Changes</h3>
-          ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
-        ` : ''}
-      `;
+      this.renderDetailContent(app, data);
 
       // Poll if running
-      if (s.status === 'running') {
-        this.startPolling(app);
+      if (data.scan.status === 'running') {
+        this.startDetailPolling(app, id);
       }
     } catch (err) {
       app.innerHTML = Components.emptyState('Not Found', 'Scan not found.');
     }
+  },
+
+  startDetailPolling(app, id) {
+    this.stopPolling();
+    this._elapsedTimer = setInterval(() => {
+      document.querySelectorAll('.tool-duration[data-started]').forEach(el => {
+        const started = new Date(el.dataset.started).getTime();
+        const elapsed = Math.round((Date.now() - started) / 1000);
+        el.textContent = this.formatElapsed(elapsed);
+      });
+    }, 1000);
+
+    this.pollTimer = setInterval(async () => {
+      try {
+        const data = await API.scan(id);
+        if (data.scan.status !== 'running') {
+          this.stopPolling();
+        }
+        this.renderDetailContent(app, data);
+      } catch {
+        // Ignore polling errors
+      }
+    }, 3000);
   },
 };

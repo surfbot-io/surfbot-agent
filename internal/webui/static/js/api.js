@@ -82,6 +82,7 @@ const API = {
     return this.post('/targets', { value, type: type || '', scope: scope || 'external' });
   },
   deleteTarget(id)      { return this.del('/targets/' + id); },
+  cancelScan(id)        { return this.del('/scans/' + id); },
   updateFindingStatus(id, status) {
     return this.patch('/findings/' + id + '/status', { status });
   },

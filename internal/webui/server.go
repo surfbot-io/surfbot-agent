@@ -98,7 +98,14 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 	})
 	mux.HandleFunc("/api/v1/scans/", func(w http.ResponseWriter, r *http.Request) {
 		// /api/v1/scans/status is handled above by the more specific route
-		h.handleScanDetail(w, r)
+		switch r.Method {
+		case http.MethodGet:
+			h.handleScanDetail(w, r)
+		case http.MethodDelete:
+			h.handleCancelScan(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	})
 
 	// Static files with SPA fallback. The SPA shell (index.html) gets the

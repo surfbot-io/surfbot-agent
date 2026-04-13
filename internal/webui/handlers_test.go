@@ -803,3 +803,68 @@ func TestHandleAvailableTools(t *testing.T) {
 	tools := resp["tools"].([]interface{})
 	assert.Equal(t, 0, len(tools))
 }
+
+// --- Cancel Scan Tests ---
+
+func TestHandleCancelScanNotRunning(t *testing.T) {
+	h, s := newTestHandler(t)
+	seedTestData(t, s) // seeds a completed scan
+
+	scans, _ := s.ListScans(context.Background(), "", 1)
+	require.NotEmpty(t, scans)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/scans/"+scans[0].ID, nil)
+	w := httptest.NewRecorder()
+	h.handleCancelScan(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "scan is not running", resp["error"])
+}
+
+func TestHandleCancelScanNotFound(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/scans/nonexistent-id", nil)
+	w := httptest.NewRecorder()
+	h.handleCancelScan(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestHandleCancelScanRunning(t *testing.T) {
+	h, s := newTestHandler(t)
+	ctx := context.Background()
+
+	target := &model.Target{Value: "cancel-test.com"}
+	require.NoError(t, s.CreateTarget(ctx, target))
+
+	now := time.Now().UTC()
+	scan := &model.Scan{
+		TargetID:  target.ID,
+		Type:      model.ScanTypeFull,
+		Status:    model.ScanStatusRunning,
+		Phase:     "discovery",
+		Progress:  25,
+		StartedAt: &now,
+	}
+	require.NoError(t, s.CreateScan(ctx, scan))
+
+	// Simulate a running scan with a cancel func
+	cancelled := false
+	h.scanMu.Lock()
+	h.runningScan = scan.ID
+	h.cancelFunc = func() { cancelled = true }
+	h.scanMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/scans/"+scan.ID, nil)
+	w := httptest.NewRecorder()
+	h.handleCancelScan(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]bool
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.True(t, resp["ok"])
+	assert.True(t, cancelled, "cancel function should have been called")
+}
