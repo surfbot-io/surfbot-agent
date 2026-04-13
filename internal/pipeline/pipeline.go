@@ -124,6 +124,19 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		default:
 		}
 
+		// Check for external cancellation (e.g., API DELETE from another process)
+		if fresh, err := p.store.GetScan(ctx, scan.ID); err == nil {
+			if fresh.Status == model.ScanStatusCancelled {
+				scan.Status = model.ScanStatusCancelled
+				scan.Phase = "cancelled"
+				nowt := time.Now().UTC()
+				scan.FinishedAt = &nowt
+				p.store.UpdateScan(context.Background(), scan) //nolint:errcheck
+				pp.warn("Scan cancelled externally")
+				return nil, fmt.Errorf("scan cancelled")
+			}
+		}
+
 		if shouldSkip(tool, opts) {
 			pr := PhaseResult{
 				ToolName: tool.Name(),

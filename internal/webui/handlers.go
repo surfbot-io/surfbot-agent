@@ -983,7 +983,18 @@ func (h *handler) handleCancelScan(w http.ResponseWriter, r *http.Request) {
 	h.scanMu.Unlock()
 
 	if cancel != nil {
+		// Scan started by this process — cancel via context
 		cancel()
+	} else {
+		// Scan started externally (daemon/CLI) — mark as cancelled in DB.
+		// The pipeline checks scan status at each tool boundary.
+		scan.Status = model.ScanStatusCancelled
+		scan.Phase = "cancelled"
+		now := time.Now().UTC()
+		scan.FinishedAt = &now
+		if err := h.store.UpdateScan(r.Context(), scan); err != nil {
+			log.Printf("[webui] cancel scan DB update error: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
