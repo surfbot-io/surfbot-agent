@@ -275,20 +275,20 @@ const ScansPage = {
     httpx: '\u{1F310}', subjack: '\u{26A0}\uFE0F', nuclei: '\u{1F6E1}\uFE0F',
   },
 
-  phaseIndex(phase) {
-    if (!phase) return -1;
-    const idx = this.PHASES.findIndex(p => p.key === phase);
-    if (idx >= 0) return idx;
-    // Map alternate names
-    if (phase === 'initializing') return -1;
-    if (phase === 'diffing') return 5;
-    if (phase === 'cancelled') return -1;
-    return -1;
+  // Build a set of phases that actually ran from tool_runs data.
+  ranPhases(toolRuns) {
+    const ran = new Set();
+    for (const tr of toolRuns) {
+      if (tr.phase) ran.add(tr.phase);
+    }
+    return ran;
   },
 
-  renderPhaseIndicator(scan) {
+  renderPhaseIndicator(scan, toolRuns) {
     const isTerminal = scan.status === 'completed' || scan.status === 'failed' || scan.status === 'cancelled';
-    const currentIdx = isTerminal && scan.status === 'completed' ? 6 : this.phaseIndex(scan.phase);
+    const ran = this.ranPhases(toolRuns || []);
+    // For running scans, find the current phase index
+    const currentPhaseIdx = this.PHASES.findIndex(p => p.key === scan.phase);
 
     return `<div class="phase-indicator">${this.PHASES.map((p, i) => {
       const num = i + 1;
@@ -296,29 +296,52 @@ const ScansPage = {
       let content = num;
       let stepClass = 'phase-step';
 
-      if (isTerminal && scan.status === 'completed') {
-        circleClass += ' phase-done';
-        content = '\u2713';
-        stepClass += ' done';
-      } else if (i < currentIdx) {
-        circleClass += ' phase-done';
-        content = '\u2713';
-        stepClass += ' done';
-      } else if (i === currentIdx) {
-        if (scan.status === 'failed') {
-          circleClass += ' phase-failed';
-          content = '\u2717';
+      if (p.key === 'completed') {
+        // Last step: "Complete"
+        if (isTerminal && scan.status === 'completed') {
+          circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
+        } else if (scan.status === 'failed') {
+          circleClass += ' phase-failed'; content = '\u2717';
         } else if (scan.status === 'cancelled') {
-          circleClass += ' phase-cancelled';
-          content = '\u2013';
-        } else {
-          circleClass += ' phase-active';
+          circleClass += ' phase-cancelled'; content = '\u2013';
         }
-        stepClass += ' active';
+      } else if (isTerminal && scan.status === 'completed' && ran.has(p.key)) {
+        circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
+      } else if (isTerminal && scan.status === 'completed' && !ran.has(p.key)) {
+        circleClass += ' phase-skipped'; content = '\u2013'; stepClass += ' skipped';
+      } else if (isTerminal && (scan.status === 'failed' || scan.status === 'cancelled')) {
+        if (ran.has(p.key)) {
+          // Check if this phase's tools all completed
+          const phaseTools = (toolRuns || []).filter(tr => tr.phase === p.key);
+          const allDone = phaseTools.every(tr => tr.status === 'completed');
+          if (allDone) {
+            circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
+          } else {
+            circleClass += scan.status === 'failed' ? ' phase-failed' : ' phase-cancelled';
+            content = scan.status === 'failed' ? '\u2717' : '\u2013';
+          }
+        } else {
+          circleClass += ' phase-skipped'; content = '\u2013'; stepClass += ' skipped';
+        }
+      } else if (!isTerminal) {
+        // Running scan
+        if (ran.has(p.key)) {
+          const phaseTools = (toolRuns || []).filter(tr => tr.phase === p.key);
+          const allDone = phaseTools.every(tr => tr.status === 'completed');
+          if (allDone) {
+            circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
+          } else {
+            circleClass += ' phase-active'; stepClass += ' active';
+          }
+        } else if (i === currentPhaseIdx) {
+          circleClass += ' phase-active'; stepClass += ' active';
+        }
       }
 
+      // Connector line
+      const prevDone = circleClass.includes('phase-done');
       const line = i < this.PHASES.length - 1
-        ? `<div class="phase-line${i < currentIdx ? ' phase-line-done' : ''}"></div>`
+        ? `<div class="phase-line${prevDone ? ' phase-line-done' : ''}"></div>`
         : '';
 
       return `<div class="${stepClass}"><div class="${circleClass}">${content}</div><span class="phase-label">${p.label}</span></div>${line}`;
@@ -342,7 +365,7 @@ const ScansPage = {
     </div>`;
   },
 
-  renderPipeline(toolRuns) {
+  renderPipeline(toolRuns, scanId) {
     if (toolRuns.length === 0) return '';
 
     const sorted = [...toolRuns].sort((a, b) => {
@@ -365,7 +388,7 @@ const ScansPage = {
 
       const stats = [];
       if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} targets</span>`);
-      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding">${tr.findings_count} findings</span>`);
+      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding">${tr.findings_count} results</span>`);
 
       return `<div class="pipeline-node ${statusClass}">
         <div class="pipeline-connector">
@@ -390,6 +413,66 @@ const ScansPage = {
     </div>`;
   },
 
+  renderFindings(findings, scanId) {
+    if (!findings || findings.length === 0) {
+      return `<div class="card" style="margin-bottom:16px">
+        <div class="card-label">Findings</div>
+        <div style="padding:12px 0;color:var(--text-muted);font-size:13px">No findings recorded for this scan.</div>
+      </div>`;
+    }
+
+    const rows = findings.map(f => `
+      <tr class="clickable" onclick="location.hash='#/findings/${f.id}'">
+        <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
+        <td>${escapeHtml(f.title)}</td>
+        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.template_id || '-')}</td>
+        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
+        <td>${Components.statusBadge(f.status)}</td>
+      </tr>
+    `).join('');
+
+    return `<div class="card" style="margin-bottom:16px">
+      <div class="card-label">Findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
+      <div class="table-container" style="border:none;margin:8px 0 0">
+        <table>
+          <thead><tr><th>Severity</th><th>Title</th><th>Template</th><th>Tool</th><th>Status</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  },
+
+  renderScanStats(stats) {
+    // Only show stats that have non-zero values
+    const items = [
+      { label: 'Subdomains', value: stats.subdomains_found },
+      { label: 'IPs Resolved', value: stats.ips_resolved },
+      { label: 'Ports Scanned', value: stats.ports_scanned },
+      { label: 'Open Ports', value: stats.open_ports },
+      { label: 'HTTP Probed', value: stats.http_probed },
+      { label: 'Findings', value: stats.findings_total },
+    ].filter(i => i.value > 0);
+
+    if (items.length === 0) return '';
+
+    const sevs = {
+      critical: stats.findings_critical || 0,
+      high: stats.findings_high || 0,
+      medium: stats.findings_medium || 0,
+      low: stats.findings_low || 0,
+      info: stats.findings_info || 0,
+    };
+    const hasSev = Object.values(sevs).some(v => v > 0);
+
+    return `<div class="card" style="margin-bottom:16px">
+      <div class="card-label">Scan Stats</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${items.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
+      </div>
+      ${hasSev ? Components.severityBars(sevs) : ''}
+    </div>`;
+  },
+
   formatElapsed(seconds) {
     if (seconds < 60) return seconds + 's';
     return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
@@ -402,7 +485,7 @@ const ScansPage = {
     return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
   },
 
-  renderDetailContent(app, data) {
+  renderDetailContent(app, data, findings) {
     const s = data.scan;
     const isRunning = s.status === 'running';
 
@@ -417,6 +500,12 @@ const ScansPage = {
     const cancelBtn = isRunning
       ? `<button class="btn btn-danger btn-sm" id="cancel-scan-btn">Cancel Scan</button>`
       : '';
+
+    const typeBadge = `<span class="badge badge-info" style="margin-left:8px">${s.type || 'full'}</span>`;
+
+    const timestamps = [];
+    if (s.started_at) timestamps.push(`Started ${Components.formatDate(s.started_at)}`);
+    if (s.finished_at) timestamps.push(`Finished ${Components.formatDate(s.finished_at)}`);
 
     const errorCard = s.error
       ? `<div class="card" style="margin-bottom:16px;border-color:rgba(248,81,73,0.3)">
@@ -439,39 +528,26 @@ const ScansPage = {
         <div class="detail-header">
           ${Components.statusBadge(s.status)}
           <h2>Scan ${Components.truncateID(s.id)}</h2>
-          <span class="text-muted mono" style="font-size:12px">${escapeHtml(data.target)}</span>
+          ${typeBadge}
+          <span class="text-muted mono" style="font-size:12px;margin-left:8px">${escapeHtml(data.target)}</span>
           <span class="text-muted" style="font-size:12px;margin-left:4px">${dur}</span>
           <div style="margin-left:auto">${cancelBtn}</div>
         </div>
+        ${timestamps.length > 0 ? `<div class="text-muted" style="font-size:11px;margin-top:4px">${timestamps.join(' \u00B7 ')}</div>` : ''}
 
-        ${this.renderPhaseIndicator(s)}
+        ${this.renderPhaseIndicator(s, data.tool_runs)}
         ${this.renderProgressBar(s)}
         ${errorCard}
       </div>
 
-      ${this.renderPipeline(data.tool_runs)}
+      ${this.renderPipeline(data.tool_runs, s.id)}
 
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-label">Scan Stats</div>
-        <div class="detail-grid" style="margin-top:8px">
-          <span class="detail-label">Subdomains</span><span class="detail-value">${s.stats.subdomains_found || 0}</span>
-          <span class="detail-label">IPs Resolved</span><span class="detail-value">${s.stats.ips_resolved || 0}</span>
-          <span class="detail-label">Ports Scanned</span><span class="detail-value">${s.stats.ports_scanned || 0}</span>
-          <span class="detail-label">Open Ports</span><span class="detail-value">${s.stats.open_ports || 0}</span>
-          <span class="detail-label">HTTP Probed</span><span class="detail-value">${s.stats.http_probed || 0}</span>
-          <span class="detail-label">Findings</span><span class="detail-value">${s.stats.findings_total || 0}</span>
-        </div>
-        ${Components.severityBars({
-          critical: s.stats.findings_critical || 0,
-          high: s.stats.findings_high || 0,
-          medium: s.stats.findings_medium || 0,
-          low: s.stats.findings_low || 0,
-          info: s.stats.findings_info || 0,
-        })}
-      </div>
+      ${this.renderFindings(findings, s.id)}
+
+      ${this.renderScanStats(s.stats)}
 
       ${data.changes.length > 0 ? `
-        <h3 style="margin-bottom:12px">Asset Changes</h3>
+        <h3 style="margin-bottom:12px">Asset Changes <span class="text-muted" style="font-size:13px;font-weight:400">(${data.changes.length})</span></h3>
         ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
       ` : ''}
     `;
@@ -502,8 +578,11 @@ const ScansPage = {
     app.innerHTML = '<div class="loading">Loading scan...</div>';
 
     try {
-      const data = await API.scan(id);
-      this.renderDetailContent(app, data);
+      const [data, findingsData] = await Promise.all([
+        API.scan(id),
+        API.findings({ scan_id: id, limit: 100 }),
+      ]);
+      this.renderDetailContent(app, data, findingsData.findings || []);
 
       // Poll if running
       if (data.scan.status === 'running') {
@@ -526,11 +605,14 @@ const ScansPage = {
 
     this.pollTimer = setInterval(async () => {
       try {
-        const data = await API.scan(id);
+        const [data, findingsData] = await Promise.all([
+          API.scan(id),
+          API.findings({ scan_id: id, limit: 100 }),
+        ]);
         if (data.scan.status !== 'running') {
           this.stopPolling();
         }
-        this.renderDetailContent(app, data);
+        this.renderDetailContent(app, data, findingsData.findings || []);
       } catch {
         // Ignore polling errors
       }

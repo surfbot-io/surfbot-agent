@@ -938,6 +938,15 @@ tr.clickable { cursor: pointer; }
   color: var(--bg-primary);
 }
 
+.phase-circle.phase-skipped {
+  border-style: dashed;
+  border-color: var(--text-muted);
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.phase-step.skipped .phase-label { color: var(--text-muted); opacity: 0.5; }
+
 .phase-label {
   font-size: 10px;
   color: var(--text-muted);
