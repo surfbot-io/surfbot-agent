@@ -398,13 +398,21 @@ tr.clickable { cursor: pointer; }
   border-color: var(--accent);
 }
 
+/* === Scan Detail Stack === */
+.scan-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.scan-detail-stack .table-container { margin-bottom: 0; }
+.scan-detail-stack .detail-panel { margin-bottom: 0; }
+
 /* === Detail Panel === */
 .detail-panel {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 24px;
-  margin-bottom: 24px;
 }
 
 .detail-header {

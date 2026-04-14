@@ -407,7 +407,7 @@ const ScansPage = {
       </div>`;
     }).join('');
 
-    return `<div class="card" style="margin-bottom:16px">
+    return `<div class="card">
       <div class="card-label">Pipeline</div>
       <div class="pipeline-view">${nodes}</div>
     </div>`;
@@ -415,7 +415,7 @@ const ScansPage = {
 
   renderFindings(findings, scanId) {
     if (!findings || findings.length === 0) {
-      return `<div class="card" style="margin-bottom:16px">
+      return `<div class="card">
         <div class="card-label">Findings</div>
         <div style="padding:12px 0;color:var(--text-muted);font-size:13px">No findings recorded for this scan.</div>
       </div>`;
@@ -431,7 +431,7 @@ const ScansPage = {
       </tr>
     `).join('');
 
-    return `<div class="card" style="margin-bottom:16px">
+    return `<div class="card">
       <div class="card-label">Findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
       <div class="table-container" style="border:none;margin:8px 0 0">
         <table>
@@ -464,7 +464,7 @@ const ScansPage = {
     };
     const hasSev = Object.values(sevs).some(v => v > 0);
 
-    return `<div class="card" style="margin-bottom:16px">
+    return `<div class="card">
       <div class="card-label">Scan Stats</div>
       <div class="detail-grid" style="margin-top:8px">
         ${items.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
@@ -508,7 +508,7 @@ const ScansPage = {
     if (s.finished_at) timestamps.push(`Finished ${Components.formatDate(s.finished_at)}`);
 
     const errorCard = s.error
-      ? `<div class="card" style="margin-bottom:16px;border-color:rgba(248,81,73,0.3)">
+      ? `<div class="card" style="border-color:rgba(248,81,73,0.3)">
           <div style="color:var(--sev-critical);font-size:13px">${escapeHtml(s.error)}</div>
         </div>`
       : '';
@@ -524,32 +524,36 @@ const ScansPage = {
 
     app.innerHTML = `
       ${Components.backLink('#/scans', 'Back to scans')}
-      <div class="detail-panel">
-        <div class="detail-header">
-          ${Components.statusBadge(s.status)}
-          <h2>Scan ${Components.truncateID(s.id)}</h2>
-          ${typeBadge}
-          <span class="text-muted mono" style="font-size:12px;margin-left:8px">${escapeHtml(data.target)}</span>
-          <span class="text-muted" style="font-size:12px;margin-left:4px">${dur}</span>
-          <div style="margin-left:auto">${cancelBtn}</div>
+      <div class="scan-detail-stack">
+        <div class="detail-panel">
+          <div class="detail-header">
+            ${Components.statusBadge(s.status)}
+            <h2>Scan ${Components.truncateID(s.id)}</h2>
+            ${typeBadge}
+            <span class="text-muted mono" style="font-size:12px;margin-left:8px">${escapeHtml(data.target)}</span>
+            <span class="text-muted" style="font-size:12px;margin-left:4px">${dur}</span>
+            <div style="margin-left:auto">${cancelBtn}</div>
+          </div>
+          ${timestamps.length > 0 ? `<div class="text-muted" style="font-size:11px;margin-top:4px">${timestamps.join(' \u00B7 ')}</div>` : ''}
+
+          ${this.renderPhaseIndicator(s, data.tool_runs)}
+          ${this.renderProgressBar(s)}
+          ${errorCard}
         </div>
-        ${timestamps.length > 0 ? `<div class="text-muted" style="font-size:11px;margin-top:4px">${timestamps.join(' \u00B7 ')}</div>` : ''}
 
-        ${this.renderPhaseIndicator(s, data.tool_runs)}
-        ${this.renderProgressBar(s)}
-        ${errorCard}
+        ${this.renderPipeline(data.tool_runs, s.id)}
+
+        ${this.renderFindings(findings, s.id)}
+
+        ${this.renderScanStats(s.stats)}
+
+        ${data.changes.length > 0 ? `
+          <div>
+            <h3 style="margin-bottom:16px">Asset Changes <span class="text-muted" style="font-size:13px;font-weight:400">(${data.changes.length})</span></h3>
+            ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
+          </div>
+        ` : ''}
       </div>
-
-      ${this.renderPipeline(data.tool_runs, s.id)}
-
-      ${this.renderFindings(findings, s.id)}
-
-      ${this.renderScanStats(s.stats)}
-
-      ${data.changes.length > 0 ? `
-        <h3 style="margin-bottom:12px">Asset Changes <span class="text-muted" style="font-size:13px;font-weight:400">(${data.changes.length})</span></h3>
-        ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
-      ` : ''}
     `;
 
     // Bind cancel button
