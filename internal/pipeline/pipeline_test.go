@@ -432,6 +432,41 @@ func TestDataThreading(t *testing.T) {
 	}
 }
 
+// TestPortScanFiltersStatusFiltered covers SPEC-QA2 R9: the port_scan → http_probe
+// handoff must drop assets with metadata.status="filtered" so httpx doesn't
+// waste its 10s-per-attempt budget on dead SYN-ACK responders.
+func TestPortScanFiltersStatusFiltered(t *testing.T) {
+	result := &detection.RunResult{
+		Assets: []model.Asset{
+			{
+				Type:     model.AssetTypePort,
+				Value:    "1.2.3.4:80/tcp",
+				Metadata: map[string]interface{}{"status": "open"},
+			},
+			{
+				Type:     model.AssetTypePort,
+				Value:    "1.2.3.4:443/tcp",
+				Metadata: map[string]interface{}{"status": "filtered"},
+			},
+			{
+				Type:     model.AssetTypePort,
+				Value:    "1.2.3.4:22/tcp",
+				Metadata: map[string]interface{}{"status": "open"},
+			},
+			{
+				// No status metadata — backwards compat: treat as open.
+				Type:  model.AssetTypePort,
+				Value: "1.2.3.4:8080/tcp",
+			},
+		},
+	}
+	got := extractInputsForNextPhase("port_scan", result)
+	assert.ElementsMatch(t,
+		[]string{"1.2.3.4:80/tcp", "1.2.3.4:22/tcp", "1.2.3.4:8080/tcp"},
+		got,
+		"filtered status must be dropped; assets without status pass through")
+}
+
 // TestEnrichHostports covers SUR-242 input-format widening: ip:port/tcp is
 // rewritten to hostname|ip:port/tcp when the IP has a resolved hostname.
 func TestEnrichHostports(t *testing.T) {

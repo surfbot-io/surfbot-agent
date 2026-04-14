@@ -619,11 +619,19 @@ func extractInputsForNextPhase(phase string, result *detection.RunResult) []stri
 		return ips
 
 	case "port_scan":
+		// Skip ports that completed the handshake but returned no data
+		// (status=filtered). These are typically load balancer SYN-ACK
+		// responders with nothing behind them; probing them wastes the
+		// 10s httpx timeout per scheme. See SPEC-QA2 R9.
 		var hostports []string
 		for _, a := range result.Assets {
-			if a.Type == model.AssetTypePort {
-				hostports = append(hostports, a.Value)
+			if a.Type != model.AssetTypePort {
+				continue
 			}
+			if status, ok := a.Metadata["status"].(string); ok && status == "filtered" {
+				continue
+			}
+			hostports = append(hostports, a.Value)
 		}
 		return hostports
 
@@ -727,12 +735,25 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 		pp.muted("    Resolved %d IPs (%d IPv4, %d IPv6)\n", ipv4+ipv6, ipv4, ipv6)
 	case "port_scan":
 		hosts := make(map[string]bool)
+		open, filtered := 0, 0
 		for _, a := range result.Assets {
-			if a.Type == model.AssetTypePort && a.ParentID != "" {
+			if a.Type != model.AssetTypePort {
+				continue
+			}
+			if a.ParentID != "" {
 				hosts[a.ParentID] = true
 			}
+			if status, ok := a.Metadata["status"].(string); ok && status == "filtered" {
+				filtered++
+			} else {
+				open++
+			}
 		}
-		pp.muted("    Scanned hosts, found %d open ports\n", len(result.Assets))
+		if filtered > 0 {
+			pp.muted("    Scanned hosts, found %d open ports, %d filtered\n", open, filtered)
+		} else {
+			pp.muted("    Scanned hosts, found %d open ports\n", open)
+		}
 	case "http_probe":
 		urls, techs := 0, 0
 		for _, a := range result.Assets {
