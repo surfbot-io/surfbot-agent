@@ -70,7 +70,15 @@ func buildToolCommand(tool detection.DetectionTool) *cobra.Command {
 	}
 
 	cmd.Flags().Bool("stdin", false, "Read inputs from stdin (one per line)")
-	cmd.Flags().IntP("rate-limit", "r", 0, "Rate limit (requests/second, 0 = tool default)")
+	if tool.Command() == "portscan" {
+		// SPEC-QA2 R10: surface the new default (20) and the adaptive
+		// breaker behavior; document --rate-limit 100 as the opt-out
+		// for fast networks.
+		cmd.Flags().IntP("rate-limit", "r", 0, "Concurrent TCP connects (default 20, safe on residential links; raise to 100+ on fast corporate links — concurrency auto-reduces on timeout spikes)")
+		cmd.Flags().Bool("no-banner", false, "Skip banner grab (faster, no extra bytes on the wire; ports are reported open as soon as the handshake completes)")
+	} else {
+		cmd.Flags().IntP("rate-limit", "r", 0, "Rate limit (requests/second, 0 = tool default)")
+	}
 	cmd.Flags().Int("timeout", 300, "Timeout in seconds")
 	cmd.Flags().StringP("format", "f", "json", "Output format: json or text")
 	cmd.Flags().Bool("persist", true, "Persist results to SQLite database")
@@ -96,6 +104,14 @@ func runAtomicTool(cmd *cobra.Command, args []string, tool detection.DetectionTo
 	rateLimit, _ := cmd.Flags().GetInt("rate-limit")
 	timeout, _ := cmd.Flags().GetInt("timeout")
 	extra, _ := cmd.Flags().GetStringToString("extra")
+	if tool.Command() == "portscan" {
+		if noBanner, err := cmd.Flags().GetBool("no-banner"); err == nil && noBanner {
+			if extra == nil {
+				extra = map[string]string{}
+			}
+			extra["no-banner"] = "true"
+		}
+	}
 	opts := detection.RunOptions{
 		RateLimit: rateLimit,
 		Timeout:   timeout,

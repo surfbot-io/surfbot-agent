@@ -15,10 +15,14 @@ import (
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
 //
+// 1.2.0 — portscan assets gain `status` (open|filtered) and
+//
+//	`banner_preview` metadata fields. See SUR-243/SUR-248.
+//
 // 1.1.0 — probe accepts the enriched "hostname|ip:port/tcp" input format
 //
 //	alongside the legacy bare ip:port/tcp. See SUR-242.
-const SpecVersion = "1.1.0"
+const SpecVersion = "1.2.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {

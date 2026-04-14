@@ -35,7 +35,7 @@ func attachDefaultExamples(root *cobra.Command) {
 		add("portscan",
 			"Scan ports on resolved hosts",
 			"surfbot resolve --json < hosts.json | surfbot portscan --json",
-			"")
+			"Emitted port assets carry metadata.status (open|filtered) and metadata.banner_preview (up to 64 sanitized bytes). Filtered ports completed the 3-way handshake but returned no data; the pipeline skips them when feeding http_probe. Default concurrency is 20 with an adaptive circuit breaker; raise with --rate-limit on fast links or disable banner grab with --no-banner.")
 
 		add("probe",
 			"HTTP-probe live ports",
