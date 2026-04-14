@@ -92,6 +92,15 @@ reason=vhost_mismatch expected_host=<h> observed_host=<h> ip=<ip> port=<p> statu
 
 The total is accumulated on the run's `ToolRun.Config["vhost_mismatch_drops"]`.
 
+**Known limitation — plaintext HTTP over IP.** When the probe is plaintext
+HTTP dialed directly by IP and the server does not issue an off-site
+redirect, there is no cryptographic evidence either way as to whether the
+server honored the `Host` header or silently served its default vhost.
+Surfbot trusts the `Host` header in this case and keeps the response. A
+redirect to a different hostname still trips the drop (rule 1 above). For
+strict attribution of plaintext probes on shared IPs, use HTTPS targets
+where the certificate CN/SANs provide the proof.
+
 ## Stability
 
 `spec_version` is semver:

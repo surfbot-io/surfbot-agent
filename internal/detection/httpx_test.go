@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +194,16 @@ func TestBuildProbeURLs(t *testing.T) {
 				{URL: "https://1.2.3.4", ExpectedHost: ""},
 			},
 		},
+		{
+			// naabu emits hostname:port/tcp assets when it port-scans a
+			// hostname. Without self-scoping here, the probe would be
+			// IP-pure and off-site redirects would silently persist.
+			name:  "hostname:port/tcp self-scopes",
+			input: "www.example.com:443/tcp",
+			want: []probeTarget{
+				{URL: "https://www.example.com:443", ExpectedHost: "www.example.com", IP: "", Port: 443},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -241,29 +252,82 @@ func TestHTTPXHostHeaderSent(t *testing.T) {
 	assert.NotContains(t, pr.URL, "127.0.0.1")
 }
 
-// TestHTTPXVhostMismatch asserts that a response whose effective host does not
-// match the expected hostname is dropped and not persisted.
-func TestHTTPXVhostMismatch(t *testing.T) {
-	// Multi-vhost server: body reflects the Host header.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Server refuses the expected vhost by redirecting to an unrelated host.
-		// Simplest: just echo the Host back — the test expects mismatch via
-		// hostname+cert, and the observed URL hostname is the IP (no redirect).
+// TestHTTPXVhostMismatchTLS models the original bwapp → mmebvba bug: the
+// shared-IP server's cert covers a different domain, so the response is
+// attributable to that other domain, not the target we asked for. The scope
+// check must drop and log.
+func TestHTTPXVhostMismatchTLS(t *testing.T) {
+	// Cert only covers out-of-scope.test — not the intended.test we'll ask for.
+	tlsCert := generateSelfSignedCertWithSANs(t,
+		[]string{"out-of-scope.test"},
+		[]net.IP{net.ParseIP("127.0.0.1")},
+	)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "served host=%s", r.Host)
 	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+	srv.StartTLS()
 	defer srv.Close()
 
-	ip, port := mustSplit(t, srv.Listener.Addr().String())
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	client := srv.Client()
+	client.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify = true
 
-	// Capture mismatch log
 	var logBuf bytes.Buffer
 	orig := vhostMismatchLog
 	vhostMismatchLog = &logBuf
 	t.Cleanup(func() { vhostMismatchLog = orig })
 
-	// The server is reached via IP. resp.Request.URL.Hostname() will be the
-	// IP. Expected is "intended.test". No TLS, so no cert to rescue the match.
-	// Result: mismatch → drop.
+	target := probeTarget{
+		URL:          fmt.Sprintf("https://127.0.0.1:%s", port),
+		ExpectedHost: "intended.test",
+		IP:           "127.0.0.1",
+		Port:         atoi(port),
+	}
+	pr, dropped := probeURL(context.Background(), client, target)
+	assert.Nil(t, pr, "mismatched response must not return a probeResult")
+	assert.True(t, dropped, "must be reported as a drop")
+
+	line := logBuf.String()
+	for _, want := range []string{
+		"reason=vhost_mismatch",
+		"expected_host=intended.test",
+		"observed_host=127.0.0.1",
+		"ip=127.0.0.1",
+		"port=" + port,
+		"status=200",
+	} {
+		assert.Contains(t, line, want, "log line %q missing %q", line, want)
+	}
+}
+
+// TestHTTPXRedirectOffsiteDrops covers SUR-242 problem 2: a probe that is
+// redirected off-site (e.g. naabu-derived hostname:port input where the server
+// 302s to a different default vhost) must be dropped, not persisted under the
+// original target. Uses "localhost" (which still resolves to 127.0.0.1 so the
+// offsite server is reachable) to make the URL hostname after redirect clearly
+// differ from the expected hostname.
+func TestHTTPXRedirectOffsiteDrops(t *testing.T) {
+	offsite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<title>out-of-scope</title>")
+	}))
+	defer offsite.Close()
+
+	// Swap 127.0.0.1 for localhost in the redirect target so resp.Request.URL
+	// carries a distinct hostname after the client follows the redirect.
+	redirectTarget := strings.Replace(offsite.URL, "127.0.0.1", "localhost", 1) + "/landing"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	ip, port := mustSplit(t, srv.Listener.Addr().String())
+
+	orig := vhostMismatchLog
+	vhostMismatchLog = io.Discard
+	t.Cleanup(func() { vhostMismatchLog = orig })
+
 	target := probeTarget{
 		URL:          fmt.Sprintf("http://%s:%s", ip, port),
 		ExpectedHost: "intended.test",
@@ -271,21 +335,39 @@ func TestHTTPXVhostMismatch(t *testing.T) {
 		Port:         atoi(port),
 	}
 	pr, dropped := probeURL(context.Background(), srv.Client(), target)
-	assert.Nil(t, pr, "mismatched response must not return a probeResult")
-	assert.True(t, dropped, "must be reported as a drop")
+	assert.Nil(t, pr, "redirect off-site must be dropped")
+	assert.True(t, dropped)
+}
 
-	// Structured log format (spec: key=value)
-	line := logBuf.String()
-	for _, want := range []string{
-		"reason=vhost_mismatch",
-		"expected_host=intended.test",
-		"observed_host=" + ip,
-		"ip=" + ip,
-		"port=" + port,
-		"status=200",
-	} {
-		assert.Contains(t, line, want, "log line %q missing %q", line, want)
+// TestHTTPXPlaintextHTTPTrustsHost is the counterpart to the above: plaintext
+// HTTP dialed by IP without any redirect has no cryptographic evidence the
+// server served a different vhost, but it also has no evidence it did — and a
+// redirect-to-default would already have tripped rule 1. Over-rejecting these
+// hides legitimate HTTP services on shared IPs, so scopeMatches accepts them.
+// See SUR-242 QA feedback, Problem 1.
+func TestHTTPXPlaintextHTTPTrustsHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Server honors Host header — body varies so we can assert we got the
+		// scoped probe's response, not a default.
+		fmt.Fprintf(w, "<title>vhost=%s</title>", r.Host)
+	}))
+	defer srv.Close()
+
+	ip, port := mustSplit(t, srv.Listener.Addr().String())
+
+	target := probeTarget{
+		URL:          fmt.Sprintf("http://%s:%s", ip, port),
+		ExpectedHost: "intended.test",
+		IP:           ip,
+		Port:         atoi(port),
 	}
+	pr, dropped := probeURL(context.Background(), srv.Client(), target)
+	require.NotNil(t, pr, "plaintext HTTP with no redirect must pass scope check")
+	assert.False(t, dropped)
+	assert.Contains(t, pr.Title, "vhost=intended.test", "Host header must have reached the server")
+	// Recorded URL uses the hostname, not the IP — asset attribution stays scoped.
+	assert.Contains(t, pr.URL, "intended.test")
+	assert.NotContains(t, pr.URL, ip)
 }
 
 // TestHTTPXIPPureNoCheck asserts R4: bare IP targets are never scope-checked.
@@ -340,14 +422,21 @@ func TestHTTPXCertSANLenience(t *testing.T) {
 }
 
 // TestHTTPXRunMismatchCounter asserts that drops are accumulated on the
-// ToolRun.Config map as vhost_mismatch_drops.
+// ToolRun.Config map as vhost_mismatch_drops. Uses an off-site redirect to
+// trigger the check (plaintext-HTTP-no-redirect is intentionally trusted; see
+// TestHTTPXPlaintextHTTPTrustsHost).
 func TestHTTPXRunMismatchCounter(t *testing.T) {
+	offsite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "out")
+	}))
+	defer offsite.Close()
+
+	redirectTarget := strings.Replace(offsite.URL, "127.0.0.1", "localhost", 1) + "/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "ok")
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
 	}))
 	defer srv.Close()
 
-	// Silence the mismatch log in this test
 	orig := vhostMismatchLog
 	vhostMismatchLog = io.Discard
 	t.Cleanup(func() { vhostMismatchLog = orig })

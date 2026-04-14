@@ -215,6 +215,22 @@ func buildProbeURLs(inputs []string) []probeTarget {
 		port := 0
 		fmt.Sscanf(portStr, "%d", &port)
 
+		// If the pre-`|` section was empty and the host is a DNS name rather
+		// than an IP, self-scope: naabu emits "hostname:port/tcp" assets when
+		// fed hostnames directly, and those arrive here unenriched. Without
+		// self-scoping them the probe would be treated as IP-pure and a
+		// redirect to an out-of-scope vhost would be silently persisted.
+		if expectedHost == "" && net.ParseIP(host) == nil {
+			expectedHost = host
+		}
+
+		// IP field is only meaningful when host is actually an IP — the log
+		// line and the plaintext-HTTP scope lenience both key off it.
+		dialedIP := ""
+		if net.ParseIP(host) != nil {
+			dialedIP = host
+		}
+
 		var schemes []string
 		switch {
 		case httpsDefaultPorts[port]:
@@ -228,7 +244,7 @@ func buildProbeURLs(inputs []string) []probeTarget {
 			targets = append(targets, probeTarget{
 				URL:          fmt.Sprintf("%s://%s:%d", scheme, host, port),
 				ExpectedHost: expectedHost,
-				IP:           host,
+				IP:           dialedIP,
 				Port:         port,
 			})
 		}
@@ -282,7 +298,7 @@ func probeURL(ctx context.Context, client *http.Client, target probeTarget) (*pr
 	// from something that matches. Dropped responses never become assets.
 	if target.ExpectedHost != "" {
 		observed := resp.Request.URL.Hostname()
-		if !scopeMatches(target.ExpectedHost, observed, resp.TLS) {
+		if !scopeMatches(target.ExpectedHost, observed, resp.TLS, target.IP) {
 			logVhostMismatch(target, observed, resp.StatusCode)
 			return nil, true
 		}
@@ -325,9 +341,16 @@ func probeURL(ctx context.Context, client *http.Client, target probeTarget) (*pr
 }
 
 // scopeMatches reports whether the observed hostname belongs to the expected
-// scope. Match rule: case-insensitive equality of the URL hostname, OR a TLS
-// cert that covers the expected name (handles wildcard SANs like *.example.com).
-func scopeMatches(expected, observed string, cs *tls.ConnectionState) bool {
+// scope. Match rules, in order:
+//  1. Case-insensitive equality of the URL hostname against expected.
+//  2. TLS cert CN/SANs cover expected (wildcard SAN support via stdlib).
+//  3. Plaintext HTTP dialed by IP with no redirect: the final URL still
+//     points at the IP we originally dialed, so no off-site hop happened.
+//     Without TLS there's no cryptographic proof the server honored the
+//     Host header, but a redirect-to-default-vhost would already have
+//     tripped rule 1; a silent default-vhost is indistinguishable from a
+//     correct response at the HTTP layer, so we trust it.
+func scopeMatches(expected, observed string, cs *tls.ConnectionState, dialedIP string) bool {
 	if strings.EqualFold(expected, observed) {
 		return true
 	}
@@ -335,6 +358,9 @@ func scopeMatches(expected, observed string, cs *tls.ConnectionState) bool {
 		if certCoversHost(cs.PeerCertificates[0], expected) {
 			return true
 		}
+	}
+	if cs == nil && dialedIP != "" && strings.EqualFold(observed, dialedIP) {
+		return true
 	}
 	return false
 }
