@@ -3,9 +3,13 @@ package detection
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -45,15 +49,34 @@ type HTTPXTool struct{}
 
 func NewHTTPXTool() *HTTPXTool { return &HTTPXTool{} }
 
-func (h *HTTPXTool) Name() string   { return "httpx" }
-func (h *HTTPXTool) Phase() string  { return "http_probe" }
-func (h *HTTPXTool) Kind() ToolKind { return ToolKindNative }
+func (h *HTTPXTool) Name() string    { return "httpx" }
+func (h *HTTPXTool) Phase() string   { return "http_probe" }
+func (h *HTTPXTool) Kind() ToolKind  { return ToolKindNative }
 func (h *HTTPXTool) Available() bool { return true }
 
-func (h *HTTPXTool) Command() string       { return "probe" }
-func (h *HTTPXTool) Description() string   { return "Probe host:port pairs for live HTTP services and detect technologies" }
+func (h *HTTPXTool) Command() string { return "probe" }
+func (h *HTTPXTool) Description() string {
+	return "Probe host:port pairs for live HTTP services and detect technologies"
+}
 func (h *HTTPXTool) InputType() string     { return "hostports" }
 func (h *HTTPXTool) OutputTypes() []string { return []string{"url", "technology"} }
+
+// probeTarget describes a single HTTP probe attempt.
+//
+// Input formats accepted by buildProbeURLs (see SUR-242):
+//   - "hostname|ip:port/tcp" — probe IP but send the hostname in the Host header.
+//     The response is dropped if the effective host does not match ExpectedHost
+//     (vhost scope check).
+//   - "ip:port/tcp" — IP-pure probe: no Host override, no scope check. Whatever
+//     the server returns is attributed to the IP.
+//   - "hostname" (no port) — bare hostname probe via DNS; ExpectedHost = hostname
+//     so redirects to out-of-scope hosts are still dropped.
+type probeTarget struct {
+	URL          string // URL to fetch (protocol://host:port)
+	ExpectedHost string // hostname we expect to reach; empty = IP-pure (no scope check)
+	IP           string // for structured mismatch log
+	Port         int    // for structured mismatch log
+}
 
 type probeResult struct {
 	URL        string
@@ -88,29 +111,33 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 		},
 	}
 
-	// Build probe URLs from inputs (ip:port/tcp format from naabu)
-	urls := buildProbeURLs(inputs)
+	targets := buildProbeURLs(inputs)
 
 	var results []probeResult
+	var drops int
 	var mu sync.Mutex
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	for _, u := range urls {
+	for _, t := range targets {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(targetURL string) {
+		go func(target probeTarget) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			pr := probeURL(ctx, client, targetURL)
-			if pr != nil {
-				mu.Lock()
-				results = append(results, *pr)
-				mu.Unlock()
+			pr, dropped := probeURL(ctx, client, target)
+			mu.Lock()
+			defer mu.Unlock()
+			if dropped {
+				drops++
+				return
 			}
-		}(u)
+			if pr != nil {
+				results = append(results, *pr)
+			}
+		}(t)
 	}
 
 	wg.Wait()
@@ -119,25 +146,25 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 	for _, pr := range results {
 		urlAssetID := uuid.New().String()
 		runResult.Assets = append(runResult.Assets, model.Asset{
-			ID:       urlAssetID,
-			Type:     model.AssetTypeURL,
-			Value:    pr.URL,
-			Status:   model.AssetStatusNew,
-			Tags:     []string{},
-			Metadata: pr.Metadata,
+			ID:        urlAssetID,
+			Type:      model.AssetTypeURL,
+			Value:     pr.URL,
+			Status:    model.AssetStatusNew,
+			Tags:      []string{},
+			Metadata:  pr.Metadata,
 			FirstSeen: time.Now().UTC(),
 			LastSeen:  time.Now().UTC(),
 		})
 
 		for _, tech := range pr.TechList {
 			runResult.Assets = append(runResult.Assets, model.Asset{
-				ID:       uuid.New().String(),
-				Type:     model.AssetTypeTechnology,
-				Value:    tech,
-				ParentID: urlAssetID,
-				Status:   model.AssetStatusNew,
-				Tags:     []string{},
-				Metadata: map[string]interface{}{},
+				ID:        uuid.New().String(),
+				Type:      model.AssetTypeTechnology,
+				Value:     tech,
+				ParentID:  urlAssetID,
+				Status:    model.AssetStatusNew,
+				Tags:      []string{},
+				Metadata:  map[string]interface{}{},
 				FirstSeen: time.Now().UTC(),
 				LastSeen:  time.Now().UTC(),
 			})
@@ -145,46 +172,84 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 	}
 
 	runResult.ToolRun = buildToolRun(h, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
+	if drops > 0 {
+		runResult.ToolRun.Config["vhost_mismatch_drops"] = drops
+	}
 	return runResult, nil
 }
 
-func buildProbeURLs(inputs []string) []string {
+// buildProbeURLs parses a list of probe inputs into concrete probe targets.
+// Accepted forms: "hostname|ip:port/tcp", "ip:port/tcp", "hostname". See
+// probeTarget docs for semantics.
+func buildProbeURLs(inputs []string) []probeTarget {
 	httpsDefaultPorts := map[int]bool{443: true, 8443: true, 9443: true}
-	var urls []string
+	var targets []probeTarget
 
-	for _, input := range inputs {
-		// Input format from naabu: "ip:port/tcp"
-		input = strings.TrimSuffix(input, "/tcp")
-		host, portStr, err := splitHostPort(input)
+	for _, raw := range inputs {
+		// Optional "hostname|" prefix (SUR-242 enriched format).
+		expectedHost := ""
+		body := raw
+		if idx := strings.Index(raw, "|"); idx >= 0 {
+			expectedHost = raw[:idx]
+			body = raw[idx+1:]
+		}
+
+		body = strings.TrimSuffix(body, "/tcp")
+
+		host, portStr, err := splitHostPort(body)
 		if err != nil {
-			// Try as plain host
-			urls = append(urls, "http://"+input, "https://"+input)
+			// Bare hostname/IP: probe via DNS. Treat a raw IP as IP-pure
+			// (no scope check); treat a hostname as self-scoped so off-site
+			// redirects still trip the check.
+			h := body
+			if expectedHost == "" && net.ParseIP(h) == nil {
+				expectedHost = h
+			}
+			targets = append(targets,
+				probeTarget{URL: "http://" + h, ExpectedHost: expectedHost},
+				probeTarget{URL: "https://" + h, ExpectedHost: expectedHost},
+			)
 			continue
 		}
 
 		port := 0
 		fmt.Sscanf(portStr, "%d", &port)
 
-		if httpsDefaultPorts[port] {
-			urls = append(urls, fmt.Sprintf("https://%s:%d", host, port))
-		} else if port == 80 {
-			urls = append(urls, fmt.Sprintf("http://%s:%d", host, port))
-		} else {
-			// Try HTTP first, then HTTPS
-			urls = append(urls, fmt.Sprintf("http://%s:%d", host, port))
-			urls = append(urls, fmt.Sprintf("https://%s:%d", host, port))
+		var schemes []string
+		switch {
+		case httpsDefaultPorts[port]:
+			schemes = []string{"https"}
+		case port == 80:
+			schemes = []string{"http"}
+		default:
+			schemes = []string{"http", "https"}
+		}
+		for _, scheme := range schemes {
+			targets = append(targets, probeTarget{
+				URL:          fmt.Sprintf("%s://%s:%d", scheme, host, port),
+				ExpectedHost: expectedHost,
+				IP:           host,
+				Port:         port,
+			})
 		}
 	}
 
-	return urls
+	return targets
 }
 
 func splitHostPort(input string) (string, string, error) {
-	// Handle IPv6 addresses
+	// Handle IPv6 addresses in brackets
 	if strings.HasPrefix(input, "[") {
-		return net_SplitHostPort(input)
+		closeIdx := strings.LastIndex(input, "]")
+		if closeIdx < 0 {
+			return "", "", fmt.Errorf("unmatched [ in %q", input)
+		}
+		rest := input[closeIdx+1:]
+		if !strings.HasPrefix(rest, ":") {
+			return "", "", fmt.Errorf("no port in %q", input)
+		}
+		return input[1:closeIdx], rest[1:], nil
 	}
-	// Simple split for IPv4
 	idx := strings.LastIndex(input, ":")
 	if idx < 0 {
 		return "", "", fmt.Errorf("no port in %q", input)
@@ -192,43 +257,50 @@ func splitHostPort(input string) (string, string, error) {
 	return input[:idx], input[idx+1:], nil
 }
 
-func net_SplitHostPort(s string) (string, string, error) {
-	// Thin wrapper — avoid importing net just for this in the common case
-	i := strings.LastIndex(s, ":")
-	if i < 0 {
-		return "", "", fmt.Errorf("no port in %q", s)
-	}
-	return s[:i], s[i+1:], nil
-}
-
-func probeURL(ctx context.Context, client *http.Client, targetURL string) *probeResult {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+// probeURL issues a single HTTP probe. Returns (result, droppedAsMismatch).
+// When target.ExpectedHost is non-empty, the request is issued with Host set
+// to ExpectedHost, and the response is dropped (returning nil, true) when the
+// effective host (final URL hostname, and TLS cert SAN coverage for HTTPS)
+// does not match. See SUR-242.
+func probeURL(ctx context.Context, client *http.Client, target probeTarget) (*probeResult, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL, nil)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	req.Header.Set("User-Agent", "surfbot-agent/1.0")
+	if target.ExpectedHost != "" {
+		req.Host = target.ExpectedHost
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer resp.Body.Close()
+
+	// Scope check: if we asked for a specific vhost, verify the response came
+	// from something that matches. Dropped responses never become assets.
+	if target.ExpectedHost != "" {
+		observed := resp.Request.URL.Hostname()
+		if !scopeMatches(target.ExpectedHost, observed, resp.TLS) {
+			logVhostMismatch(target, observed, resp.StatusCode)
+			return nil, true
+		}
+	}
 
 	// Read up to 64KB
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	bodyStr := string(body)
 
 	pr := &probeResult{
-		URL:        resp.Request.URL.String(),
+		URL:        recordedURL(resp.Request.URL, target),
 		StatusCode: resp.StatusCode,
 		Server:     resp.Header.Get("Server"),
 		Metadata:   map[string]interface{}{},
 	}
 
-	// Extract title
 	pr.Title = ExtractTitle(bodyStr)
 
-	// Build metadata
 	pr.Metadata["status_code"] = resp.StatusCode
 	if pr.Title != "" {
 		pr.Metadata["title"] = pr.Title
@@ -240,7 +312,6 @@ func probeURL(ctx context.Context, client *http.Client, targetURL string) *probe
 		pr.Metadata["content_length"] = resp.ContentLength
 	}
 
-	// TLS info
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		cert := resp.TLS.PeerCertificates[0]
 		pr.Metadata["tls_issuer"] = cert.Issuer.CommonName
@@ -248,10 +319,59 @@ func probeURL(ctx context.Context, client *http.Client, targetURL string) *probe
 		pr.Metadata["tls_valid"] = time.Now().Before(cert.NotAfter) && time.Now().After(cert.NotBefore)
 	}
 
-	// Technology detection
 	pr.TechList = DetectTechnologies(resp.Header, bodyStr)
 
-	return pr
+	return pr, false
+}
+
+// scopeMatches reports whether the observed hostname belongs to the expected
+// scope. Match rule: case-insensitive equality of the URL hostname, OR a TLS
+// cert that covers the expected name (handles wildcard SANs like *.example.com).
+func scopeMatches(expected, observed string, cs *tls.ConnectionState) bool {
+	if strings.EqualFold(expected, observed) {
+		return true
+	}
+	if cs != nil && len(cs.PeerCertificates) > 0 {
+		if certCoversHost(cs.PeerCertificates[0], expected) {
+			return true
+		}
+	}
+	return false
+}
+
+// certCoversHost returns true when the cert's CN/SANs cover hostname, including
+// RFC 6125 wildcard matching. Delegates to the stdlib.
+func certCoversHost(cert *x509.Certificate, hostname string) bool {
+	return cert.VerifyHostname(hostname) == nil
+}
+
+// recordedURL returns the URL to persist as an asset. For scoped probes we
+// rewrite the IP-based URL back to the hostname so downstream assets are
+// attributed to the user-declared target, not the raw IP.
+func recordedURL(final *url.URL, target probeTarget) string {
+	if target.ExpectedHost == "" {
+		return final.String()
+	}
+	rewritten := *final
+	if target.Port > 0 && !isDefaultPort(rewritten.Scheme, target.Port) {
+		rewritten.Host = fmt.Sprintf("%s:%d", target.ExpectedHost, target.Port)
+	} else {
+		rewritten.Host = target.ExpectedHost
+	}
+	return rewritten.String()
+}
+
+func isDefaultPort(scheme string, port int) bool {
+	return (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+}
+
+// vhostMismatchLog is the writer for structured drop logs. Swappable in tests.
+var vhostMismatchLog io.Writer = os.Stderr
+
+func logVhostMismatch(target probeTarget, observed string, status int) {
+	fmt.Fprintf(vhostMismatchLog,
+		"reason=vhost_mismatch expected_host=%s observed_host=%s ip=%s port=%d status=%d\n",
+		target.ExpectedHost, observed, target.IP, target.Port, status)
 }
 
 // ExtractTitle extracts the HTML title from a response body string.

@@ -24,14 +24,14 @@ type mockTool struct {
 	err      error
 }
 
-func (m *mockTool) Name() string               { return m.name }
-func (m *mockTool) Phase() string               { return m.phase }
-func (m *mockTool) Kind() detection.ToolKind    { return detection.ToolKindLibrary }
-func (m *mockTool) Available() bool             { return true }
-func (m *mockTool) Command() string             { return m.name }
-func (m *mockTool) Description() string         { return "mock tool" }
-func (m *mockTool) InputType() string           { return "domains" }
-func (m *mockTool) OutputTypes() []string       { return nil }
+func (m *mockTool) Name() string             { return m.name }
+func (m *mockTool) Phase() string            { return m.phase }
+func (m *mockTool) Kind() detection.ToolKind { return detection.ToolKindLibrary }
+func (m *mockTool) Available() bool          { return true }
+func (m *mockTool) Command() string          { return m.name }
+func (m *mockTool) Description() string      { return "mock tool" }
+func (m *mockTool) InputType() string        { return "domains" }
+func (m *mockTool) OutputTypes() []string    { return nil }
 func (m *mockTool) Run(_ context.Context, _ []string, _ detection.RunOptions) (*detection.RunResult, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -430,6 +430,111 @@ func TestDataThreading(t *testing.T) {
 			assert.Equal(t, tc.expected, got)
 		})
 	}
+}
+
+// TestEnrichHostports covers SUR-242 input-format widening: ip:port/tcp is
+// rewritten to hostname|ip:port/tcp when the IP has a resolved hostname.
+func TestEnrichHostports(t *testing.T) {
+	ipToHostname := map[string]string{
+		"1.2.3.4": "example.com",
+		"5.6.7.8": "api.example.com",
+	}
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "known IP gets hostname prefix",
+			in:   []string{"1.2.3.4:443/tcp"},
+			want: []string{"example.com|1.2.3.4:443/tcp"},
+		},
+		{
+			name: "unknown IP passes through IP-pure",
+			in:   []string{"9.9.9.9:443/tcp"},
+			want: []string{"9.9.9.9:443/tcp"},
+		},
+		{
+			name: "mixed known and unknown",
+			in:   []string{"1.2.3.4:80/tcp", "9.9.9.9:80/tcp", "5.6.7.8:443/tcp"},
+			want: []string{
+				"example.com|1.2.3.4:80/tcp",
+				"9.9.9.9:80/tcp",
+				"api.example.com|5.6.7.8:443/tcp",
+			},
+		},
+		{
+			name: "empty map is a no-op",
+			in:   []string{"1.2.3.4:443/tcp"},
+			want: []string{"1.2.3.4:443/tcp"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := ipToHostname
+			if tc.name == "empty map is a no-op" {
+				m = map[string]string{}
+			}
+			got := enrichHostports(tc.in, m)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestPipelineThreadsHostnameToHTTPProbe asserts end-to-end that a resolved
+// hostname flows through resolution → port_scan → http_probe input as the
+// enriched "hostname|ip:port/tcp" format (SUR-242 R2).
+func TestPipelineThreadsHostnameToHTTPProbe(t *testing.T) {
+	s := newTestStore(t)
+	target := createTarget(t, s, "example.com")
+
+	var httpxInputs []string
+	httpx := &inputCapturingMockTool{
+		mockTool: mockTool{
+			name:  "httpx",
+			phase: "http_probe",
+		},
+		capturedInputs: &httpxInputs,
+	}
+
+	tools := []detection.DetectionTool{
+		&mockTool{
+			name:  "subfinder",
+			phase: "discovery",
+			assets: []model.Asset{
+				{Type: model.AssetTypeSubdomain, Value: "example.com", Status: model.AssetStatusNew},
+			},
+		},
+		&mockTool{
+			name:  "dnsx",
+			phase: "resolution",
+			assets: []model.Asset{
+				{
+					Type:     model.AssetTypeIPv4,
+					Value:    "1.2.3.4",
+					Status:   model.AssetStatusNew,
+					Metadata: map[string]interface{}{"resolved_from": "example.com"},
+				},
+			},
+		},
+		&mockTool{
+			name:  "naabu",
+			phase: "port_scan",
+			assets: []model.Asset{
+				{Type: model.AssetTypePort, Value: "1.2.3.4:443/tcp", Status: model.AssetStatusNew},
+			},
+		},
+		httpx,
+		&mockTool{name: "nuclei", phase: "assessment"},
+	}
+	reg := mockRegistry(tools...)
+	pipe := New(s, reg)
+
+	_, err := pipe.Run(context.Background(), target.ID, PipelineOptions{ScanType: model.ScanTypeFull})
+	require.NoError(t, err)
+
+	assert.Contains(t, httpxInputs, "example.com|1.2.3.4:443/tcp",
+		"http_probe input must carry hostname alongside ip:port")
 }
 
 func TestShouldSkip(t *testing.T) {
