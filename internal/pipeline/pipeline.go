@@ -103,6 +103,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	tools := p.selectTools(opts)
 	inputs := []string{target.Value}
 	hostnames := []string{target.Value} // original hostnames for hostname-aware phases
+	ipToHostname := map[string]string{} // primary hostname per resolved IP (SUR-242)
 	result := &PipelineResult{
 		ScanID: scan.ID,
 		Target: target.Value,
@@ -316,8 +317,28 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			hostnames = nextInputs
 		}
 
-		// For http_probe: include hostnames alongside IPs/ports so CDN-backed
-		// sites can be probed by hostname (not just IP)
+		// Build ip→hostname map from resolution output so http_probe can
+		// send Host headers matching the user's target scope (SUR-242).
+		if tool.Phase() == "resolution" {
+			for _, a := range toolResult.Assets {
+				if a.Type != model.AssetTypeIPv4 && a.Type != model.AssetTypeIPv6 {
+					continue
+				}
+				if _, dup := ipToHostname[a.Value]; dup {
+					continue
+				}
+				if h, ok := a.Metadata["resolved_from"].(string); ok && h != "" {
+					ipToHostname[a.Value] = h
+				}
+			}
+		}
+
+		// For http_probe: pair each ip:port with its resolved hostname
+		// (hostname|ip:port/tcp), and also keep bare hostnames for the
+		// CDN fallback path where DNS resolution happens client-side.
+		if tool.Phase() == "port_scan" {
+			nextInputs = enrichHostports(nextInputs, ipToHostname)
+		}
 		if tool.Phase() == "resolution" || tool.Phase() == "port_scan" {
 			nextInputs = mergeHostnames(nextInputs, hostnames)
 		}
@@ -376,7 +397,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	scan.Progress = 100
 	finishedAt := time.Now().UTC()
 	scan.FinishedAt = &finishedAt
-	p.store.UpdateScan(ctx, scan) //nolint:errcheck
+	p.store.UpdateScan(ctx, scan)                                         //nolint:errcheck
 	p.store.UpdateTargetLastScan(ctx, scan.TargetID, scan.ID, finishedAt) //nolint:errcheck
 
 	result.Stats = scan.Stats
@@ -500,6 +521,47 @@ func isIPBasedURL(u string) bool {
 		host = host[:idx]
 	}
 	return net.ParseIP(host) != nil
+}
+
+// enrichHostports rewrites "ip:port/tcp" inputs as "hostname|ip:port/tcp" when
+// the IP has a known resolved hostname. Entries whose IP is unknown to the map
+// pass through unchanged (IP-pure probing). See SUR-242.
+func enrichHostports(hostports []string, ipToHostname map[string]string) []string {
+	if len(ipToHostname) == 0 {
+		return hostports
+	}
+	out := make([]string, 0, len(hostports))
+	for _, hp := range hostports {
+		ip := ipFromHostport(hp)
+		if ip == "" {
+			out = append(out, hp)
+			continue
+		}
+		if h, ok := ipToHostname[ip]; ok && h != "" {
+			out = append(out, h+"|"+hp)
+			continue
+		}
+		out = append(out, hp)
+	}
+	return out
+}
+
+// ipFromHostport extracts the IP from an "ip:port[/tcp]" string. Supports
+// bracketed IPv6 literals. Returns "" on parse failure.
+func ipFromHostport(hp string) string {
+	body := strings.TrimSuffix(hp, "/tcp")
+	if strings.HasPrefix(body, "[") {
+		close := strings.LastIndex(body, "]")
+		if close < 0 {
+			return ""
+		}
+		return body[1:close]
+	}
+	idx := strings.LastIndex(body, ":")
+	if idx < 0 {
+		return ""
+	}
+	return body[:idx]
 }
 
 // mergeHostnames appends hostnames to the input list, deduplicating.
@@ -707,13 +769,13 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 // WriteJSONResult writes the pipeline result as JSON to the given path.
 func WriteJSONResult(result *PipelineResult, path string) error {
 	type jsonResult struct {
-		ScanID     string            `json:"scan_id"`
-		Target     string            `json:"target"`
-		Type       string            `json:"type"`
-		Status     string            `json:"status"`
-		DurationMs int64             `json:"duration_ms"`
-		Stats      model.ScanStats   `json:"stats"`
-		Phases     []PhaseResult     `json:"phases"`
+		ScanID     string          `json:"scan_id"`
+		Target     string          `json:"target"`
+		Type       string          `json:"type"`
+		Status     string          `json:"status"`
+		DurationMs int64           `json:"duration_ms"`
+		Stats      model.ScanStats `json:"stats"`
+		Phases     []PhaseResult   `json:"phases"`
 	}
 
 	out := jsonResult{

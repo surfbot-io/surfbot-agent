@@ -14,7 +14,11 @@ import (
 
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
-const SpecVersion = "1.0.0"
+//
+// 1.1.0 — probe accepts the enriched "hostname|ip:port/tcp" input format
+//
+//	alongside the legacy bare ip:port/tcp. See SUR-242.
+const SpecVersion = "1.1.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {
