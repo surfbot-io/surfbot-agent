@@ -60,6 +60,38 @@ a consumer's `input.type` is compatible with a producer's `output.type`.
 `composition.recipes` declares canonical named compositions — today only
 `scan`, which mirrors the live `surfbot scan` pipeline.
 
+## Scope guarantees
+
+Surfbot will not persist assets whose hostname lies outside the declared
+target scope. When a target hostname resolves to a shared IP (CDN, cloud
+PaaS, shared hosting), Surfbot sends the target hostname as the HTTP
+`Host` header so the server returns the intended vhost. If the server
+responds with a different vhost — detected by comparing the final URL
+hostname and TLS certificate SANs against the expected hostname — the
+response is dropped silently and logged to stderr with
+`reason=vhost_mismatch`.
+
+**Input formats for `probe`:**
+
+- `hostname|ip:port/tcp` — scoped probe. Request goes to the IP, `Host`
+  header is set to the hostname. Response is dropped if the effective
+  host does not match.
+- `ip:port/tcp` — IP-pure probe. No `Host` override, no scope check.
+  Whatever the server returns is persisted under the IP.
+- `hostname` — DNS-resolved probe, self-scoped. Off-site redirects
+  trigger the drop.
+
+The `scan` pipeline produces `hostname|ip:port/tcp` automatically by
+pairing resolved IPs with their originating hostnames.
+
+**Observability:** each drop emits one stderr line in key=value form:
+
+```
+reason=vhost_mismatch expected_host=<h> observed_host=<h> ip=<ip> port=<p> status=<code>
+```
+
+The total is accumulated on the run's `ToolRun.Config["vhost_mismatch_drops"]`.
+
 ## Stability
 
 `spec_version` is semver:
@@ -67,7 +99,7 @@ a consumer's `input.type` is compatible with a producer's `output.type`.
 - **minor** — additive (new commands, new optional fields)
 - **patch** — doc/description changes only
 
-Current: **1.0.0**.
+Current: **1.1.0**.
 
 ## Design notes
 

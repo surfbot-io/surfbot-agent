@@ -42,6 +42,11 @@ func attachDefaultExamples(root *cobra.Command) {
 			"surfbot portscan --json < ports.json | surfbot probe --json",
 			"")
 
+		add("probe",
+			"HTTP-probe with hostname scope",
+			"echo 'example.com|1.2.3.4:443/tcp' | surfbot probe --stdin --json",
+			"Enriched input: probe IP 1.2.3.4:443 with Host: example.com. Responses whose effective host lies outside example.com are dropped (see docs/agent-spec.md § Scope Guarantees). Bare 'ip:port/tcp' input keeps IP-pure behavior.")
+
 		add("assess",
 			"Run nuclei templates against probed URLs",
 			"surfbot probe --json < urls.json | surfbot assess --json",
