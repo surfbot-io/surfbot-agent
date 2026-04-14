@@ -398,13 +398,21 @@ tr.clickable { cursor: pointer; }
   border-color: var(--accent);
 }
 
+/* === Scan Detail Stack === */
+.scan-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.scan-detail-stack .table-container { margin-bottom: 0; }
+.scan-detail-stack .detail-panel { margin-bottom: 0; }
+
 /* === Detail Panel === */
 .detail-panel {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 24px;
-  margin-bottom: 24px;
 }
 
 .detail-header {
@@ -881,4 +889,207 @@ tr.clickable { cursor: pointer; }
   clip: rect(0,0,0,0);
   white-space: nowrap;
   border: 0;
+}
+
+/* === Phase Indicator === */
+.phase-indicator {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  margin: 20px 0;
+  gap: 0;
+}
+
+.phase-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.phase-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  border: 2px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.phase-circle.phase-done {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+}
+
+.phase-circle.phase-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: phase-pulse 2s ease-in-out infinite;
+}
+
+.phase-circle.phase-failed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.phase-circle.phase-cancelled {
+  background: var(--text-muted);
+  border-color: var(--text-muted);
+  color: var(--bg-primary);
+}
+
+.phase-circle.phase-skipped {
+  border-style: dashed;
+  border-color: var(--text-muted);
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.phase-step.skipped .phase-label { color: var(--text-muted); opacity: 0.5; }
+
+.phase-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.phase-step.active .phase-label { color: var(--accent); font-weight: 600; }
+.phase-step.done .phase-label { color: var(--text-secondary); }
+
+.phase-line {
+  width: 40px;
+  height: 2px;
+  background: var(--border);
+  margin: 15px 4px 0;
+  flex-shrink: 0;
+}
+
+.phase-line.phase-line-done { background: var(--accent); }
+
+@keyframes phase-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 229, 153, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(0, 229, 153, 0); }
+}
+
+/* === Progress Bar === */
+.progress-bar-container { margin-bottom: 16px; }
+
+.progress-bar-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.progress-bar-track {
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.progress-shimmer {
+  background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--accent) 50%, var(--bg-tertiary) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* === Pipeline View === */
+.pipeline-view { padding: 12px 0 0; }
+
+.pipeline-node {
+  display: flex;
+  gap: 12px;
+}
+
+.pipeline-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 20px;
+  flex-shrink: 0;
+}
+
+.pipeline-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--border);
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+.pipeline-node.status-completed .pipeline-dot { background: var(--success); }
+.pipeline-node.status-running .pipeline-dot { background: var(--accent); animation: phase-pulse 2s ease-in-out infinite; }
+.pipeline-node.status-failed .pipeline-dot { background: var(--danger); }
+.pipeline-node.status-timeout .pipeline-dot { background: var(--sev-high); }
+.pipeline-node.status-skipped .pipeline-dot { background: var(--text-muted); }
+
+.pipeline-vline {
+  width: 2px;
+  flex: 1;
+  background: var(--border);
+  min-height: 12px;
+}
+
+.pipeline-node.status-completed .pipeline-vline { background: var(--success); }
+.pipeline-node.status-running .pipeline-vline { background: var(--accent); }
+.pipeline-node.status-failed .pipeline-vline { background: var(--danger); }
+
+.pipeline-content {
+  flex: 1;
+  padding-bottom: 16px;
+}
+
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-icon { font-size: 14px; line-height: 1; }
+.tool-name { font-weight: 600; font-size: 13px; }
+.tool-duration { font-size: 12px; color: var(--text-secondary); margin-left: auto; }
+
+.pipeline-stats {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  padding-left: 22px;
+}
+
+.stat-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.stat-badge-finding {
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
 }

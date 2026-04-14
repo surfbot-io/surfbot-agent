@@ -28,9 +28,10 @@ type handler struct {
 	registry *detection.Registry
 	daemon   *DaemonView // optional: SPEC-X3.1 agent card data source
 
-	// scanMu protects runningScan to prevent concurrent scans.
+	// scanMu protects runningScan and cancelFunc to prevent concurrent scans.
 	scanMu      sync.Mutex
-	runningScan string // scan ID of the currently running scan, empty if idle
+	runningScan string             // scan ID of the currently running scan, empty if idle
+	cancelFunc  context.CancelFunc // cancel function for the running scan
 }
 
 // --- JSON helpers ---
@@ -873,17 +874,17 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 		Timeout:   req.Timeout,
 	}
 
-	// Create a placeholder scan ID by peeking at the pipeline
-	// We start the pipeline in a goroutine and return immediately
+	scanCtx, scanCancel := context.WithCancel(context.Background())
 	h.runningScan = "starting"
+	h.cancelFunc = scanCancel
 	h.scanMu.Unlock()
 
 	go func() {
-		ctx := context.Background()
-		result, err := pipe.Run(ctx, target.ID, opts)
+		result, err := pipe.Run(scanCtx, target.ID, opts)
 
 		h.scanMu.Lock()
 		h.runningScan = ""
+		h.cancelFunc = nil
 		h.scanMu.Unlock()
 
 		if err != nil {
@@ -950,6 +951,53 @@ func (h *handler) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// --- Cancel Scan ---
+
+func (h *handler) handleCancelScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/scans/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing scan id")
+		return
+	}
+
+	scan, err := h.store.GetScan(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "scan not found")
+		return
+	}
+
+	if scan.Status != model.ScanStatusRunning {
+		writeError(w, http.StatusBadRequest, "scan is not running")
+		return
+	}
+
+	h.scanMu.Lock()
+	cancel := h.cancelFunc
+	h.scanMu.Unlock()
+
+	if cancel != nil {
+		// Scan started by this process — cancel via context
+		cancel()
+	} else {
+		// Scan started externally (daemon/CLI) — mark as cancelled in DB.
+		// The pipeline checks scan status at each tool boundary.
+		scan.Status = model.ScanStatusCancelled
+		scan.Phase = "cancelled"
+		now := time.Now().UTC()
+		scan.FinishedAt = &now
+		if err := h.store.UpdateScan(r.Context(), scan); err != nil {
+			log.Printf("[webui] cancel scan DB update error: %v", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // --- Available Tools ---
