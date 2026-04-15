@@ -31,10 +31,11 @@ func TestNewSQLiteStore(t *testing.T) {
 		assert.NoError(t, err, "table %s should exist", table)
 	}
 
-	// Verify agent_meta seeded
+	// Verify agent_meta seeded. schema_version tracks the latest applied
+	// migration: 003 bumps it to "3".
 	v, err := s.GetMeta(ctx, "schema_version")
 	require.NoError(t, err)
-	assert.Equal(t, "1", v)
+	assert.Equal(t, "3", v)
 }
 
 func TestTargetCRUD(t *testing.T) {
@@ -190,7 +191,10 @@ func TestScanCRUD(t *testing.T) {
 	scan.Phase = "discovery"
 	scan.Progress = 25.0
 	scan.StartedAt = &now
-	scan.Stats = model.ScanStats{SubdomainsFound: 10}
+	scan.TargetState = model.TargetState{
+		AssetsByType: map[model.AssetType]int{model.AssetTypeSubdomain: 10},
+		AssetsTotal:  10,
+	}
 	require.NoError(t, s.UpdateScan(ctx, scan))
 
 	got, err = s.GetScan(ctx, scan.ID)
@@ -198,7 +202,8 @@ func TestScanCRUD(t *testing.T) {
 	assert.Equal(t, model.ScanStatusRunning, got.Status)
 	assert.Equal(t, "discovery", got.Phase)
 	assert.Equal(t, float32(25.0), got.Progress)
-	assert.Equal(t, 10, got.Stats.SubdomainsFound)
+	assert.Equal(t, 10, got.TargetState.AssetsByType[model.AssetTypeSubdomain])
+	assert.Equal(t, 10, got.TargetState.AssetsTotal)
 
 	// List
 	scans, err := s.ListScans(ctx, target.ID, 10)

@@ -23,10 +23,22 @@ const (
 )
 
 type Finding struct {
-	ID           string        `json:"id"`
-	AssetID      string        `json:"asset_id"`
-	ScanID       string        `json:"scan_id,omitempty"`
-	TemplateID   string        `json:"template_id"`
+	ID string `json:"id"`
+
+	AssetID string `json:"asset_id"`
+
+	// ScanID is the id of the most recent scan that observed this finding.
+	// Updated on every UpsertFinding so that "findings observed in scan X"
+	// (COUNT WHERE scan_id=X) is a meaningful query. To recover the
+	// originating scan, use FirstSeenScanID.
+	ScanID string `json:"scan_id,omitempty"`
+
+	// FirstSeenScanID is the id of the scan that first discovered this
+	// finding. Immutable after creation. Nullable for findings created
+	// before migration 003 that were never re-observed.
+	FirstSeenScanID string `json:"first_seen_scan_id,omitempty"`
+
+	TemplateID string `json:"template_id"`
 	TemplateName string        `json:"template_name"`
 	Severity     Severity      `json:"severity"`
 	Title        string        `json:"title"`

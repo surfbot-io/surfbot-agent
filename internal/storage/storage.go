@@ -107,6 +107,14 @@ type Store interface {
 	CountFindingsByAssetIDs(ctx context.Context) (map[string]int, error)
 	LastScan(ctx context.Context) (*model.Scan, error)
 
+	// --- Scan aggregate queries (see scan_aggregates.go) ---
+	CountAssetsByTypeForTarget(ctx context.Context, targetID string) (map[model.AssetType]int, error)
+	CountPortsByStatusForTarget(ctx context.Context, targetID string) (map[string]int, error)
+	CountFindingsBySeverityForTarget(ctx context.Context, targetID string, status model.FindingStatus) (map[model.Severity]int, error)
+	CountFindingsByStatusForTarget(ctx context.Context, targetID string) (map[model.FindingStatus]int, error)
+	AssetChangeCountsForScan(ctx context.Context, scanID string) (map[string]map[model.AssetType]int, error)
+	ScanIsBaseline(ctx context.Context, scanID string) (bool, error)
+
 	Close() error
 }
 
@@ -156,23 +164,49 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 func (s *SQLiteStore) runMigrations() error {
-	migration, err := migrationsFS.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		return fmt.Errorf("reading migration 001: %w", err)
-	}
-	if _, err = s.db.Exec(string(migration)); err != nil {
-		return fmt.Errorf("executing migration 001: %w", err)
+	// Migrations are applied in numeric order. Each migration is idempotent
+	// against its own starting state, but we gate 003 on the presence of
+	// the legacy scans.stats column since 003 drops it. Running 003 twice
+	// against an already-migrated database would fail on the ALTER.
+	for _, m := range []string{"001_init.sql", "002_asset_changes.sql"} {
+		sqlBytes, err := migrationsFS.ReadFile("migrations/" + m)
+		if err != nil {
+			return fmt.Errorf("reading migration %s: %w", m, err)
+		}
+		if _, err = s.db.Exec(string(sqlBytes)); err != nil {
+			return fmt.Errorf("executing migration %s: %w", m, err)
+		}
 	}
 
-	migration002, err := migrationsFS.ReadFile("migrations/002_asset_changes.sql")
-	if err != nil {
-		return fmt.Errorf("reading migration 002: %w", err)
-	}
-	if _, err = s.db.Exec(string(migration002)); err != nil {
-		return fmt.Errorf("executing migration 002: %w", err)
+	schemaVersion, _ := s.getSchemaVersion()
+	if schemaVersion < 3 {
+		m003, err := migrationsFS.ReadFile("migrations/003_scan_state_model.sql")
+		if err != nil {
+			return fmt.Errorf("reading migration 003: %w", err)
+		}
+		if _, err = s.db.Exec(string(m003)); err != nil {
+			return fmt.Errorf("executing migration 003: %w", err)
+		}
 	}
 
 	return nil
+}
+
+// getSchemaVersion reads the current schema version from agent_meta. Returns
+// 0 and nil when the key is absent (fresh DB or pre-003 DB without the
+// schema_version key populated beyond the initial '1').
+func (s *SQLiteStore) getSchemaVersion() (int, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM agent_meta WHERE key = 'schema_version'`).Scan(&v)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	_, scanErr := fmt.Sscanf(v, "%d", &n)
+	if scanErr != nil {
+		return 0, scanErr
+	}
+	return n, nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -297,16 +331,18 @@ func (s *SQLiteStore) CreateScan(ctx context.Context, sc *model.Scan) error {
 	sc.CreatedAt = now
 	sc.UpdatedAt = now
 
-	statsJSON, err := json.Marshal(sc.Stats)
+	stateJSON, deltaJSON, workJSON, err := marshalScanAggregates(sc)
 	if err != nil {
-		return fmt.Errorf("marshaling scan stats: %w", err)
+		return err
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO scans (id, target_id, type, status, phase, progress, stats, started_at, finished_at, error, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO scans (id, target_id, type, status, phase, progress, target_state, delta, work,
+		                   started_at, finished_at, error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sc.ID, sc.TargetID, string(sc.Type), string(sc.Status), sc.Phase, sc.Progress,
-		string(statsJSON), timePtr(sc.StartedAt), timePtr(sc.FinishedAt),
+		stateJSON, deltaJSON, workJSON,
+		timePtr(sc.StartedAt), timePtr(sc.FinishedAt),
 		sc.Error, sc.CreatedAt.Format(timeFormat), sc.UpdatedAt.Format(timeFormat),
 	)
 	if err != nil {
@@ -315,17 +351,58 @@ func (s *SQLiteStore) CreateScan(ctx context.Context, sc *model.Scan) error {
 	return nil
 }
 
+// marshalScanAggregates serializes the three scan snapshot blobs. Returns
+// the three JSON strings in target_state / delta / work order.
+func marshalScanAggregates(sc *model.Scan) (string, string, string, error) {
+	stateJSON, err := json.Marshal(sc.TargetState)
+	if err != nil {
+		return "", "", "", fmt.Errorf("marshaling target_state: %w", err)
+	}
+	deltaJSON, err := json.Marshal(sc.Delta)
+	if err != nil {
+		return "", "", "", fmt.Errorf("marshaling delta: %w", err)
+	}
+	workJSON, err := json.Marshal(sc.Work)
+	if err != nil {
+		return "", "", "", fmt.Errorf("marshaling work: %w", err)
+	}
+	return string(stateJSON), string(deltaJSON), string(workJSON), nil
+}
+
+// unmarshalScanAggregates populates the three snapshot fields from their
+// JSON blobs. Empty / null blobs degrade cleanly to zero-valued structs.
+func unmarshalScanAggregates(sc *model.Scan, stateJSON, deltaJSON, workJSON string) error {
+	if stateJSON != "" {
+		if err := json.Unmarshal([]byte(stateJSON), &sc.TargetState); err != nil {
+			return fmt.Errorf("unmarshaling target_state: %w", err)
+		}
+	}
+	if deltaJSON != "" {
+		if err := json.Unmarshal([]byte(deltaJSON), &sc.Delta); err != nil {
+			return fmt.Errorf("unmarshaling delta: %w", err)
+		}
+	}
+	if workJSON != "" {
+		if err := json.Unmarshal([]byte(workJSON), &sc.Work); err != nil {
+			return fmt.Errorf("unmarshaling work: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *SQLiteStore) GetScan(ctx context.Context, id string) (*model.Scan, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, target_id, type, status, phase, progress, stats, started_at, finished_at, error, created_at, updated_at
+		`SELECT id, target_id, type, status, phase, progress, target_state, delta, work,
+		        started_at, finished_at, error, created_at, updated_at
 		 FROM scans WHERE id = ?`, id)
 
 	var sc model.Scan
-	var statsJSON string
+	var stateJSON, deltaJSON, workJSON string
 	var startedAt, finishedAt, createdAt, updatedAt sql.NullString
 
 	err := row.Scan(&sc.ID, &sc.TargetID, &sc.Type, &sc.Status, &sc.Phase, &sc.Progress,
-		&statsJSON, &startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt)
+		&stateJSON, &deltaJSON, &workJSON,
+		&startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -333,8 +410,8 @@ func (s *SQLiteStore) GetScan(ctx context.Context, id string) (*model.Scan, erro
 		return nil, fmt.Errorf("scanning scan row: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(statsJSON), &sc.Stats); err != nil {
-		return nil, fmt.Errorf("unmarshaling scan stats: %w", err)
+	if err := unmarshalScanAggregates(&sc, stateJSON, deltaJSON, workJSON); err != nil {
+		return nil, err
 	}
 	sc.StartedAt = parseTimePtr(startedAt)
 	sc.FinishedAt = parseTimePtr(finishedAt)
@@ -346,15 +423,18 @@ func (s *SQLiteStore) GetScan(ctx context.Context, id string) (*model.Scan, erro
 
 func (s *SQLiteStore) UpdateScan(ctx context.Context, sc *model.Scan) error {
 	sc.UpdatedAt = time.Now().UTC()
-	statsJSON, err := json.Marshal(sc.Stats)
+	stateJSON, deltaJSON, workJSON, err := marshalScanAggregates(sc)
 	if err != nil {
-		return fmt.Errorf("marshaling scan stats: %w", err)
+		return err
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE scans SET status=?, phase=?, progress=?, stats=?, started_at=?, finished_at=?, error=?, updated_at=?
+		`UPDATE scans SET status=?, phase=?, progress=?,
+		                  target_state=?, delta=?, work=?,
+		                  started_at=?, finished_at=?, error=?, updated_at=?
 		 WHERE id=?`,
-		string(sc.Status), sc.Phase, sc.Progress, string(statsJSON),
+		string(sc.Status), sc.Phase, sc.Progress,
+		stateJSON, deltaJSON, workJSON,
 		timePtr(sc.StartedAt), timePtr(sc.FinishedAt), sc.Error,
 		sc.UpdatedAt.Format(timeFormat), sc.ID,
 	)
@@ -369,7 +449,8 @@ func (s *SQLiteStore) ListScans(ctx context.Context, targetID string, limit int)
 		limit = 20
 	}
 
-	query := `SELECT id, target_id, type, status, phase, progress, stats, started_at, finished_at, error, created_at, updated_at FROM scans`
+	query := `SELECT id, target_id, type, status, phase, progress, target_state, delta, work,
+	                 started_at, finished_at, error, created_at, updated_at FROM scans`
 	args := []interface{}{}
 
 	if targetID != "" {
@@ -388,15 +469,16 @@ func (s *SQLiteStore) ListScans(ctx context.Context, targetID string, limit int)
 	scans := make([]model.Scan, 0)
 	for rows.Next() {
 		var sc model.Scan
-		var statsJSON string
+		var stateJSON, deltaJSON, workJSON string
 		var startedAt, finishedAt, createdAt, updatedAt sql.NullString
 
 		if err := rows.Scan(&sc.ID, &sc.TargetID, &sc.Type, &sc.Status, &sc.Phase, &sc.Progress,
-			&statsJSON, &startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt); err != nil {
+			&stateJSON, &deltaJSON, &workJSON,
+			&startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scanning scan row: %w", err)
 		}
-		if err := json.Unmarshal([]byte(statsJSON), &sc.Stats); err != nil {
-			return nil, fmt.Errorf("unmarshaling scan stats: %w", err)
+		if err := unmarshalScanAggregates(&sc, stateJSON, deltaJSON, workJSON); err != nil {
+			return nil, err
 		}
 		sc.StartedAt = parseTimePtr(startedAt)
 		sc.FinishedAt = parseTimePtr(finishedAt)
@@ -541,6 +623,14 @@ func (s *SQLiteStore) UpsertFinding(ctx context.Context, f *model.Finding) error
 	}
 	f.UpdatedAt = now
 
+	// first_seen_scan_id captures the originating scan and never changes.
+	// If the caller didn't set it explicitly, default to the current scan
+	// on first insert; existing rows keep their original value via
+	// COALESCE in the ON CONFLICT clause below.
+	if f.FirstSeenScanID == "" {
+		f.FirstSeenScanID = f.ScanID
+	}
+
 	if f.References == nil {
 		f.References = []string{}
 	}
@@ -550,15 +640,27 @@ func (s *SQLiteStore) UpsertFinding(ctx context.Context, f *model.Finding) error
 	}
 
 	scanID := sqlNullString(f.ScanID)
+	firstSeenScanID := sqlNullString(f.FirstSeenScanID)
 
+	// ON CONFLICT semantics (SPEC-QA3):
+	//   * scan_id → updated to the latest observing scan. "findings observed
+	//     in scan X" becomes a meaningful COUNT(*) WHERE scan_id=X query.
+	//   * first_seen_scan_id → preserved via COALESCE; first discovery is
+	//     immutable.
+	//   * first_seen → preserved implicitly (column not in UPDATE).
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO findings (id, asset_id, scan_id, template_id, template_name, severity, title, description,
-		   "references", remediation, evidence, cvss, cve, status, source_tool, confidence,
+		`INSERT INTO findings (id, asset_id, scan_id, first_seen_scan_id, template_id, template_name,
+		   severity, title, description, "references", remediation, evidence, cvss, cve, status, source_tool, confidence,
 		   first_seen, last_seen, resolved_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(asset_id, template_id, source_tool) DO UPDATE SET
-		   last_seen=excluded.last_seen, severity=excluded.severity, evidence=excluded.evidence, updated_at=excluded.updated_at`,
-		f.ID, f.AssetID, scanID, f.TemplateID, f.TemplateName,
+		   scan_id=excluded.scan_id,
+		   first_seen_scan_id=COALESCE(findings.first_seen_scan_id, excluded.first_seen_scan_id),
+		   last_seen=excluded.last_seen,
+		   severity=excluded.severity,
+		   evidence=excluded.evidence,
+		   updated_at=excluded.updated_at`,
+		f.ID, f.AssetID, scanID, firstSeenScanID, f.TemplateID, f.TemplateName,
 		string(f.Severity), f.Title, f.Description, string(refsJSON),
 		f.Remediation, f.Evidence, f.CVSS, sqlNullString(f.CVE),
 		string(f.Status), f.SourceTool, f.Confidence,
@@ -577,7 +679,7 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 		opts.Limit = 50
 	}
 
-	query := `SELECT id, asset_id, scan_id, template_id, template_name, severity, title, description,
+	query := `SELECT id, asset_id, scan_id, first_seen_scan_id, template_id, template_name, severity, title, description,
 	   "references", remediation, evidence, cvss, cve, status, source_tool, confidence,
 	   first_seen, last_seen, resolved_at, created_at, updated_at
 	   FROM findings`
@@ -634,12 +736,12 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 	findings := make([]model.Finding, 0)
 	for rows.Next() {
 		var f model.Finding
-		var scanID, cve, resolvedAt sql.NullString
+		var scanID, firstSeenScanID, cve, resolvedAt sql.NullString
 		var refsJSON string
 		var firstSeen, lastSeen, createdAt, updatedAt sql.NullString
 		var cvss sql.NullFloat64
 
-		if err := rows.Scan(&f.ID, &f.AssetID, &scanID, &f.TemplateID, &f.TemplateName,
+		if err := rows.Scan(&f.ID, &f.AssetID, &scanID, &firstSeenScanID, &f.TemplateID, &f.TemplateName,
 			&f.Severity, &f.Title, &f.Description, &refsJSON, &f.Remediation,
 			&f.Evidence, &cvss, &cve, &f.Status, &f.SourceTool, &f.Confidence,
 			&firstSeen, &lastSeen, &resolvedAt, &createdAt, &updatedAt); err != nil {
@@ -647,6 +749,7 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 		}
 
 		f.ScanID = scanID.String
+		f.FirstSeenScanID = firstSeenScanID.String
 		f.CVE = cve.String
 		if cvss.Valid {
 			f.CVSS = cvss.Float64
@@ -1065,15 +1168,17 @@ func (s *SQLiteStore) CountFindingsByAssetIDs(ctx context.Context) (map[string]i
 
 func (s *SQLiteStore) LastScan(ctx context.Context) (*model.Scan, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, target_id, type, status, phase, progress, stats, started_at, finished_at, error, created_at, updated_at
+		`SELECT id, target_id, type, status, phase, progress, target_state, delta, work,
+		        started_at, finished_at, error, created_at, updated_at
 		 FROM scans ORDER BY created_at DESC LIMIT 1`)
 
 	var sc model.Scan
-	var statsJSON string
+	var stateJSON, deltaJSON, workJSON string
 	var startedAt, finishedAt, createdAt, updatedAt sql.NullString
 
 	err := row.Scan(&sc.ID, &sc.TargetID, &sc.Type, &sc.Status, &sc.Phase, &sc.Progress,
-		&statsJSON, &startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt)
+		&stateJSON, &deltaJSON, &workJSON,
+		&startedAt, &finishedAt, &sc.Error, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1081,8 +1186,8 @@ func (s *SQLiteStore) LastScan(ctx context.Context) (*model.Scan, error) {
 		return nil, fmt.Errorf("scanning last scan: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(statsJSON), &sc.Stats); err != nil {
-		return nil, fmt.Errorf("unmarshaling scan stats: %w", err)
+	if err := unmarshalScanAggregates(&sc, stateJSON, deltaJSON, workJSON); err != nil {
+		return nil, err
 	}
 	sc.StartedAt = parseTimePtr(startedAt)
 	sc.FinishedAt = parseTimePtr(finishedAt)
@@ -1128,18 +1233,18 @@ func (s *SQLiteStore) GetAsset(ctx context.Context, id string) (*model.Asset, er
 
 func (s *SQLiteStore) GetFinding(ctx context.Context, id string) (*model.Finding, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, asset_id, scan_id, template_id, template_name, severity, title, description,
+		`SELECT id, asset_id, scan_id, first_seen_scan_id, template_id, template_name, severity, title, description,
 		   "references", remediation, evidence, cvss, cve, status, source_tool, confidence,
 		   first_seen, last_seen, resolved_at, created_at, updated_at
 		 FROM findings WHERE id = ?`, id)
 
 	var f model.Finding
-	var scanID, cve, resolvedAt sql.NullString
+	var scanID, firstSeenScanID, cve, resolvedAt sql.NullString
 	var refsJSON string
 	var firstSeen, lastSeen, createdAt, updatedAt sql.NullString
 	var cvss sql.NullFloat64
 
-	err := row.Scan(&f.ID, &f.AssetID, &scanID, &f.TemplateID, &f.TemplateName,
+	err := row.Scan(&f.ID, &f.AssetID, &scanID, &firstSeenScanID, &f.TemplateID, &f.TemplateName,
 		&f.Severity, &f.Title, &f.Description, &refsJSON, &f.Remediation,
 		&f.Evidence, &cvss, &cve, &f.Status, &f.SourceTool, &f.Confidence,
 		&firstSeen, &lastSeen, &resolvedAt, &createdAt, &updatedAt)
@@ -1151,6 +1256,7 @@ func (s *SQLiteStore) GetFinding(ctx context.Context, id string) (*model.Finding
 	}
 
 	f.ScanID = scanID.String
+	f.FirstSeenScanID = firstSeenScanID.String
 	f.CVE = cve.String
 	if cvss.Valid {
 		f.CVSS = cvss.Float64
