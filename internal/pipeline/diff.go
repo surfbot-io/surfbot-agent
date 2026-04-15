@@ -277,64 +277,28 @@ func ApplyStatusChanges(ctx context.Context, store storage.Store, changes []mode
 	return nil
 }
 
-// ChangeSummary holds aggregated change counts for display.
-type ChangeSummary struct {
-	NewAssets           int
-	DisappearedAssets   int
-	ModifiedAssets      int
-	NewFindings         int
-	ResolvedFindings    int
-	IsBaseline          bool
-	TotalBaselineAssets int
-	NewByType           map[string]int
-	CriticalModified    int
-}
-
-// BuildChangeSummary aggregates changes for display.
-func BuildChangeSummary(changes []model.AssetChange, newFindings, resolvedFindings int) ChangeSummary {
-	s := ChangeSummary{
-		NewFindings:      newFindings,
-		ResolvedFindings: resolvedFindings,
-		NewByType:        make(map[string]int),
-	}
-
-	for _, c := range changes {
-		if c.Baseline {
-			s.IsBaseline = true
-			s.TotalBaselineAssets++
-			continue
-		}
-		switch c.ChangeType {
-		case model.ChangeTypeAppeared:
-			s.NewAssets++
-			s.NewByType[c.AssetType]++
-		case model.ChangeTypeDisappeared:
-			s.DisappearedAssets++
-		case model.ChangeTypeModified:
-			s.ModifiedAssets++
-			if c.Significance == model.SignificanceCritical {
-				s.CriticalModified++
-			}
-		}
-	}
-	return s
-}
-
-// PrintChangeSummary prints the change summary to stderr with colored markers.
-func PrintChangeSummary(summary ChangeSummary) {
+// PrintChangeSummary prints a human-readable summary of the scan delta to
+// stderr. Source of truth is the ScanDelta computed by FinalizeScanDelta —
+// there is no separate ChangeSummary struct; the delta IS the summary.
+func PrintChangeSummary(delta model.ScanDelta) {
 	success := color.RGB(0, 229, 153) // Surfbot Signal Green #00E599
 	errColor := color.New(color.FgRed)
 	warn := color.New(color.FgYellow)
 	muted := color.New(color.Faint)
 	bold := color.New(color.Bold)
 
-	if summary.IsBaseline {
-		muted.Fprintf(os.Stderr, "\nBASELINE SCAN — %d assets discovered. Run again to detect changes.\n", summary.TotalBaselineAssets)
+	newAssetsTotal := sumIntMap(delta.NewAssets)
+	disAssetsTotal := sumIntMap(delta.DisappearedAssets)
+	modAssetsTotal := sumIntMap(delta.ModifiedAssets)
+	newFindingsTotal := sumSevMap(delta.NewFindings)
+	resolvedFindingsTotal := sumSevMap(delta.ResolvedFindings)
+
+	if delta.IsBaseline {
+		muted.Fprintf(os.Stderr, "\nBASELINE SCAN — run again to detect changes.\n")
 		return
 	}
 
-	total := summary.NewAssets + summary.DisappearedAssets + summary.ModifiedAssets + summary.NewFindings + summary.ResolvedFindings
-	if total == 0 {
+	if newAssetsTotal+disAssetsTotal+modAssetsTotal+newFindingsTotal+resolvedFindingsTotal == 0 {
 		muted.Fprintf(os.Stderr, "\nNo changes since last scan.\n")
 		return
 	}
@@ -342,34 +306,74 @@ func PrintChangeSummary(summary ChangeSummary) {
 	fmt.Fprintln(os.Stderr, "")
 	bold.Fprintln(os.Stderr, "CHANGES SINCE LAST SCAN")
 
-	if summary.NewAssets > 0 {
-		parts := []string{}
-		for typ, count := range summary.NewByType {
-			parts = append(parts, fmt.Sprintf("%d %s", count, pluralize(typ, count)))
-		}
-		detail := ""
-		if len(parts) > 0 {
-			detail = " (" + strings.Join(parts, ", ") + ")"
-		}
-		success.Fprintf(os.Stderr, "  + %d new %s%s\n", summary.NewAssets, pluralize("asset", summary.NewAssets), detail)
+	if newAssetsTotal > 0 {
+		success.Fprintf(os.Stderr, "  + %d new %s%s\n",
+			newAssetsTotal, pluralize("asset", newAssetsTotal), formatTypeBreakdown(delta.NewAssets))
 	}
-	if summary.DisappearedAssets > 0 {
-		errColor.Fprintf(os.Stderr, "  - %d disappeared %s\n", summary.DisappearedAssets, pluralize("asset", summary.DisappearedAssets))
+	if disAssetsTotal > 0 {
+		errColor.Fprintf(os.Stderr, "  - %d disappeared %s%s\n",
+			disAssetsTotal, pluralize("asset", disAssetsTotal), formatTypeBreakdown(delta.DisappearedAssets))
 	}
-	if summary.ModifiedAssets > 0 {
-		detail := ""
-		if summary.CriticalModified > 0 {
-			detail = fmt.Sprintf(" (%d critical)", summary.CriticalModified)
-		}
-		warn.Fprintf(os.Stderr, "  ~ %d modified %s%s\n", summary.ModifiedAssets, pluralize("asset", summary.ModifiedAssets), detail)
+	if modAssetsTotal > 0 {
+		warn.Fprintf(os.Stderr, "  ~ %d modified %s%s\n",
+			modAssetsTotal, pluralize("asset", modAssetsTotal), formatTypeBreakdown(delta.ModifiedAssets))
 	}
-	if summary.NewFindings > 0 {
-		success.Fprintf(os.Stderr, "  + %d new %s\n", summary.NewFindings, pluralize("finding", summary.NewFindings))
+	if newFindingsTotal > 0 {
+		success.Fprintf(os.Stderr, "  + %d new %s%s\n",
+			newFindingsTotal, pluralize("finding", newFindingsTotal), formatSevBreakdown(delta.NewFindings))
 	}
-	if summary.ResolvedFindings > 0 {
+	if resolvedFindingsTotal > 0 {
 		successMuted := color.RGB(0, 229, 153).Add(color.Faint) // Signal Green + dim
-		successMuted.Fprintf(os.Stderr, "  ✓ %d resolved %s\n", summary.ResolvedFindings, pluralize("finding", summary.ResolvedFindings))
+		successMuted.Fprintf(os.Stderr, "  ✓ %d resolved %s\n",
+			resolvedFindingsTotal, pluralize("finding", resolvedFindingsTotal))
 	}
+}
+
+func sumIntMap(m map[model.AssetType]int) int {
+	total := 0
+	for _, n := range m {
+		total += n
+	}
+	return total
+}
+
+func sumSevMap(m map[model.Severity]int) int {
+	total := 0
+	for _, n := range m {
+		total += n
+	}
+	return total
+}
+
+// formatTypeBreakdown renders " (2 subdomains, 1 url)" etc. Returns "" when
+// the map is empty or has exactly one key (the total is already shown).
+func formatTypeBreakdown(m map[model.AssetType]int) string {
+	if len(m) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(m))
+	for typ, n := range m {
+		parts = append(parts, fmt.Sprintf("%d %s", n, pluralize(string(typ), n)))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// formatSevBreakdown renders " (1 critical, 3 high)" ordered by severity.
+func formatSevBreakdown(m map[model.Severity]int) string {
+	if len(m) == 0 {
+		return ""
+	}
+	order := []model.Severity{model.SeverityCritical, model.SeverityHigh, model.SeverityMedium, model.SeverityLow, model.SeverityInfo}
+	parts := make([]string, 0, len(m))
+	for _, sev := range order {
+		if n := m[sev]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, sev))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func pluralize(word string, count int) string {

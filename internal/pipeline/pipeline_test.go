@@ -177,16 +177,24 @@ func TestPipelineFullScan(t *testing.T) {
 	assert.Equal(t, "http_probe", result.Phases[3].Phase)
 	assert.Equal(t, "assessment", result.Phases[4].Phase)
 
-	// Stats
-	assert.Equal(t, 2, result.Stats.SubdomainsFound)
-	assert.Equal(t, 2, result.Stats.IPsResolved)
-	assert.Equal(t, 2, result.Stats.OpenPorts)
-	assert.Equal(t, 1, result.Stats.HTTPProbed)
-	assert.Equal(t, 1, result.Stats.TechDetected)
-	assert.Equal(t, 3, result.Stats.FindingsTotal)
-	assert.Equal(t, 1, result.Stats.FindingsCritical)
-	assert.Equal(t, 1, result.Stats.FindingsHigh)
-	assert.Equal(t, 1, result.Stats.FindingsInfo)
+	// TargetState reflects the DB snapshot at scan completion — counts
+	// come from assets/findings queries, not from in-memory accumulators.
+	state := result.TargetState
+	assert.Equal(t, 2, state.AssetsByType[model.AssetTypeSubdomain])
+	assert.Equal(t, 1, state.AssetsByType[model.AssetTypeIPv4])
+	assert.Equal(t, 1, state.AssetsByType[model.AssetTypeIPv6])
+	assert.Equal(t, 2, state.AssetsByType[model.AssetTypePort])
+	assert.Equal(t, 1, state.AssetsByType[model.AssetTypeURL])
+	assert.Equal(t, 1, state.AssetsByType[model.AssetTypeTechnology])
+	assert.Equal(t, 3, state.FindingsOpenTotal)
+	assert.Equal(t, 1, state.FindingsOpen[model.SeverityCritical])
+	assert.Equal(t, 1, state.FindingsOpen[model.SeverityHigh])
+	assert.Equal(t, 1, state.FindingsOpen[model.SeverityInfo])
+
+	// Work block: telemetry of the execution.
+	assert.GreaterOrEqual(t, result.Work.ToolsRun, 5)
+	assert.Contains(t, result.Work.PhasesRun, "discovery")
+	assert.Contains(t, result.Work.PhasesRun, "assessment")
 
 	// Scan should be completed
 	scan, err := s.GetScan(context.Background(), result.ScanID)
@@ -604,57 +612,10 @@ func TestShouldSkip(t *testing.T) {
 	assert.True(t, shouldSkip(&mockTool{phase: "assessment"}, PipelineOptions{ScanType: model.ScanTypeDiscovery}))
 }
 
-func TestUpdateStats(t *testing.T) {
-	stats := &model.ScanStats{}
-
-	updateStats(stats, "discovery", &detection.RunResult{
-		Assets: []model.Asset{
-			{Type: model.AssetTypeSubdomain, Value: "a.example.com"},
-			{Type: model.AssetTypeSubdomain, Value: "b.example.com"},
-		},
-	})
-	assert.Equal(t, 2, stats.SubdomainsFound)
-
-	updateStats(stats, "resolution", &detection.RunResult{
-		Assets: []model.Asset{
-			{Type: model.AssetTypeIPv4, Value: "1.2.3.4"},
-		},
-	})
-	assert.Equal(t, 1, stats.IPsResolved)
-
-	updateStats(stats, "port_scan", &detection.RunResult{
-		Assets: []model.Asset{
-			{Type: model.AssetTypePort, Value: "1.2.3.4:80/tcp"},
-			{Type: model.AssetTypePort, Value: "1.2.3.4:443/tcp"},
-		},
-	})
-	assert.Equal(t, 2, stats.OpenPorts)
-
-	updateStats(stats, "http_probe", &detection.RunResult{
-		Assets: []model.Asset{
-			{Type: model.AssetTypeURL, Value: "https://example.com"},
-			{Type: model.AssetTypeTechnology, Value: "nginx"},
-		},
-	})
-	assert.Equal(t, 1, stats.HTTPProbed)
-	assert.Equal(t, 1, stats.TechDetected)
-
-	updateStats(stats, "assessment", &detection.RunResult{
-		Findings: []model.Finding{
-			{Severity: model.SeverityCritical},
-			{Severity: model.SeverityHigh},
-			{Severity: model.SeverityMedium},
-			{Severity: model.SeverityLow},
-			{Severity: model.SeverityInfo},
-		},
-	})
-	assert.Equal(t, 5, stats.FindingsTotal)
-	assert.Equal(t, 1, stats.FindingsCritical)
-	assert.Equal(t, 1, stats.FindingsHigh)
-	assert.Equal(t, 1, stats.FindingsMedium)
-	assert.Equal(t, 1, stats.FindingsLow)
-	assert.Equal(t, 1, stats.FindingsInfo)
-}
+// TestUpdateStats was removed when updateStats itself was deleted. Stats
+// are now computed from DB ground truth at end-of-scan by FinalizeTargetState
+// / FinalizeScanDelta / FinalizeScanWork. See TestPipelineFullScan for
+// end-to-end stats coverage and storage unit tests for per-query coverage.
 
 func TestPipelineNoURLsSkipsNuclei(t *testing.T) {
 	s := newTestStore(t)
