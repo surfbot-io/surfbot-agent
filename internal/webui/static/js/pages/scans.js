@@ -442,10 +442,24 @@ const ScansPage = {
     </div>`;
   },
 
-  renderScanStats(scan) {
-    // agent-spec 2.0: scan exposes target_state (DB-derived snapshot),
-    // delta (what this scan changed), and work (telemetry). Render all
-    // three if they have content.
+  // agent-spec 2.0: a Scan exposes three semantically distinct aggregates.
+  // Each gets its own card so the user can read them as separate questions:
+  //
+  //   Target state — what currently exists on the target
+  //   Changes      — what THIS scan changed vs. prior state
+  //   Work         — telemetry of the execution itself
+  //
+  // Mirrors the three-block layout of `surfbot scan` CLI output for
+  // CLI ↔ webui parity.
+  renderScanAggregates(scan) {
+    return `
+      ${this.renderTargetStateBlock(scan)}
+      ${this.renderScanDeltaBlock(scan)}
+      ${this.renderScanWorkBlock(scan)}
+    `;
+  },
+
+  renderTargetStateBlock(scan) {
     const state = scan.target_state || {};
     const assets = state.assets_by_type || {};
     const ports = state.ports_by_status || {};
@@ -461,6 +475,15 @@ const ScansPage = {
       { label: 'Findings open', value: state.findings_open_total },
     ].filter(i => i.value > 0);
 
+    // AssetType is an open vocabulary — surface keys we don't recognize
+    // explicitly so a tool that emits e.g. "cloud_bucket" still shows up.
+    const known = new Set(['subdomain', 'ipv4', 'ipv6', 'port_service', 'url', 'technology', 'domain', 'service']);
+    Object.entries(assets).forEach(([k, v]) => {
+      if (!known.has(k) && v > 0) {
+        stateItems.push({ label: this.titleCase(k), value: v });
+      }
+    });
+
     if (stateItems.length === 0) return '';
 
     const sevs = state.findings_open || {};
@@ -469,7 +492,7 @@ const ScansPage = {
     return `<div class="card">
       <div class="card-label">Target state</div>
       <div class="detail-grid" style="margin-top:8px">
-        ${stateItems.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
+        ${stateItems.map(i => `<span class="detail-label">${escapeHtml(i.label)}</span><span class="detail-value">${i.value}</span>`).join('')}
       </div>
       ${hasSev ? Components.severityBars({
         critical: sevs.critical || 0,
@@ -479,6 +502,104 @@ const ScansPage = {
         info: sevs.info || 0,
       }) : ''}
     </div>`;
+  },
+
+  renderScanDeltaBlock(scan) {
+    const delta = scan.delta || {};
+
+    // Baseline scans have no meaningful delta — surface that honestly
+    // instead of showing zeros that look like "nothing happened".
+    if (delta.is_baseline) {
+      return `<div class="card">
+        <div class="card-label">Changes</div>
+        <p class="text-muted" style="margin-top:8px">Baseline scan — run again to detect changes.</p>
+      </div>`;
+    }
+
+    const sumMap = (m) => Object.values(m || {}).reduce((a, b) => a + b, 0);
+    const newAssetsTotal = sumMap(delta.new_assets);
+    const disAssetsTotal = sumMap(delta.disappeared_assets);
+    const modAssetsTotal = sumMap(delta.modified_assets);
+    const newFindingsTotal = sumMap(delta.new_findings);
+    const resolvedFindingsTotal = sumMap(delta.resolved_findings);
+    const total = newAssetsTotal + disAssetsTotal + modAssetsTotal + newFindingsTotal + resolvedFindingsTotal;
+
+    if (total === 0) {
+      return `<div class="card">
+        <div class="card-label">Changes</div>
+        <p class="text-muted" style="margin-top:8px">No changes since last scan.</p>
+      </div>`;
+    }
+
+    const formatTypeBreakdown = (m) => {
+      const entries = Object.entries(m || {}).filter(([, v]) => v > 0);
+      if (entries.length === 0) return '';
+      return ' <span class="text-muted">(' + entries.map(([k, v]) => `${v} ${this.titleCase(k)}`).join(', ') + ')</span>';
+    };
+
+    const formatSevBreakdown = (m) => {
+      const order = ['critical', 'high', 'medium', 'low', 'info'];
+      const parts = order.filter(s => (m || {})[s] > 0).map(s => `${m[s]} ${s}`);
+      if (parts.length === 0) return '';
+      return ' <span class="text-muted">(' + parts.join(', ') + ')</span>';
+    };
+
+    const rows = [];
+    if (newAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">+ New assets</span><span class="detail-value">${newAssetsTotal}${formatTypeBreakdown(delta.new_assets)}</span>`);
+    }
+    if (disAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--danger)">− Disappeared assets</span><span class="detail-value">${disAssetsTotal}${formatTypeBreakdown(delta.disappeared_assets)}</span>`);
+    }
+    if (modAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--sev-medium)">~ Modified assets</span><span class="detail-value">${modAssetsTotal}${formatTypeBreakdown(delta.modified_assets)}</span>`);
+    }
+    if (newFindingsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">+ New findings</span><span class="detail-value">${newFindingsTotal}${formatSevBreakdown(delta.new_findings)}</span>`);
+    }
+    if (resolvedFindingsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">✓ Resolved findings</span><span class="detail-value">${resolvedFindingsTotal}</span>`);
+    }
+
+    return `<div class="card">
+      <div class="card-label">Changes</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${rows.join('')}
+      </div>
+    </div>`;
+  },
+
+  renderScanWorkBlock(scan) {
+    const work = scan.work || {};
+    if (!work.tools_run) return '';
+
+    const items = [
+      { label: 'Duration', value: this.formatDurationMs(work.duration_ms || 0) },
+      { label: 'Tools run', value: work.tools_run },
+    ];
+    if (work.tools_failed > 0) items.push({ label: 'Tools failed', value: work.tools_failed });
+    if (work.tools_skipped > 0) items.push({ label: 'Tools skipped', value: work.tools_skipped });
+    if (work.raw_emissions > 0) {
+      // raw_emissions is the pre-storage-dedup tool output. Surfacing it
+      // in the UI helps debug noisy detectors (e.g. nuclei emitting many
+      // duplicates that storage merges into a few unique findings).
+      items.push({ label: 'Raw emissions', value: `${work.raw_emissions} <span class="text-muted">(pre-dedup)</span>` });
+    }
+    if (work.phases_run && work.phases_run.length > 0) {
+      items.push({ label: 'Phases', value: work.phases_run.map(escapeHtml).join(' → ') });
+    }
+
+    return `<div class="card">
+      <div class="card-label">Work</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${items.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
+      </div>
+    </div>`;
+  },
+
+  titleCase(s) {
+    if (!s) return s;
+    return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   },
 
   formatElapsed(seconds) {
@@ -553,7 +674,7 @@ const ScansPage = {
 
         ${this.renderFindings(findings, s.id)}
 
-        ${this.renderScanStats(s)}
+        ${this.renderScanAggregates(s)}
 
         ${data.changes.length > 0 ? `
           <div>

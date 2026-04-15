@@ -82,20 +82,34 @@ type overviewResponse struct {
 }
 
 
+// scanSummary mirrors the three-concept Scan model (agent-spec 2.0) so the
+// dashboard can render target_state / delta / work sections without a
+// second round-trip. FindingsCount is kept as a flat convenience for the
+// existing "Findings" cell; new consumers should read TargetState directly.
 type scanSummary struct {
-	ID              string     `json:"id"`
-	Target          string     `json:"target"`
-	Status          string     `json:"status"`
-	StartedAt       *time.Time `json:"started_at"`
-	FinishedAt      *time.Time `json:"finished_at"`
-	DurationSeconds int        `json:"duration_seconds"`
-	FindingsCount   int        `json:"findings_count"`
+	ID              string            `json:"id"`
+	Target          string            `json:"target"`
+	Status          string            `json:"status"`
+	StartedAt       *time.Time        `json:"started_at"`
+	FinishedAt      *time.Time        `json:"finished_at"`
+	DurationSeconds int               `json:"duration_seconds"`
+	FindingsCount   int               `json:"findings_count"`
+	TargetState     model.TargetState `json:"target_state"`
+	Delta           model.ScanDelta   `json:"delta"`
+	Work            model.ScanWork    `json:"work"`
 }
 
+// changeSummary is the dashboard's "Changes Since Last Scan" card payload.
+// Mirrors a flattened view of model.ScanDelta — totals collapsed across
+// asset types and severities so the small card stays readable. The richer
+// per-type breakdown lives in last_scan.delta for clients that want it.
 type changeSummary struct {
-	NewFindings       int `json:"new_findings"`
 	NewAssets         int `json:"new_assets"`
 	DisappearedAssets int `json:"disappeared_assets"`
+	ModifiedAssets    int `json:"modified_assets"`
+	NewFindings       int `json:"new_findings"`
+	ResolvedFindings  int `json:"resolved_findings"`
+	IsBaseline        bool `json:"is_baseline"`
 }
 
 type agentInfo struct {
@@ -191,30 +205,37 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 			FinishedAt:      last.FinishedAt,
 			DurationSeconds: dur,
 			FindingsCount:   last.TargetState.FindingsOpenTotal,
+			TargetState:     last.TargetState,
+			Delta:           last.Delta,
+			Work:            last.Work,
 		}
-		resp.ChangesSinceLast = h.getChangeSummary(ctx, last.ID)
+		resp.ChangesSinceLast = changeSummaryFromDelta(last.Delta)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *handler) getChangeSummary(ctx context.Context, scanID string) *changeSummary {
-	changes, err := h.store.ListAssetChanges(ctx, storage.AssetChangeListOptions{
-		ScanID: scanID,
-		Limit:  1000,
-	})
-	if err != nil {
-		return nil
+// changeSummaryFromDelta flattens a ScanDelta into the dashboard's compact
+// "Changes Since Last Scan" card payload. Replaces the previous
+// getChangeSummary which re-queried asset_changes and never populated
+// new_findings (latent bug — see SUR-244 follow-up). Reads from the
+// already-persisted delta so backend and CLI agree on what changed.
+func changeSummaryFromDelta(delta model.ScanDelta) *changeSummary {
+	cs := &changeSummary{IsBaseline: delta.IsBaseline}
+	for _, n := range delta.NewAssets {
+		cs.NewAssets += n
 	}
-
-	cs := &changeSummary{}
-	for _, c := range changes {
-		switch c.ChangeType {
-		case model.ChangeTypeAppeared:
-			cs.NewAssets++
-		case model.ChangeTypeDisappeared:
-			cs.DisappearedAssets++
-		}
+	for _, n := range delta.DisappearedAssets {
+		cs.DisappearedAssets += n
+	}
+	for _, n := range delta.ModifiedAssets {
+		cs.ModifiedAssets += n
+	}
+	for _, n := range delta.NewFindings {
+		cs.NewFindings += n
+	}
+	for _, n := range delta.ResolvedFindings {
+		cs.ResolvedFindings += n
 	}
 	return cs
 }
