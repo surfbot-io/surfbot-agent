@@ -106,7 +106,7 @@ const ScansPage = {
           <td>${Components.statusBadge(s.status)}</td>
           <td>${s.type}</td>
           <td class="mono">${dur}</td>
-          <td>${s.stats.findings_total || 0} findings</td>
+          <td>${(s.target_state && s.target_state.findings_open_total) || 0} findings</td>
           <td class="text-muted">${Components.timeAgo(s.created_at)}</td>
         </tr>
       `;
@@ -442,34 +442,42 @@ const ScansPage = {
     </div>`;
   },
 
-  renderScanStats(stats) {
-    // Only show stats that have non-zero values
-    const items = [
-      { label: 'Subdomains', value: stats.subdomains_found },
-      { label: 'IPs Resolved', value: stats.ips_resolved },
-      { label: 'Ports Scanned', value: stats.ports_scanned },
-      { label: 'Open Ports', value: stats.open_ports },
-      { label: 'HTTP Probed', value: stats.http_probed },
-      { label: 'Findings', value: stats.findings_total },
+  renderScanStats(scan) {
+    // agent-spec 2.0: scan exposes target_state (DB-derived snapshot),
+    // delta (what this scan changed), and work (telemetry). Render all
+    // three if they have content.
+    const state = scan.target_state || {};
+    const assets = state.assets_by_type || {};
+    const ports = state.ports_by_status || {};
+
+    const stateItems = [
+      { label: 'Subdomains', value: assets.subdomain },
+      { label: 'IPs (v4)', value: assets.ipv4 },
+      { label: 'IPs (v6)', value: assets.ipv6 },
+      { label: 'Ports (open)', value: ports.open },
+      { label: 'Ports (filtered)', value: ports.filtered },
+      { label: 'Endpoints', value: assets.url },
+      { label: 'Technologies', value: assets.technology },
+      { label: 'Findings open', value: state.findings_open_total },
     ].filter(i => i.value > 0);
 
-    if (items.length === 0) return '';
+    if (stateItems.length === 0) return '';
 
-    const sevs = {
-      critical: stats.findings_critical || 0,
-      high: stats.findings_high || 0,
-      medium: stats.findings_medium || 0,
-      low: stats.findings_low || 0,
-      info: stats.findings_info || 0,
-    };
+    const sevs = state.findings_open || {};
     const hasSev = Object.values(sevs).some(v => v > 0);
 
     return `<div class="card">
-      <div class="card-label">Scan Stats</div>
+      <div class="card-label">Target state</div>
       <div class="detail-grid" style="margin-top:8px">
-        ${items.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
+        ${stateItems.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
       </div>
-      ${hasSev ? Components.severityBars(sevs) : ''}
+      ${hasSev ? Components.severityBars({
+        critical: sevs.critical || 0,
+        high: sevs.high || 0,
+        medium: sevs.medium || 0,
+        low: sevs.low || 0,
+        info: sevs.info || 0,
+      }) : ''}
     </div>`;
   },
 
@@ -545,7 +553,7 @@ const ScansPage = {
 
         ${this.renderFindings(findings, s.id)}
 
-        ${this.renderScanStats(s.stats)}
+        ${this.renderScanStats(s)}
 
         ${data.changes.length > 0 ? `
           <div>

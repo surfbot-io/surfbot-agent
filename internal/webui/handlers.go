@@ -190,7 +190,7 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 			StartedAt:       last.StartedAt,
 			FinishedAt:      last.FinishedAt,
 			DurationSeconds: dur,
-			FindingsCount:   last.Stats.FindingsTotal,
+			FindingsCount:   last.TargetState.FindingsOpenTotal,
 		}
 		resp.ChangesSinceLast = h.getChangeSummary(ctx, last.ID)
 	}
@@ -891,8 +891,8 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[webui] scan error for %s: %v", target.Value, err)
 			return
 		}
-		log.Printf("[webui] scan completed for %s: %d findings, %d assets in %s",
-			target.Value, result.TotalFindings, result.TotalAssets, result.Duration)
+		log.Printf("[webui] scan completed for %s: %d findings open, %d assets in %s",
+			target.Value, result.TargetState.FindingsOpenTotal, result.TargetState.AssetsTotal, result.Duration)
 	}()
 
 	resp := map[string]any{

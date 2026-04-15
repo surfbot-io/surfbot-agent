@@ -48,11 +48,11 @@ func seedTestData(t *testing.T, s *storage.SQLiteStore) {
 		Progress:   100,
 		StartedAt:  &started,
 		FinishedAt: &now,
-		Stats: model.ScanStats{
-			SubdomainsFound:  3,
-			FindingsTotal:    2,
-			FindingsCritical: 1,
-			FindingsHigh:     1,
+		TargetState: model.TargetState{
+			AssetsByType:      map[model.AssetType]int{model.AssetTypeSubdomain: 3},
+			AssetsTotal:       3,
+			FindingsOpen:      map[model.Severity]int{model.SeverityCritical: 1, model.SeverityHigh: 1},
+			FindingsOpenTotal: 2,
 		},
 	}
 	require.NoError(t, s.CreateScan(ctx, scan))
