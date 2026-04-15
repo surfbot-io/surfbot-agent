@@ -108,7 +108,72 @@ where the certificate CN/SANs provide the proof.
 - **minor** — additive (new commands, new optional fields)
 - **patch** — doc/description changes only
 
-Current: **1.1.0**.
+Current: **2.0.0**.
+
+## Changelog
+
+### 2.0.0 — scan aggregates redesign (SPEC-QA3 / SUR-244)
+
+The `ScanStats` type is removed. `Scan` now exposes three semantically
+distinct aggregates, each populated from database queries at scan
+completion (no in-memory accumulators, no drift from `list` subcommands):
+
+- **`target_state`** — what the target looks like at scan completion.
+  Source: queries against `assets` and `findings` filtered by `target_id`.
+  Answers *"what currently exists?"*. Includes `assets_by_type`,
+  `assets_total`, `ports_by_status`, `findings_open`, `findings_open_total`,
+  `findings_by_status`, and `remediations` (empty placeholder until
+  remediation tooling lands).
+- **`delta`** — what *this* scan changed relative to prior state. Source:
+  the `asset_changes` table (scan_id-scoped) plus finding status transitions.
+  Answers *"what did this scan discover or resolve?"*. Includes
+  `new_assets`, `disappeared_assets`, `modified_assets`, `new_findings`,
+  `resolved_findings`, `returned_findings`, and `is_baseline`.
+- **`work`** — telemetry of the execution itself. Source: `tool_runs` and
+  scan timing. Includes `duration_ms`, `tools_run`, `tools_failed`,
+  `tools_skipped`, `phases_run`, and `raw_emissions` (pre-dedup tool output
+  count, useful for debugging tool noise).
+
+**Field mapping (1.x → 2.0):**
+
+| 1.x (`stats.*`) | 2.0 (|
+|---|---|
+| `subdomains_found` | `target_state.assets_by_type.subdomain` |
+| `ips_resolved` | `target_state.assets_by_type.ipv4` + `.ipv6` |
+| `open_ports` | `target_state.ports_by_status.open` |
+| *(new)* | `target_state.ports_by_status.filtered` |
+| `http_probed` | `target_state.assets_by_type.url` |
+| `tech_detected` | `target_state.assets_by_type.technology` |
+| `ports_scanned` | *removed (was never populated)* |
+| `findings_total` | `target_state.findings_open_total` *(strictly DB-derived, no longer inflated by pre-dedup emissions)* |
+| `findings_<severity>` | `target_state.findings_open.<severity>` |
+
+**Open-ended stat buckets.** `assets_by_type`, `new_assets`, `ports_by_status`,
+and siblings are JSON objects keyed by enum strings. For `AssetType` the
+vocabulary is **open** — a new detection tool may introduce a new key
+without a spec version bump. Consumers must tolerate unknown keys. For
+`Severity`, `FindingStatus`, and `RemediationStatus` the vocabulary is
+closed (universal concepts, not tool-specific).
+
+**Finding.scan_id semantics changed.** It now tracks the LATEST scan that
+observed the finding (updated on every upsert). The immutable originating
+scan moved to a new field `first_seen_scan_id`. This makes
+`COUNT(*) WHERE scan_id = X AND status = 'open'` a meaningful query for
+"findings observed by scan X" — which was broken under 1.x semantics.
+
+**Assets type CHECK removed.** The `assets.type` column no longer has a
+SQL CHECK constraint. A new detection tool that emits an asset type
+outside the built-in vocabulary no longer requires a schema migration —
+`AssetType` is validated in Go. The `Finding` severity and `Asset` status
+enums remain closed at the SQL level.
+
+### 1.2.0 — portscan status metadata (SUR-243/SUR-248)
+
+Portscan assets gain `status` (open|filtered) and `banner_preview` metadata.
+
+### 1.1.0 — enriched probe input (SUR-242)
+
+`probe` accepts `hostname|ip:port/tcp` alongside bare `ip:port/tcp`.
 
 ## Design notes
 

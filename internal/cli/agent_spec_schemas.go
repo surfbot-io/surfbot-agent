@@ -28,13 +28,17 @@ func BuildTypeSchemas() map[string]Schema {
 	boolean := Schema{Type: "boolean"}
 	obj := Schema{Type: "object"}
 
+	// Asset.type is declared as a plain string (not an enum) because new
+	// detection tools may introduce new AssetType values without a spec
+	// version bump. The `KnownAssetTypes` list below documents the current
+	// built-in vocabulary; consumers must tolerate unseen values.
 	asset := Schema{
 		Type: "object",
 		Properties: map[string]Schema{
 			"id":         str,
 			"target_id":  str,
 			"parent_id":  str,
-			"type":       {Type: "string", Enum: []string{"domain", "subdomain", "ipv4", "ipv6", "port_service", "url", "technology", "service"}},
+			"type":       {Type: "string", Description: "AssetType. Open vocabulary. Built-in values: domain, subdomain, ipv4, ipv6, port_service, url, technology, service. Detection tools may emit additional values — consumers must tolerate unknown AssetType strings."},
 			"value":      str,
 			"status":     {Type: "string", Enum: []string{"active", "new", "disappeared", "returned", "inactive", "ignored"}},
 			"tags":       strArr,
@@ -47,30 +51,35 @@ func BuildTypeSchemas() map[string]Schema {
 		Required: []string{"id", "type", "value", "status"},
 	}
 
+	// Finding.scan_id tracks the LATEST scan that observed this finding
+	// (updated on every upsert). Finding.first_seen_scan_id is immutable
+	// and names the scan that first discovered it. To recover a scan's
+	// complete observation set, query findings WHERE scan_id = <scan>.
 	finding := Schema{
 		Type: "object",
 		Properties: map[string]Schema{
-			"id":            str,
-			"asset_id":      str,
-			"scan_id":       str,
-			"template_id":   str,
-			"template_name": str,
-			"severity":      {Type: "string", Enum: []string{"critical", "high", "medium", "low", "info"}},
-			"title":         str,
-			"description":   str,
-			"references":    strArr,
-			"remediation":   str,
-			"evidence":      str,
-			"cvss":          num,
-			"cve":           str,
-			"status":        {Type: "string", Enum: []string{"open", "acknowledged", "resolved", "false_positive", "ignored"}},
-			"source_tool":   str,
-			"confidence":    num,
-			"first_seen":    str,
-			"last_seen":     str,
-			"resolved_at":   str,
-			"created_at":    str,
-			"updated_at":    str,
+			"id":                 str,
+			"asset_id":           str,
+			"scan_id":            {Type: "string", Description: "id of the most recent scan that observed this finding (mutable)"},
+			"first_seen_scan_id": {Type: "string", Description: "id of the scan that first discovered this finding (immutable)"},
+			"template_id":        str,
+			"template_name":      str,
+			"severity":           {Type: "string", Enum: []string{"critical", "high", "medium", "low", "info"}},
+			"title":              str,
+			"description":        str,
+			"references":         strArr,
+			"remediation":        str,
+			"evidence":           str,
+			"cvss":               num,
+			"cve":                str,
+			"status":             {Type: "string", Enum: []string{"open", "acknowledged", "resolved", "false_positive", "ignored"}},
+			"source_tool":        str,
+			"confidence":         num,
+			"first_seen":         str,
+			"last_seen":          str,
+			"resolved_at":        str,
+			"created_at":         str,
+			"updated_at":         str,
 		},
 		Required: []string{"id", "asset_id", "severity", "title", "status"},
 	}
@@ -112,35 +121,90 @@ func BuildTypeSchemas() map[string]Schema {
 		Required: []string{"id", "tool_name", "status"},
 	}
 
+	// --- Scan aggregates (spec 2.0) ---
+	//
+	// A scan is described by three semantically distinct aggregates:
+	//
+	//   target_state — what the target looks like at scan completion.
+	//                  Derived from assets/findings queries. State, not
+	//                  event: if the scan doesn't cover a phase, the
+	//                  corresponding counts reflect whatever was there
+	//                  before (nothing is reset).
+	//
+	//   delta        — what this scan changed vs. the target's prior
+	//                  state. Derived from asset_changes (scan_id) and
+	//                  finding status transitions.
+	//
+	//   work         — telemetry of the execution itself. Derived from
+	//                  tool_runs (scan_id) and scan timing.
+	//
+	// All count-bucket fields (assets_by_type, new_assets, findings_open,
+	// …) are JSON objects keyed by the relevant enum string. The enum
+	// vocabularies are open for AssetType (new tools may add keys) and
+	// closed for Severity / FindingStatus / RemediationStatus. Consumers
+	// must tolerate unknown keys regardless.
+	assetTypeCounts := Schema{Type: "object", Description: "Counts keyed by AssetType (open vocabulary). Example: {\"subdomain\": 12, \"port_service\": 5}"}
+	severityCounts := Schema{Type: "object", Description: "Counts keyed by Severity (critical|high|medium|low|info)"}
+	findingStatusCounts := Schema{Type: "object", Description: "Counts keyed by FindingStatus (open|acknowledged|resolved|false_positive|ignored)"}
+	remediationStatusCounts := Schema{Type: "object", Description: "Counts keyed by RemediationStatus (planned|approved|running|completed|failed|rolled_back). Empty until remediation tooling lands."}
+	stringCounts := Schema{Type: "object", Description: "Counts keyed by arbitrary string. Port status values (open|filtered|unknown|…) are emitted by the port_scan tool."}
+
+	targetState := Schema{
+		Type:        "object",
+		Description: "Snapshot of the target's observed state at scan completion. Answers \"what exists now?\"",
+		Properties: map[string]Schema{
+			"assets_by_type":       assetTypeCounts,
+			"assets_total":         integer,
+			"ports_by_status":      stringCounts,
+			"findings_open":        severityCounts,
+			"findings_open_total":  integer,
+			"findings_by_status":   findingStatusCounts,
+			"remediations":         remediationStatusCounts,
+		},
+	}
+
+	scanDelta := Schema{
+		Type:        "object",
+		Description: "What this scan changed vs. the prior state of the target. Baseline scans report is_baseline=true with empty buckets.",
+		Properties: map[string]Schema{
+			"new_assets":         assetTypeCounts,
+			"disappeared_assets": assetTypeCounts,
+			"modified_assets":    assetTypeCounts,
+			"new_findings":       severityCounts,
+			"resolved_findings":  severityCounts,
+			"returned_findings":  severityCounts,
+			"is_baseline":        boolean,
+		},
+	}
+
+	scanWork := Schema{
+		Type:        "object",
+		Description: "Telemetry of the scan execution. Independent of what was observed or changed.",
+		Properties: map[string]Schema{
+			"duration_ms":   integer,
+			"tools_run":     integer,
+			"tools_failed":  integer,
+			"tools_skipped": integer,
+			"phases_run":    strArr,
+			"raw_emissions": Schema{Type: "integer", Description: "Sum of findings emitted by tools before storage dedup. Useful for debugging tool noise (e.g. nuclei emitted 50 findings but storage merged them into 3 unique rows)."},
+		},
+	}
+
 	scan := Schema{
 		Type: "object",
 		Properties: map[string]Schema{
-			"id":          str,
-			"target_id":   str,
-			"type":        {Type: "string", Enum: []string{"full", "quick", "discovery"}},
-			"status":      {Type: "string", Enum: []string{"queued", "running", "completed", "failed", "cancelled"}},
-			"phase":       str,
-			"progress":    num,
-			"started_at":  str,
-			"finished_at": str,
-			"error":       str,
-			"stats": {
-				Type: "object",
-				Properties: map[string]Schema{
-					"subdomains_found":  integer,
-					"ips_resolved":      integer,
-					"ports_scanned":     integer,
-					"open_ports":        integer,
-					"http_probed":       integer,
-					"tech_detected":     integer,
-					"findings_total":    integer,
-					"findings_critical": integer,
-					"findings_high":     integer,
-					"findings_medium":   integer,
-					"findings_low":      integer,
-					"findings_info":     integer,
-				},
-			},
+			"id":           str,
+			"target_id":    str,
+			"type":         {Type: "string", Enum: []string{"full", "quick", "discovery"}},
+			"status":       {Type: "string", Enum: []string{"queued", "running", "completed", "failed", "cancelled"}},
+			"phase":        str,
+			"progress":     num,
+			"started_at":   str,
+			"finished_at":  str,
+			"error":        str,
+			"target_state": targetState,
+			"delta":        scanDelta,
+			"work":         scanWork,
 		},
 		Required: []string{"id", "type", "status"},
 	}
@@ -178,6 +242,9 @@ func BuildTypeSchemas() map[string]Schema {
 		"Target":      target,
 		"ToolRun":     toolRun,
 		"ScanResult":  scan,
+		"TargetState": targetState,
+		"ScanDelta":   scanDelta,
+		"ScanWork":    scanWork,
 		"Score":       score,
 		"Status":      status,
 		"DomainList":  domainList,
