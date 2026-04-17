@@ -456,9 +456,17 @@ tr.finding-detail-row td.finding-detail-cell {
   justify-content: flex-end;
 }
 
-.finding-asset {
+/* TYPE cell is narrow (badge-only) so a whole column of "Port service",
+   "Url", "Technology" lines up cleanly. Width is explicit to prevent
+   the longer titles from stretching it. */
+.finding-asset-type {
+  width: 120px;
+  white-space: nowrap;
+}
+
+.finding-asset-value {
   font-size: 11px;
-  max-width: 340px;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

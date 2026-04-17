@@ -432,14 +432,15 @@ const ScansPage = {
     // looking identical in the list (the common case: "HTTP Missing
     // Security Headers" × 9 with no hint of what's affected).
     const rows = findings.map((f, idx) => {
-      const assetLabel = this.formatAssetCell(f);
+      const assetTypeCell = this.formatAssetTypeCell(f);
+      const assetValueCell = this.formatAssetValueCell(f);
       const detailHTML = this.renderFindingDetail(f);
       return `
         <tr class="finding-row" data-finding-idx="${idx}" title="Click to expand">
           <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
           <td>${escapeHtml(f.title)}</td>
-          <td class="finding-asset mono" title="${escapeHtml(f.asset_value || '')}">${assetLabel}</td>
-          <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.template_id || '-')}</td>
+          <td class="finding-asset-type">${assetTypeCell}</td>
+          <td class="finding-asset-value mono" title="${escapeHtml(f.asset_value || '')}">${assetValueCell}</td>
           <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
           <td>${Components.statusBadge(f.status)}</td>
           <td class="finding-chevron text-muted" aria-hidden="true">▸</td>
@@ -457,8 +458,8 @@ const ScansPage = {
           <thead><tr>
             <th>Severity</th>
             <th>Title</th>
+            <th>Type</th>
             <th>Asset</th>
-            <th>Template</th>
             <th>Tool</th>
             <th>Status</th>
             <th aria-label="expand"></th>
@@ -469,16 +470,20 @@ const ScansPage = {
     </div>`;
   },
 
-  // formatAssetCell renders the asset column. Prefers the human value
-  // (e.g. "https://example.com"), truncated to keep the row compact.
-  // Falls back to the asset_id short hash or an em dash.
-  formatAssetCell(f) {
+  // Asset is split into two cells so each column is scannable on its own:
+  // TYPE uses a uniform-width muted badge (good for eyeballing groupings
+  // like "all port_service findings"), while ASSET carries the raw value
+  // in monospace. template_id drops out of the main table entirely —
+  // it's reference-level detail better shown in the accordion.
+  formatAssetTypeCell(f) {
+    if (!f.asset_type) return '<span class="text-muted">—</span>';
+    return `<span class="badge badge-muted">${escapeHtml(this.titleCase(f.asset_type))}</span>`;
+  },
+
+  formatAssetValueCell(f) {
     if (f.asset_value) {
-      const label = f.asset_value.length > 48 ? f.asset_value.slice(0, 45) + '…' : f.asset_value;
-      const typeTag = f.asset_type
-        ? `<span class="badge badge-muted" style="margin-right:6px;font-size:10px">${escapeHtml(this.titleCase(f.asset_type))}</span>`
-        : '';
-      return typeTag + escapeHtml(label);
+      const label = f.asset_value.length > 60 ? f.asset_value.slice(0, 57) + '…' : f.asset_value;
+      return escapeHtml(label);
     }
     if (f.asset_id) {
       return `<span class="text-muted">${f.asset_id.slice(0, 8)}</span>`;
@@ -494,6 +499,9 @@ const ScansPage = {
     const meta = [];
     if (f.asset_value) {
       meta.push({ label: 'Asset', value: `<span class="mono">${escapeHtml(f.asset_value)}</span>` });
+    }
+    if (f.template_id) {
+      meta.push({ label: 'Template', value: `<span class="mono">${escapeHtml(f.template_id)}</span>` });
     }
     if (f.cvss) meta.push({ label: 'CVSS', value: String(f.cvss) });
     if (f.cve) meta.push({ label: 'CVE', value: `<span class="mono">${escapeHtml(f.cve)}</span>` });
