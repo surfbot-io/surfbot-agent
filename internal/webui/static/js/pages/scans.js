@@ -421,25 +421,137 @@ const ScansPage = {
       </div>`;
     }
 
-    const rows = findings.map(f => `
-      <tr class="clickable" onclick="location.hash='#/findings/${f.id}'">
-        <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
-        <td>${escapeHtml(f.title)}</td>
-        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.template_id || '-')}</td>
-        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
-        <td>${Components.statusBadge(f.status)}</td>
-      </tr>
-    `).join('');
+    // Two <tr> per finding: a clickable summary row and a collapsible
+    // detail row that is expanded inline on click. Keeping the detail
+    // inline (rather than navigating to /findings/{id}) preserves the
+    // surrounding scan context so the user can compare rows without
+    // losing their place.
+    //
+    // The ASSET column surfaces the distinguishing host/endpoint so
+    // findings from the same template against different targets stop
+    // looking identical in the list (the common case: "HTTP Missing
+    // Security Headers" × 9 with no hint of what's affected).
+    const rows = findings.map((f, idx) => {
+      const assetLabel = this.formatAssetCell(f);
+      const detailHTML = this.renderFindingDetail(f);
+      return `
+        <tr class="finding-row" data-finding-idx="${idx}" title="Click to expand">
+          <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
+          <td>${escapeHtml(f.title)}</td>
+          <td class="finding-asset mono" title="${escapeHtml(f.asset_value || '')}">${assetLabel}</td>
+          <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.template_id || '-')}</td>
+          <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
+          <td>${Components.statusBadge(f.status)}</td>
+          <td class="finding-chevron text-muted" aria-hidden="true">▸</td>
+        </tr>
+        <tr class="finding-detail-row" data-finding-idx="${idx}" hidden>
+          <td colspan="7" class="finding-detail-cell">${detailHTML}</td>
+        </tr>
+      `;
+    }).join('');
 
     return `<div class="card">
       <div class="card-label">Findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
       <div class="table-container" style="border:none;margin:8px 0 0">
-        <table>
-          <thead><tr><th>Severity</th><th>Title</th><th>Template</th><th>Tool</th><th>Status</th></tr></thead>
+        <table class="findings-table">
+          <thead><tr>
+            <th>Severity</th>
+            <th>Title</th>
+            <th>Asset</th>
+            <th>Template</th>
+            <th>Tool</th>
+            <th>Status</th>
+            <th aria-label="expand"></th>
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     </div>`;
+  },
+
+  // formatAssetCell renders the asset column. Prefers the human value
+  // (e.g. "https://example.com"), truncated to keep the row compact.
+  // Falls back to the asset_id short hash or an em dash.
+  formatAssetCell(f) {
+    if (f.asset_value) {
+      const label = f.asset_value.length > 48 ? f.asset_value.slice(0, 45) + '…' : f.asset_value;
+      const typeTag = f.asset_type
+        ? `<span class="badge badge-muted" style="margin-right:6px;font-size:10px">${escapeHtml(this.titleCase(f.asset_type))}</span>`
+        : '';
+      return typeTag + escapeHtml(label);
+    }
+    if (f.asset_id) {
+      return `<span class="text-muted">${f.asset_id.slice(0, 8)}</span>`;
+    }
+    return '<span class="text-muted">—</span>';
+  },
+
+  // renderFindingDetail renders the expanded-row content for a single
+  // finding. Shows the distinguishing bits the list row omits (evidence,
+  // description, confidence/CVSS/CVE, timestamps) and offers a "View
+  // finding" link for the full-page view.
+  renderFindingDetail(f) {
+    const meta = [];
+    if (f.asset_value) {
+      meta.push({ label: 'Asset', value: `<span class="mono">${escapeHtml(f.asset_value)}</span>` });
+    }
+    if (f.cvss) meta.push({ label: 'CVSS', value: String(f.cvss) });
+    if (f.cve) meta.push({ label: 'CVE', value: `<span class="mono">${escapeHtml(f.cve)}</span>` });
+    if (typeof f.confidence === 'number') meta.push({ label: 'Confidence', value: f.confidence + '%' });
+    if (f.first_seen) meta.push({ label: 'First seen', value: Components.timeAgo(f.first_seen) });
+    if (f.last_seen) meta.push({ label: 'Last seen', value: Components.timeAgo(f.last_seen) });
+
+    const metaGrid = meta.length > 0
+      ? `<div class="finding-detail-grid">${meta.map(m => `<span class="detail-label">${m.label}</span><span class="detail-value">${m.value}</span>`).join('')}</div>`
+      : '';
+
+    const desc = f.description
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Description</div><div class="finding-detail-text">${escapeHtml(f.description)}</div></div>`
+      : '';
+    const evidence = f.evidence
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Evidence</div><pre class="finding-detail-evidence">${escapeHtml(f.evidence)}</pre></div>`
+      : '';
+    const remediation = f.remediation
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Remediation</div><div class="finding-detail-text">${escapeHtml(f.remediation)}</div></div>`
+      : '';
+
+    const viewBtn = `<a href="#/findings/${f.id}" class="btn btn-sm" onclick="event.stopPropagation()">View finding →</a>`;
+
+    return `
+      <div class="finding-detail-body">
+        ${metaGrid}
+        ${desc}
+        ${evidence}
+        ${remediation}
+        <div class="finding-detail-actions">${viewBtn}</div>
+      </div>
+    `;
+  },
+
+  // bindFindingsAccordion wires click handlers on finding summary rows
+  // to toggle their paired detail row. Uses data-finding-idx for
+  // pairing so repeated re-renders (polling) don't lose or duplicate
+  // listeners — we re-bind fresh each time.
+  bindFindingsAccordion() {
+    document.querySelectorAll('.finding-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        // Ignore clicks that originated on interactive descendants so
+        // the "View finding" link continues to navigate instead of
+        // toggling.
+        if (e.target.closest('a, button')) return;
+        const idx = row.dataset.findingIdx;
+        const detail = document.querySelector(`.finding-detail-row[data-finding-idx="${idx}"]`);
+        if (!detail) return;
+        const isOpen = !detail.hasAttribute('hidden');
+        if (isOpen) {
+          detail.setAttribute('hidden', '');
+          row.classList.remove('finding-row-open');
+        } else {
+          detail.removeAttribute('hidden');
+          row.classList.add('finding-row-open');
+        }
+      });
+    });
   },
 
   // agent-spec 2.0: a Scan exposes three semantically distinct aggregates.
@@ -684,6 +796,11 @@ const ScansPage = {
         ` : ''}
       </div>
     `;
+
+    // Findings-table accordion: rebind after every render (polling may
+    // re-render the whole detail, and template literal innerHTML drops
+    // previous listeners).
+    this.bindFindingsAccordion();
 
     // Bind cancel button
     if (isRunning) {

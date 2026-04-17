@@ -242,11 +242,21 @@ func changeSummaryFromDelta(delta model.ScanDelta) *changeSummary {
 
 // --- Findings ---
 
+// findingEnriched extends a Finding with the affected asset's value and type
+// so the webui can render the distinguishing host/endpoint column without a
+// per-row round-trip. Asset fields are derived via a single bulk lookup
+// keyed by asset_id at list time.
+type findingEnriched struct {
+	model.Finding
+	AssetValue string `json:"asset_value,omitempty"`
+	AssetType  string `json:"asset_type,omitempty"`
+}
+
 type findingsResponse struct {
-	Findings []model.Finding `json:"findings"`
-	Total    int             `json:"total"`
-	Page     int             `json:"page"`
-	Limit    int             `json:"limit"`
+	Findings []findingEnriched `json:"findings"`
+	Total    int               `json:"total"`
+	Page     int               `json:"page"`
+	Limit    int               `json:"limit"`
 }
 
 func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
@@ -300,11 +310,50 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 	total, _ := h.store.CountFindingsFiltered(r.Context(), opts)
 
 	writeJSON(w, http.StatusOK, findingsResponse{
-		Findings: findings,
+		Findings: h.enrichFindings(r.Context(), findings),
 		Total:    total,
 		Page:     page,
 		Limit:    limit,
 	})
+}
+
+// enrichFindings resolves each finding's asset_id to the asset's value and
+// type via a single pass over the unique asset_ids. Findings whose asset no
+// longer exists (e.g. deleted target) are returned with empty asset fields
+// rather than dropped — the raw finding data is still useful.
+//
+// Bulk-loading all referenced assets at once keeps list-page rendering at
+// O(1) DB round-trips regardless of page size.
+func (h *handler) enrichFindings(ctx context.Context, findings []model.Finding) []findingEnriched {
+	out := make([]findingEnriched, len(findings))
+	if len(findings) == 0 {
+		return out
+	}
+
+	// Collect unique asset_ids to avoid repeated lookups when many
+	// findings share the same host.
+	seen := make(map[string]struct{}, len(findings))
+	for _, f := range findings {
+		if f.AssetID != "" {
+			seen[f.AssetID] = struct{}{}
+		}
+	}
+	lookup := make(map[string]model.Asset, len(seen))
+	for id := range seen {
+		if a, err := h.store.GetAsset(ctx, id); err == nil && a != nil {
+			lookup[id] = *a
+		}
+	}
+
+	for i, f := range findings {
+		e := findingEnriched{Finding: f}
+		if a, ok := lookup[f.AssetID]; ok {
+			e.AssetValue = a.Value
+			e.AssetType = string(a.Type)
+		}
+		out[i] = e
+	}
+	return out
 }
 
 func (h *handler) handleFindingDetail(w http.ResponseWriter, r *http.Request) {

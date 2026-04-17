@@ -362,6 +362,119 @@ tr:hover td { background: var(--bg-hover); }
 
 tr.clickable { cursor: pointer; }
 
+/* === Findings table accordion (scan detail) === */
+
+/* Summary rows are clickable with a visible chevron that rotates when
+   the paired detail row is expanded. We avoid CSS transitions on [hidden]
+   because hidden is binary — the UX just needs a crisp open/closed
+   state, not an animation. */
+tr.finding-row {
+  cursor: pointer;
+}
+
+tr.finding-row td {
+  /* Collapse the border between summary and its expanded detail row so
+     the accordion reads as one visual unit. */
+  transition: background 0.15s ease;
+}
+
+tr.finding-row-open td {
+  background: var(--bg-hover);
+  border-bottom-color: transparent;
+}
+
+.finding-chevron {
+  width: 16px;
+  text-align: center;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+tr.finding-row-open .finding-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+tr.finding-detail-row td.finding-detail-cell {
+  /* Detail row spans the full table width; kill the default row padding
+     so the nested .finding-detail-body controls its own spacing. */
+  padding: 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+}
+
+.finding-detail-body {
+  padding: 14px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.finding-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  font-size: 12px;
+}
+
+.finding-detail-section {
+  font-size: 12px;
+}
+
+.finding-detail-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.finding-detail-text {
+  color: var(--text-primary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.finding-detail-evidence {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  max-height: 240px;
+}
+
+.finding-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.finding-asset {
+  font-size: 11px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compact muted badge used for asset type tags inside the ASSET column.
+   Sized smaller than the existing .badge variants to sit inline without
+   pushing row height. */
+.badge.badge-muted {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
