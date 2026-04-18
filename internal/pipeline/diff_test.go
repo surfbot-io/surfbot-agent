@@ -246,7 +246,7 @@ func TestNormalizeAssetStatuses(t *testing.T) {
 
 // Note: BuildChangeSummary / ChangeSummary were removed — ScanDelta is now
 // computed directly by FinalizeScanDelta from DB ground truth (see
-// finalize.go). Equivalent behavioural coverage is in diff_integration_test.go
+// finalize.go). Equivalent behavioral coverage is in diff_integration_test.go
 // (TestDiffIntegrationInPipeline, TestFindingAutoResolveInPipeline) which
 // asserts ScanDelta fields end-to-end through a real pipeline run.
 

@@ -33,7 +33,7 @@ func (s *SQLiteStore) CountAssetsByTypeForTarget(ctx context.Context, targetID s
 	if err != nil {
 		return nil, fmt.Errorf("counting assets by type for target %s: %w", targetID, err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	counts := make(map[model.AssetType]int)
 	for rows.Next() {
@@ -68,7 +68,7 @@ func (s *SQLiteStore) CountPortsByStatusForTarget(ctx context.Context, targetID 
 	if err != nil {
 		return nil, fmt.Errorf("counting ports by status for target %s: %w", targetID, err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	counts := make(map[string]int)
 	for rows.Next() {
@@ -99,7 +99,7 @@ func (s *SQLiteStore) CountFindingsBySeverityForTarget(ctx context.Context, targ
 	if err != nil {
 		return nil, fmt.Errorf("counting findings by severity for target %s: %w", targetID, err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	counts := make(map[model.Severity]int)
 	for rows.Next() {
@@ -124,7 +124,7 @@ func (s *SQLiteStore) CountFindingsByStatusForTarget(ctx context.Context, target
 	if err != nil {
 		return nil, fmt.Errorf("counting findings by status for target %s: %w", targetID, err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	counts := make(map[model.FindingStatus]int)
 	for rows.Next() {
@@ -152,7 +152,7 @@ func (s *SQLiteStore) AssetChangeCountsForScan(ctx context.Context, scanID strin
 	if err != nil {
 		return nil, fmt.Errorf("counting asset changes for scan %s: %w", scanID, err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	counts := make(map[string]map[model.AssetType]int)
 	for rows.Next() {

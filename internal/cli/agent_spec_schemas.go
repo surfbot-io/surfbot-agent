@@ -153,13 +153,13 @@ func BuildTypeSchemas() map[string]Schema {
 		Type:        "object",
 		Description: "Snapshot of the target's observed state at scan completion. Answers \"what exists now?\"",
 		Properties: map[string]Schema{
-			"assets_by_type":       assetTypeCounts,
-			"assets_total":         integer,
-			"ports_by_status":      stringCounts,
-			"findings_open":        severityCounts,
-			"findings_open_total":  integer,
-			"findings_by_status":   findingStatusCounts,
-			"remediations":         remediationStatusCounts,
+			"assets_by_type":      assetTypeCounts,
+			"assets_total":        integer,
+			"ports_by_status":     stringCounts,
+			"findings_open":       severityCounts,
+			"findings_open_total": integer,
+			"findings_by_status":  findingStatusCounts,
+			"remediations":        remediationStatusCounts,
 		},
 	}
 
@@ -186,7 +186,7 @@ func BuildTypeSchemas() map[string]Schema {
 			"tools_failed":  integer,
 			"tools_skipped": integer,
 			"phases_run":    strArr,
-			"raw_emissions": Schema{Type: "integer", Description: "Sum of findings emitted by tools before storage dedup. Useful for debugging tool noise (e.g. nuclei emitted 50 findings but storage merged them into 3 unique rows)."},
+			"raw_emissions": {Type: "integer", Description: "Sum of findings emitted by tools before storage dedup. Useful for debugging tool noise (e.g. nuclei emitted 50 findings but storage merged them into 3 unique rows)."},
 		},
 	}
 
@@ -196,7 +196,7 @@ func BuildTypeSchemas() map[string]Schema {
 			"id":           str,
 			"target_id":    str,
 			"type":         {Type: "string", Enum: []string{"full", "quick", "discovery"}},
-			"status":       {Type: "string", Enum: []string{"queued", "running", "completed", "failed", "cancelled"}},
+			"status":       {Type: "string", Enum: []string{"queued", "running", "completed", "failed", "cancelled"}}, //nolint:misspell // "cancelled" is the value used throughout the codebase (model.ScanStatusCancelled); match the DB enum exactly.
 			"phase":        str,
 			"progress":     num,
 			"started_at":   str,

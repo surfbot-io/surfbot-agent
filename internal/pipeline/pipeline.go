@@ -871,6 +871,7 @@ func PrintSummary(result *PipelineResult) {
 	printWorkBlock(pp, result.Work)
 }
 
+//nolint:errcheck // stderr writes are unrecoverable and not actionable
 func printTargetStateBlock(pp *pipelinePrinter, state model.TargetState) {
 	if state.AssetsTotal == 0 && state.FindingsOpenTotal == 0 {
 		return
@@ -932,6 +933,7 @@ func printTargetStateBlock(pp *pipelinePrinter, state model.TargetState) {
 	}
 }
 
+//nolint:errcheck // all terminal writes below are unrecoverable and not actionable
 func printFindingsBlock(pp *pipelinePrinter, state model.TargetState) {
 	if state.FindingsOpenTotal == 0 {
 		return
@@ -958,6 +960,7 @@ func printFindingsBlock(pp *pipelinePrinter, state model.TargetState) {
 	pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings show <id>` for full evidence.")
 }
 
+//nolint:errcheck // stderr writes are unrecoverable and not actionable
 func printWorkBlock(pp *pipelinePrinter, work model.ScanWork) {
 	if work.ToolsRun == 0 {
 		return

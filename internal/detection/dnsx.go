@@ -46,7 +46,7 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 	// errLog accumulates per-host resolution errors so the tool_run record
 	// shows the user what went wrong (NXDOMAIN, timeouts, …) rather than
 	// silently dropping hosts. dnsx isn't a subprocess so "stderr" here is
-	// synthesised.
+	// synthesized.
 	var errLog strings.Builder
 	var mu sync.Mutex
 	resolved := 0

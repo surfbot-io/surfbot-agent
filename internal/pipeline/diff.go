@@ -280,6 +280,8 @@ func ApplyStatusChanges(ctx context.Context, store storage.Store, changes []mode
 // PrintChangeSummary prints a human-readable summary of the scan delta to
 // stderr. Source of truth is the ScanDelta computed by FinalizeScanDelta —
 // there is no separate ChangeSummary struct; the delta IS the summary.
+//
+//nolint:errcheck // all stderr writes below are unrecoverable and not actionable
 func PrintChangeSummary(delta model.ScanDelta) {
 	success := color.RGB(0, 229, 153) // Surfbot Signal Green #00E599
 	errColor := color.New(color.FgRed)
@@ -324,6 +326,7 @@ func PrintChangeSummary(delta model.ScanDelta) {
 	}
 	if resolvedFindingsTotal > 0 {
 		successMuted := color.RGB(0, 229, 153).Add(color.Faint) // Signal Green + dim
+		//nolint:errcheck // stderr write errors are unrecoverable and not actionable
 		successMuted.Fprintf(os.Stderr, "  ✓ %d resolved %s\n",
 			resolvedFindingsTotal, pluralize("finding", resolvedFindingsTotal))
 	}

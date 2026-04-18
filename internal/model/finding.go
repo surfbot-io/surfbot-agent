@@ -38,7 +38,7 @@ type Finding struct {
 	// before migration 003 that were never re-observed.
 	FirstSeenScanID string `json:"first_seen_scan_id,omitempty"`
 
-	TemplateID string `json:"template_id"`
+	TemplateID   string        `json:"template_id"`
 	TemplateName string        `json:"template_name"`
 	Severity     Severity      `json:"severity"`
 	Title        string        `json:"title"`
