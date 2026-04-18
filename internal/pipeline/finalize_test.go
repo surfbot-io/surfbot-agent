@@ -90,6 +90,39 @@ func TestFindingDedupMatchesTargetState(t *testing.T) {
 		"work.raw_emissions must record pre-dedup tool emissions")
 }
 
+// TestWorkPhasesRunInExecutionOrder guards against the regression where
+// FinalizeScanWork sorted phases alphabetically — that produced
+// "assessment → discovery → http_probe → port_scan → resolution" for a
+// scan whose actual pipeline order is "discovery → resolution →
+// port_scan → http_probe → assessment". An LLM consumer reading that
+// JSON would infer the wrong execution order.
+func TestWorkPhasesRunInExecutionOrder(t *testing.T) {
+	s := newTestStore(t)
+	target := createTarget(t, s, "example.com")
+	ctx := context.Background()
+
+	tools := []detection.DetectionTool{
+		&mockTool{name: "subfinder", phase: "discovery",
+			assets: []model.Asset{{Type: model.AssetTypeSubdomain, Value: "a.example.com", Status: model.AssetStatusNew}}},
+		&mockTool{name: "dnsx", phase: "resolution",
+			assets: []model.Asset{{Type: model.AssetTypeIPv4, Value: "1.2.3.4", Status: model.AssetStatusNew}}},
+		&mockTool{name: "naabu", phase: "port_scan",
+			assets: []model.Asset{{Type: model.AssetTypePort, Value: "1.2.3.4:443/tcp", Status: model.AssetStatusNew, Metadata: map[string]any{"status": "open"}}}},
+		&mockTool{name: "httpx", phase: "http_probe",
+			assets: []model.Asset{{Type: model.AssetTypeURL, Value: "https://a.example.com", Status: model.AssetStatusNew}}},
+		&mockTool{name: "nuclei", phase: "assessment"},
+	}
+
+	reg := mockRegistry(tools...)
+	pipe := New(s, reg)
+	result, err := pipe.Run(ctx, target.ID, PipelineOptions{ScanType: model.ScanTypeFull})
+	require.NoError(t, err)
+
+	expected := []string{"discovery", "resolution", "port_scan", "http_probe", "assessment"}
+	assert.Equal(t, expected, result.Work.PhasesRun,
+		"phases_run must reflect actual pipeline execution order, not alphabetic")
+}
+
 // TestTargetStatePortsBucket asserts that port_scan assets with different
 // metadata.status values land in the correct target_state.ports_by_status
 // buckets. Previously SPEC-QA2 introduced status=filtered ports but the old

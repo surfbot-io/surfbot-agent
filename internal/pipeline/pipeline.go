@@ -496,6 +496,16 @@ func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTo
 		if tr.ErrorMessage == "" && src.ErrorMessage != "" {
 			tr.ErrorMessage = src.ErrorMessage
 		}
+		// Wrapper's Status wins when it reports a non-success terminal
+		// state (skipped / failed / timeout). The outer caller can only
+		// infer "completed" from the absence of a Go error — the wrapper
+		// knows when e.g. the binary is missing or the SDK init failed
+		// and had to skip. Without this merge, subfinder-not-in-PATH
+		// appears as "completed" in the UI.
+		switch src.Status {
+		case model.ToolRunSkipped, model.ToolRunFailed, model.ToolRunTimeout:
+			tr.Status = src.Status
+		}
 		for k, v := range src.Config {
 			tr.Config[k] = v
 		}

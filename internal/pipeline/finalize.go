@@ -146,7 +146,14 @@ func FinalizeScanWork(
 		return work, fmt.Errorf("work tool_runs: %w", err)
 	}
 
-	phaseSet := make(map[string]struct{})
+	// Track the earliest started_at per phase so we can emit PhasesRun in
+	// actual execution order, not alphabetic. Alphabetic sort would
+	// suggest to an LLM consumer that nuclei ran before subfinder, which
+	// is obviously wrong. Phases with no timestamp fall back to the
+	// iteration order of the runs slice (which is DB insertion order).
+	phaseFirstSeen := make(map[string]time.Time)
+	phaseInsertOrder := make(map[string]int)
+	insertOrder := 0
 	for _, r := range runs {
 		work.ToolsRun++
 		switch r.Status {
@@ -156,16 +163,45 @@ func FinalizeScanWork(
 			work.ToolsSkipped++
 		}
 		work.RawEmissions += r.FindingsCount
-		if r.Phase != "" {
-			phaseSet[r.Phase] = struct{}{}
+		if r.Phase == "" {
+			continue
+		}
+		existing, seen := phaseFirstSeen[r.Phase]
+		if !seen {
+			phaseFirstSeen[r.Phase] = r.StartedAt
+			phaseInsertOrder[r.Phase] = insertOrder
+			insertOrder++
+			continue
+		}
+		// Keep the earliest timestamp for a phase in case multiple tools
+		// share a phase (future-proofing: today each phase has one tool,
+		// but the model doesn't enforce that).
+		if !r.StartedAt.IsZero() && (existing.IsZero() || r.StartedAt.Before(existing)) {
+			phaseFirstSeen[r.Phase] = r.StartedAt
 		}
 	}
 
-	work.PhasesRun = make([]string, 0, len(phaseSet))
-	for p := range phaseSet {
+	work.PhasesRun = make([]string, 0, len(phaseFirstSeen))
+	for p := range phaseFirstSeen {
 		work.PhasesRun = append(work.PhasesRun, p)
 	}
-	sort.Strings(work.PhasesRun)
+	sort.Slice(work.PhasesRun, func(i, j int) bool {
+		a, b := phaseFirstSeen[work.PhasesRun[i]], phaseFirstSeen[work.PhasesRun[j]]
+		// Phases with zero timestamps fall back to their DB insert order
+		// (first-seen ordering within the tool_runs rows), which is itself
+		// pipeline order because recordToolRun is called inline during the
+		// loop.
+		if a.IsZero() && b.IsZero() {
+			return phaseInsertOrder[work.PhasesRun[i]] < phaseInsertOrder[work.PhasesRun[j]]
+		}
+		if a.IsZero() {
+			return false
+		}
+		if b.IsZero() {
+			return true
+		}
+		return a.Before(b)
+	})
 
 	return work, nil
 }

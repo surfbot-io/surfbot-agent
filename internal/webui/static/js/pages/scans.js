@@ -894,10 +894,17 @@ const ScansPage = {
         </div>`
       : '';
 
+    // Asset Changes table is noisy during a baseline scan — every asset
+    // the target has gets an "appeared (Baseline)" row that duplicates the
+    // Target State card. The delta card already says "Baseline scan — run
+    // again to detect changes", so hide the raw table to avoid repeating
+    // the same info in three places (Target State + Changes card + Asset
+    // Changes table). Non-baseline scans render the table as before.
+    const isBaseline = !!(s.delta && s.delta.is_baseline);
     const changeRows = data.changes.map(c => `
       <tr>
         <td><span class="change-${c.change_type}">${c.change_type}</span></td>
-        <td>${c.asset_type}</td>
+        <td>${escapeHtml(this.titleCase(c.asset_type || ''))}</td>
         <td class="mono">${escapeHtml(c.asset_value)}</td>
         <td>${escapeHtml(c.summary || '-')}</td>
       </tr>
@@ -928,7 +935,7 @@ const ScansPage = {
 
         ${this.renderScanAggregates(s)}
 
-        ${data.changes.length > 0 ? `
+        ${(!isBaseline && data.changes.length > 0) ? `
           <div>
             <h3 style="margin-bottom:16px">Asset Changes <span class="text-muted" style="font-size:13px;font-weight:400">(${data.changes.length})</span></h3>
             ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
@@ -967,6 +974,13 @@ const ScansPage = {
   async renderDetail(app, id) {
     this.stopPolling();
     app.innerHTML = '<div class="loading">Loading scan...</div>';
+
+    // Reset the main scroll container so navigating between scan details
+    // lands at the top instead of wherever the previous page was
+    // scrolled to. Window scrollY is already 0 (body doesn't scroll);
+    // it's the inner <main class="content"> that holds the scrollbar.
+    const scroller = document.querySelector('main.content');
+    if (scroller) scroller.scrollTop = 0;
 
     try {
       const [data, findingsData] = await Promise.all([
