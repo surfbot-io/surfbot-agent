@@ -483,6 +483,116 @@ tr.finding-detail-row td.finding-detail-cell {
   letter-spacing: 0.04em;
 }
 
+/* === Pipeline node accordion (scan detail) ================================
+   Each pipeline node in the scan-detail view can expand inline to show the
+   per-tool telemetry the detection wrappers captured (command, stderr,
+   config, summary). Visual language mirrors the findings table accordion so
+   the interaction is learned once. */
+
+.pipeline-node.pipeline-node-clickable {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.pipeline-node.pipeline-node-clickable:hover .pipeline-content {
+  background: var(--bg-hover);
+}
+
+.pipeline-node.pipeline-node-open .pipeline-content {
+  background: var(--bg-hover);
+}
+
+.pipeline-content {
+  padding: 6px 10px;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.pipeline-chevron {
+  margin-left: auto;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.pipeline-node-open .pipeline-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.pipeline-detail {
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.pipeline-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.pipeline-detail-section + .pipeline-detail-section {
+  margin-top: 0;
+}
+
+.pipeline-detail-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.pipeline-detail-heading-error {
+  color: var(--sev-critical, #f85149);
+}
+
+.pipeline-detail-text {
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.pipeline-detail-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+}
+
+/* Stderr/error blocks get a subtle red left border to draw the eye when
+   something went wrong. Stays readable in dark mode. */
+.pipeline-detail-pre.pipeline-detail-stderr {
+  border-left: 2px solid var(--sev-critical, #f85149);
+}
+
+.pipeline-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.pipeline-detail-meta {
+  font-size: 11px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;

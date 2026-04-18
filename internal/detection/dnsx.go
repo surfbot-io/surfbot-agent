@@ -2,6 +2,7 @@ package detection
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -42,7 +43,14 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 	}
 
 	results := make([]dnsResult, 0, len(inputs))
+	// errLog accumulates per-host resolution errors so the tool_run record
+	// shows the user what went wrong (NXDOMAIN, timeouts, …) rather than
+	// silently dropping hosts. dnsx isn't a subprocess so "stderr" here is
+	// synthesised.
+	var errLog strings.Builder
 	var mu sync.Mutex
+	resolved := 0
+	failed := 0
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -62,6 +70,10 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 			ips, err := net.DefaultResolver.LookupHost(rctx, h)
 			if err == nil {
 				dr.IPs = ips
+			} else {
+				mu.Lock()
+				fmt.Fprintf(&errLog, "[dnsx] %s: %v\n", h, err)
+				mu.Unlock()
 			}
 
 			cname, err := net.DefaultResolver.LookupCNAME(rctx, h)
@@ -69,11 +81,14 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 				dr.CNAME = strings.TrimSuffix(cname, ".")
 			}
 
+			mu.Lock()
 			if len(dr.IPs) > 0 {
-				mu.Lock()
 				results = append(results, dr)
-				mu.Unlock()
+				resolved++
+			} else {
+				failed++
 			}
+			mu.Unlock()
 		}(host)
 	}
 
@@ -115,6 +130,19 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 		}
 	}
 
-	runResult.ToolRun = buildToolRun(d, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
+	tr := buildToolRun(d, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
+	tr.OutputSummary = fmt.Sprintf("Resolved %d of %d hosts to %d unique IP(s) (concurrency=%d)",
+		resolved, len(inputs), len(runResult.Assets), concurrency)
+	// No external process → exit_code 0, command is a human-readable label.
+	attachExecContext(&tr,
+		fmt.Sprintf("dnsx (in-process resolver, concurrency=%d)", concurrency),
+		0,
+		errLog.String(),
+		inputs,
+	)
+	if failed > 0 {
+		tr.Config["unresolved_hosts"] = failed
+	}
+	runResult.ToolRun = tr
 	return runResult, nil
 }

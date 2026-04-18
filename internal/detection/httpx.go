@@ -171,10 +171,32 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 		}
 	}
 
-	runResult.ToolRun = buildToolRun(h, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
-	if drops > 0 {
-		runResult.ToolRun.Config["vhost_mismatch_drops"] = drops
+	urlCount, techCount := 0, 0
+	for _, a := range runResult.Assets {
+		switch a.Type {
+		case model.AssetTypeURL:
+			urlCount++
+		case model.AssetTypeTechnology:
+			techCount++
+		}
 	}
+
+	tr := buildToolRun(h, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
+	tr.OutputSummary = fmt.Sprintf("Probed %d target(s) → %d live URL(s), %d technolog(ies), %d dropped (vhost mismatch)",
+		len(targets), urlCount, techCount, drops)
+	attachExecContext(&tr,
+		fmt.Sprintf("httpx (in-process HTTP prober, concurrency=%d, timeout=10s)", concurrency),
+		0,
+		"", // httpx's per-probe dropped/failure reasons already go to os.Stderr via the vhostMismatchLog writer and would be too verbose here
+		inputs,
+	)
+	if drops > 0 {
+		tr.Config["vhost_mismatch_drops"] = drops
+	}
+	tr.Config["targets_probed"] = len(targets)
+	tr.Config["url_count"] = urlCount
+	tr.Config["tech_count"] = techCount
+	runResult.ToolRun = tr
 	return runResult, nil
 }
 

@@ -384,13 +384,21 @@ const ScansPage = {
         duration = `<span class="tool-duration mono" data-started="${tr.started_at}">${this.formatElapsed(elapsed)}</span>`;
       } else if (tr.duration_ms > 0) {
         duration = `<span class="tool-duration mono">${this.formatDurationMs(tr.duration_ms)}</span>`;
+      } else if (tr.status === 'completed') {
+        // Sub-millisecond runs show as <1ms rather than silently omitting
+        // the column — otherwise subfinder looks like it has no data.
+        duration = `<span class="tool-duration mono text-muted">&lt;1ms</span>`;
       }
 
       const stats = [];
-      if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} targets</span>`);
-      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding">${tr.findings_count} results</span>`);
+      if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} ${tr.targets_count === 1 ? 'target' : 'targets'}</span>`);
+      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding" title="Raw findings emitted by the tool before storage dedup">${tr.findings_count} emitted</span>`);
 
-      return `<div class="pipeline-node ${statusClass}">
+      // Clicking the whole node toggles the paired log detail row.
+      // Providing a hint chevron makes the affordance discoverable.
+      const hasLogs = this.toolRunHasLogs(tr);
+
+      return `<div class="pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}" data-tr-idx="${i}"${hasLogs ? ' title="Click to view logs"' : ''}>
         <div class="pipeline-connector">
           <div class="pipeline-dot"></div>
           ${isLast ? '' : '<div class="pipeline-vline"></div>'}
@@ -401,8 +409,10 @@ const ScansPage = {
             <span class="tool-name">${escapeHtml(tr.tool_name)}</span>
             ${Components.statusBadge(tr.status)}
             ${duration}
+            ${hasLogs ? '<span class="pipeline-chevron text-muted" aria-hidden="true">▸</span>' : ''}
           </div>
           ${stats.length > 0 ? `<div class="pipeline-stats">${stats.join('')}</div>` : ''}
+          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" hidden>${this.renderToolRunDetail(tr)}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -411,6 +421,106 @@ const ScansPage = {
       <div class="card-label">Pipeline</div>
       <div class="pipeline-view">${nodes}</div>
     </div>`;
+  },
+
+  // A tool run "has logs" worth showing if it carries any of the enriched
+  // telemetry fields the detection wrappers fill in. Nodes without logs
+  // (e.g. skipped-because-no-urls) stay non-clickable.
+  toolRunHasLogs(tr) {
+    if (tr.output_summary) return true;
+    if (tr.error_message) return true;
+    const cfg = tr.config || {};
+    return !!(cfg.command || cfg.stderr_tail || (cfg.input_preview && cfg.input_preview.length > 0));
+  },
+
+  // renderToolRunDetail builds the accordion content for one pipeline
+  // node. Surfaces command args, output summary, input preview, tool-
+  // specific config keys, error message, and stderr tail — all captured
+  // in the wrapper layer (see internal/detection/*.go) and persisted in
+  // tool_runs.config.
+  renderToolRunDetail(tr) {
+    const cfg = tr.config || {};
+    const parts = [];
+
+    if (tr.output_summary) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Summary</div>
+        <div class="pipeline-detail-text">${escapeHtml(tr.output_summary)}</div>
+      </div>`);
+    }
+
+    if (cfg.command) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Command</div>
+        <pre class="pipeline-detail-pre">${escapeHtml(cfg.command)}</pre>
+      </div>`);
+    }
+
+    // Per-tool config (the keys that aren't the generic exec context).
+    // Presenting them as a definition list keeps the layout predictable.
+    const genericKeys = new Set(['command', 'stderr_tail', 'exit_code', 'input_preview', 'inputs_truncated']);
+    const toolKeys = Object.keys(cfg).filter(k => !genericKeys.has(k));
+    if (toolKeys.length > 0) {
+      const rows = toolKeys.map(k => `<span class="detail-label">${escapeHtml(k)}</span><span class="detail-value mono">${escapeHtml(this.formatConfigValue(cfg[k]))}</span>`).join('');
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Config</div>
+        <div class="pipeline-detail-grid">${rows}</div>
+      </div>`);
+    }
+
+    if (cfg.input_preview && cfg.input_preview.length > 0) {
+      const truncated = cfg.inputs_truncated ? ' <span class="text-muted">(truncated)</span>' : '';
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Inputs${truncated}</div>
+        <pre class="pipeline-detail-pre">${cfg.input_preview.map(escapeHtml).join('\n')}</pre>
+      </div>`);
+    }
+
+    if (cfg.stderr_tail) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Stderr tail</div>
+        <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(cfg.stderr_tail)}</pre>
+      </div>`);
+    }
+
+    if (tr.error_message) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading pipeline-detail-heading-error">Error</div>
+        <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(tr.error_message)}</pre>
+      </div>`);
+    }
+
+    // Meta row at the bottom with timestamps and exit code.
+    const meta = [];
+    if (tr.started_at) meta.push(`started ${Components.timeAgo(tr.started_at)}`);
+    if (typeof cfg.exit_code === 'number') meta.push(`exit ${cfg.exit_code}`);
+    if (meta.length > 0) {
+      parts.push(`<div class="pipeline-detail-meta text-muted">${meta.join(' · ')}</div>`);
+    }
+
+    return `<div class="pipeline-detail-body">${parts.join('')}</div>`;
+  },
+
+  // bindPipelineAccordion wires click handlers on pipeline nodes.
+  // Re-invoked after every render (polling re-renders the whole detail)
+  // so listeners are always fresh.
+  bindPipelineAccordion() {
+    document.querySelectorAll('.pipeline-node-clickable').forEach(node => {
+      node.addEventListener('click', (e) => {
+        if (e.target.closest('a, button')) return;
+        const idx = node.dataset.trIdx;
+        const detail = node.querySelector(`.pipeline-detail[data-tr-idx="${idx}"]`);
+        if (!detail) return;
+        const isOpen = !detail.hasAttribute('hidden');
+        if (isOpen) {
+          detail.setAttribute('hidden', '');
+          node.classList.remove('pipeline-node-open');
+        } else {
+          detail.removeAttribute('hidden');
+          node.classList.add('pipeline-node-open');
+        }
+      });
+    });
   },
 
   renderFindings(findings, scanId) {
@@ -722,6 +832,28 @@ const ScansPage = {
     return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   },
 
+  // formatConfigValue renders a tool-run config value for the config grid.
+  // Arrays become comma lists, objects become compact JSON, everything
+  // else falls back to String(). Long strings get trimmed so the row
+  // doesn't blow out the width.
+  formatConfigValue(v) {
+    if (v == null) return '—';
+    if (Array.isArray(v)) {
+      const joined = v.map(x => String(x)).join(', ');
+      return joined.length > 120 ? joined.slice(0, 117) + '…' : joined;
+    }
+    if (typeof v === 'object') {
+      try {
+        const j = JSON.stringify(v);
+        return j.length > 120 ? j.slice(0, 117) + '…' : j;
+      } catch {
+        return '[object]';
+      }
+    }
+    const s = String(v);
+    return s.length > 120 ? s.slice(0, 117) + '…' : s;
+  },
+
   formatElapsed(seconds) {
     if (seconds < 60) return seconds + 's';
     return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
@@ -805,10 +937,11 @@ const ScansPage = {
       </div>
     `;
 
-    // Findings-table accordion: rebind after every render (polling may
-    // re-render the whole detail, and template literal innerHTML drops
+    // Accordions (findings + pipeline): rebind after every render (polling
+    // may re-render the whole detail, and template literal innerHTML drops
     // previous listeners).
     this.bindFindingsAccordion();
+    this.bindPipelineAccordion();
 
     // Bind cancel button
     if (isRunning) {

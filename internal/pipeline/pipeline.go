@@ -310,7 +310,12 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// tool_runs.findings_count is the count of FINDINGS emitted by this
 		// tool (pre-storage-dedup). Not the output total — assets and
 		// findings are counted separately in the data model.
-		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "")
+		//
+		// Detection wrappers may populate RunResult.ToolRun with rich
+		// telemetry (command args, stderr tail, output summary, exit
+		// code). Merge those into the persisted record so the webui and
+		// `surfbot scan detail` can show per-tool logs.
+		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "", &toolResult.ToolRun)
 
 		// Print phase summary
 		printPhaseSummary(tool, toolResult)
@@ -456,7 +461,17 @@ func (p *Pipeline) selectTools(opts PipelineOptions) []detection.DetectionTool {
 	return selected
 }
 
-func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string) {
+// recordToolRun persists a tool_run row. The optional `enrich` argument is
+// the ToolRun returned by the tool wrapper — it carries telemetry the
+// pipeline can't infer from outside (command args, output_summary, stderr
+// tail, tool-specific config). When present, its Config map and
+// OutputSummary are merged into the persisted record so the webui can
+// show per-tool logs without additional round-trips to the subprocess.
+//
+// The pipeline-controlled fields (scan_id, timing, counts, status)
+// always win — the wrapper doesn't know scan_id and its own timing may
+// be slightly off vs. the outer timer.
+func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string, enrich ...*model.ToolRun) {
 	finishedAt := startedAt.Add(duration)
 	tr := &model.ToolRun{
 		ID:            uuid.New().String(),
@@ -471,6 +486,19 @@ func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTo
 		FindingsCount: outputCount,
 		ErrorMessage:  errMsg,
 		Config:        map[string]interface{}{},
+	}
+	if len(enrich) > 0 && enrich[0] != nil {
+		src := enrich[0]
+		tr.OutputSummary = src.OutputSummary
+		// Wrapper's ErrorMessage wins when it's non-empty and the outer
+		// caller didn't pass one. This lets wrappers surface partial-run
+		// warnings without being classified as failed.
+		if tr.ErrorMessage == "" && src.ErrorMessage != "" {
+			tr.ErrorMessage = src.ErrorMessage
+		}
+		for k, v := range src.Config {
+			tr.Config[k] = v
+		}
 	}
 	p.store.CreateToolRun(ctx, tr) //nolint:errcheck
 }

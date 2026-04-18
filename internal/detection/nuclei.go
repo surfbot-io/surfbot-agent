@@ -31,12 +31,18 @@ func (n *NucleiTool) InputType() string     { return "urls" }
 func (n *NucleiTool) OutputTypes() []string { return []string{"finding"} }
 
 func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
+	startedAt := time.Now().UTC()
+
 	if len(inputs) == 0 {
-		return &RunResult{}, nil
+		tr := buildToolRun(n, startedAt, model.ToolRunCompleted, "", 0, 0)
+		tr.OutputSummary = "No input URLs — skipped."
+		return &RunResult{ToolRun: tr}, nil
 	}
 
 	if err := ensureNucleiTemplates(); err != nil {
-		return nil, fmt.Errorf("nuclei templates setup: %w", err)
+		tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+		attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)
+		return &RunResult{ToolRun: tr}, fmt.Errorf("nuclei templates setup: %w", err)
 	}
 
 	severity := "critical,high,medium,low,info"
@@ -97,7 +103,9 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 
 	ne, err := nuclei.NewNucleiEngineCtx(ctx, engineOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("nuclei engine init: %w", err)
+		tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+		attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)
+		return &RunResult{ToolRun: tr}, fmt.Errorf("nuclei engine init: %w", err)
 	}
 	defer ne.Close()
 
@@ -130,23 +138,43 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 	// Context deadline/cancellation is not a fatal error if we already have findings —
 	// nuclei may not finish all templates within the timeout, and that's OK.
 	if err != nil && len(findings) == 0 {
-		return nil, fmt.Errorf("nuclei execution: %w", err)
+		tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+		attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)
+		return &RunResult{ToolRun: tr}, fmt.Errorf("nuclei execution: %w", err)
 	}
 
-	result := &RunResult{
-		Findings: findings,
-		ToolRun: model.ToolRun{
-			ToolName:      "nuclei",
-			Phase:         "assessment",
-			Status:        model.ToolRunCompleted,
-			FindingsCount: len(findings),
-			TargetsCount:  len(inputs),
-			Config: map[string]interface{}{
-				"filtered": skipped,
-			},
-		},
+	status := model.ToolRunCompleted
+	var runErr string
+	if err != nil {
+		// Partial run: engine hit a deadline/cancellation but we have
+		// findings. Don't flip to failed — record the warning in
+		// ErrorMessage so the UI can surface "completed with errors".
+		runErr = err.Error()
 	}
-	return result, nil
+	// Severity histogram for OutputSummary.
+	sevCount := map[string]int{}
+	for _, f := range findings {
+		sevCount[string(f.Severity)]++
+	}
+
+	tr := buildToolRun(n, startedAt, status, runErr, len(inputs), len(findings))
+	tr.OutputSummary = fmt.Sprintf("Executed nuclei against %d target(s) → %d finding(s) persisted (%d filtered as noise). Severity: critical=%d high=%d medium=%d low=%d info=%d.",
+		len(inputs), len(findings), skipped,
+		sevCount["critical"], sevCount["high"], sevCount["medium"], sevCount["low"], sevCount["info"])
+	attachExecContext(&tr,
+		fmt.Sprintf("nuclei (SDK in-process, severity=%s, profile=%s, rate_limit=%d/s, timeout=%ds)",
+			severity, profile, rateLimit, timeout),
+		0,
+		runErr,
+		inputs,
+	)
+	tr.Config["filtered"] = skipped
+	tr.Config["profile"] = profile
+	tr.Config["severity_filter"] = severity
+	tr.Config["rate_limit_per_sec"] = rateLimit
+	tr.Config["template_tags"] = filters.Tags
+
+	return &RunResult{Findings: findings, ToolRun: tr}, nil
 }
 
 // isValidFinding checks if a nuclei result represents a real finding, not noise.

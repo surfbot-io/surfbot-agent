@@ -39,15 +39,30 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 
 	if !s.Available() {
 		tr := buildToolRun(s, startedAt, model.ToolRunSkipped, "subfinder binary not found in PATH", len(inputs), 0)
+		attachExecContext(&tr, "", 0, "", inputs)
 		return &RunResult{ToolRun: tr}, nil
 	}
 
 	result := &RunResult{}
+	// Accumulate stderr and last-run command across per-domain executions
+	// so the tool_run record shows what actually ran end-to-end even when
+	// subfinder is invoked once per input.
+	var stderrAcc strings.Builder
+	var lastCmd string
+	var lastExit int
 
 	for _, domain := range inputs {
-		subs, err := s.enumerate(ctx, domain, opts)
+		subs, cmdStr, stderrTail, exitCode, err := s.enumerate(ctx, domain, opts)
+		lastCmd = cmdStr
+		lastExit = exitCode
+		if stderrTail != "" {
+			stderrAcc.WriteString(stderrTail)
+			stderrAcc.WriteByte('\n')
+		}
 		if err != nil {
-			result.ToolRun = buildToolRun(s, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+			tr := buildToolRun(s, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+			attachExecContext(&tr, cmdStr, exitCode, stderrAcc.String(), inputs)
+			result.ToolRun = tr
 			return result, nil
 		}
 
@@ -68,11 +83,14 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 		}
 	}
 
-	result.ToolRun = buildToolRun(s, startedAt, model.ToolRunCompleted, "", len(inputs), len(result.Assets))
+	tr := buildToolRun(s, startedAt, model.ToolRunCompleted, "", len(inputs), len(result.Assets))
+	tr.OutputSummary = fmt.Sprintf("Discovered %d subdomain(s) across %d input domain(s)", len(result.Assets), len(inputs))
+	attachExecContext(&tr, lastCmd, lastExit, stderrAcc.String(), inputs)
+	result.ToolRun = tr
 	return result, nil
 }
 
-func (s *SubfinderTool) enumerate(ctx context.Context, domain string, opts RunOptions) (map[string]struct{}, error) {
+func (s *SubfinderTool) enumerate(ctx context.Context, domain string, opts RunOptions) (map[string]struct{}, string, string, int, error) {
 	args := []string{
 		"-d", domain,
 		"-silent",
@@ -95,14 +113,19 @@ func (s *SubfinderTool) enumerate(ctx context.Context, domain string, opts RunOp
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		// If we got some output, parse it anyway
+	cmdStr := "subfinder " + strings.Join(args, " ")
+	runErr := cmd.Run()
+	exitCode := 0
+	if runErr != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+		// If we got some output, parse it anyway — subfinder sometimes
+		// fails the overall process but produces partial results.
 		if stdout.Len() == 0 {
-			return nil, fmt.Errorf("subfinder failed: %s", stderr.String())
+			return nil, cmdStr, stderr.String(), exitCode, fmt.Errorf("subfinder failed: %s", stderr.String())
 		}
 	}
 
-	return ParseSubfinderOutput(stdout.Bytes()), nil
+	return ParseSubfinderOutput(stdout.Bytes()), cmdStr, stderr.String(), exitCode, nil
 }
 
 // ParseSubfinderOutput parses subfinder text output (one subdomain per line).
