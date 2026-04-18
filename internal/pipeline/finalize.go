@@ -186,21 +186,27 @@ func FinalizeScanWork(
 		work.PhasesRun = append(work.PhasesRun, p)
 	}
 	sort.Slice(work.PhasesRun, func(i, j int) bool {
-		a, b := phaseFirstSeen[work.PhasesRun[i]], phaseFirstSeen[work.PhasesRun[j]]
-		// Phases with zero timestamps fall back to their DB insert order
-		// (first-seen ordering within the tool_runs rows), which is itself
-		// pipeline order because recordToolRun is called inline during the
-		// loop.
-		if a.IsZero() && b.IsZero() {
-			return phaseInsertOrder[work.PhasesRun[i]] < phaseInsertOrder[work.PhasesRun[j]]
-		}
-		if a.IsZero() {
+		pi, pj := work.PhasesRun[i], work.PhasesRun[j]
+		a, b := phaseFirstSeen[pi], phaseFirstSeen[pj]
+		// Zero-timestamp phases fall back to DB insert order (pipeline
+		// order, since recordToolRun is called inline during the loop).
+		switch {
+		case a.IsZero() && b.IsZero():
+			return phaseInsertOrder[pi] < phaseInsertOrder[pj]
+		case a.IsZero():
 			return false
-		}
-		if b.IsZero() {
+		case b.IsZero():
 			return true
+		case a.Equal(b):
+			// Timestamps collide at second-level granularity in SQLite
+			// (RFC3339 format). Without an explicit tiebreaker sort.Slice
+			// is non-deterministic and the test hits a different order
+			// under -race than without. Fall back to pipeline insert
+			// order so the output is stable regardless of scheduling.
+			return phaseInsertOrder[pi] < phaseInsertOrder[pj]
+		default:
+			return a.Before(b)
 		}
-		return a.Before(b)
 	})
 
 	return work, nil
