@@ -55,12 +55,19 @@ func TestAvailableTools(t *testing.T) {
 }
 
 func TestToolMetadata(t *testing.T) {
+	// ToolKind classification (see detection.go):
+	//   Native  — pure Go implementation, no external SDK dependency
+	//             (dnsx uses net.DefaultResolver; naabu/httpx use
+	//             in-house scanners built on stdlib).
+	//   Library — driven by an external SDK linked into the binary
+	//             (nuclei uses projectdiscovery/nuclei/v3/lib;
+	//             subfinder uses projectdiscovery/subfinder/v2/pkg/runner).
 	expected := []struct {
 		name  string
 		phase string
 		kind  ToolKind
 	}{
-		{"subfinder", "discovery", ToolKindNative},
+		{"subfinder", "discovery", ToolKindLibrary},
 		{"dnsx", "resolution", ToolKindNative},
 		{"naabu", "port_scan", ToolKindNative},
 		{"httpx", "http_probe", ToolKindNative},
