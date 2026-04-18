@@ -562,7 +562,7 @@ const ScansPage = {
     }).join('');
 
     return `<div class="card">
-      <div class="card-label">Findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
+      <div class="card-label">Findings from this scan <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
       <div class="table-container" style="border:none;margin:8px 0 0">
         <table class="findings-table">
           <thead><tr>
@@ -985,7 +985,10 @@ const ScansPage = {
     try {
       const [data, findingsData] = await Promise.all([
         API.scan(id),
-        API.findings({ scan_id: id, limit: 100 }),
+        // scan_scope (not scan_id) so findings discovered by this scan
+        // but later re-observed by a newer scan still show up here
+        // instead of silently disappearing. See SUR-244 audit.
+        API.findings({ scan_scope: id, limit: 100 }),
       ]);
       this.renderDetailContent(app, data, findingsData.findings || []);
 
@@ -1012,7 +1015,10 @@ const ScansPage = {
       try {
         const [data, findingsData] = await Promise.all([
           API.scan(id),
-          API.findings({ scan_id: id, limit: 100 }),
+          // scan_scope (not scan_id) so findings discovered by this scan
+        // but later re-observed by a newer scan still show up here
+        // instead of silently disappearing. See SUR-244 audit.
+        API.findings({ scan_scope: id, limit: 100 }),
         ]);
         if (data.scan.status !== 'running') {
           this.stopPolling();

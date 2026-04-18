@@ -294,6 +294,19 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.ScanID = scanID
 	}
+	// scan_scope matches findings that were either last observed by the
+	// given scan OR originally discovered by it. Used by the scan detail
+	// view so findings don't disappear from their discovering scan when a
+	// later scan re-observes them (see SUR-244 audit). Kept as a separate
+	// param from scan_id so the stricter "latest observation" filter
+	// remains available for analysis queries.
+	if scope := r.URL.Query().Get("scan_scope"); scope != "" {
+		if _, err := uuid.Parse(scope); err != nil {
+			writeError(w, http.StatusBadRequest, "scan_scope must be a valid UUID")
+			return
+		}
+		opts.ScanScope = scope
+	}
 	if tmpl := r.URL.Query().Get("template_id"); tmpl != "" {
 		opts.TemplateID = tmpl
 	}

@@ -45,8 +45,21 @@ type AssetChangeListOptions struct {
 
 // FindingListOptions configures finding listing queries.
 type FindingListOptions struct {
-	AssetID    string
-	ScanID     string
+	AssetID string
+
+	// ScanID filters by the LATEST scan that observed the finding
+	// (model.Finding.ScanID, updated on every upsert). Use this when you
+	// want "the exact set of findings whose last touch was scan X".
+	ScanID string
+
+	// ScanScope filters by "observed by OR discovered by" a scan — i.e.
+	// scan_id = X OR first_seen_scan_id = X. This is the right filter for
+	// "findings that belong to scan X" in a UX sense: it includes findings
+	// a later scan re-observed (they still count as part of the detail
+	// page for the scan that discovered them) as well as findings freshly
+	// observed by X. Use this in the scan-detail view. See SUR-244 audit.
+	ScanScope string
+
 	TargetID   string
 	TemplateID string
 	Host       string
@@ -698,6 +711,14 @@ func (s *SQLiteStore) ListFindings(ctx context.Context, opts FindingListOptions)
 		where = append(where, "scan_id = ?")
 		args = append(args, opts.ScanID)
 	}
+	// ScanScope: include findings that either (a) were last observed by
+	// this scan, or (b) were originally discovered by it — so a later
+	// scan re-observing a finding doesn't make it disappear from the
+	// detail view of the scan that first found it. See SUR-244.
+	if opts.ScanScope != "" {
+		where = append(where, "(scan_id = ? OR first_seen_scan_id = ?)")
+		args = append(args, opts.ScanScope, opts.ScanScope)
+	}
 	if opts.Severity != "" {
 		where = append(where, "severity = ?")
 		args = append(args, string(opts.Severity))
@@ -1065,6 +1086,14 @@ func (s *SQLiteStore) CountFindingsFiltered(ctx context.Context, opts FindingLis
 	if opts.ScanID != "" {
 		where = append(where, "scan_id = ?")
 		args = append(args, opts.ScanID)
+	}
+	// ScanScope: include findings that either (a) were last observed by
+	// this scan, or (b) were originally discovered by it — so a later
+	// scan re-observing a finding doesn't make it disappear from the
+	// detail view of the scan that first found it. See SUR-244.
+	if opts.ScanScope != "" {
+		where = append(where, "(scan_id = ? OR first_seen_scan_id = ?)")
+		args = append(args, opts.ScanScope, opts.ScanScope)
 	}
 	if opts.Severity != "" {
 		where = append(where, "severity = ?")

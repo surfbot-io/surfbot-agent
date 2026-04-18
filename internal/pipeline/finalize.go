@@ -93,8 +93,14 @@ func FinalizeScanDelta(
 	}
 	delta.IsBaseline = isBaseline
 
-	// Baseline scans have every asset flagged appeared+baseline; we don't
-	// bubble those into new_assets because they're not a true delta.
+	// Baseline scans have every asset flagged appeared+baseline and every
+	// finding is technically "new" too (it's the first time we see
+	// anything about this target). We zero out the whole delta payload
+	// in that case — Target State already counts everything, so populating
+	// delta would triple-report the same numbers. Consumers key off
+	// is_baseline=true to know "all state here was discovered by this
+	// scan". SUR-244 audit fix: previously new_findings was populated
+	// while new_assets was empty, producing an inconsistent delta shape.
 	if !isBaseline {
 		changeCounts, err := store.AssetChangeCountsForScan(ctx, scanID)
 		if err != nil {
@@ -109,13 +115,12 @@ func FinalizeScanDelta(
 		if m := changeCounts[string(model.ChangeTypeModified)]; m != nil {
 			delta.ModifiedAssets = m
 		}
-	}
-
-	for _, f := range newFindings {
-		delta.NewFindings[f.Severity]++
-	}
-	for _, f := range resolvedFindings {
-		delta.ResolvedFindings[f.Severity]++
+		for _, f := range newFindings {
+			delta.NewFindings[f.Severity]++
+		}
+		for _, f := range resolvedFindings {
+			delta.ResolvedFindings[f.Severity]++
+		}
 	}
 	// ReturnedFindings ("resolved then re-opened") is not yet computed by
 	// the diff phase — the detection of reopened findings would require

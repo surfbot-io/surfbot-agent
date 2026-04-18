@@ -160,3 +160,107 @@ func TestTargetStatePortsBucket(t *testing.T) {
 	assert.Equal(t, 2, result.TargetState.PortsByStatus["open"], "open ports bucketed separately")
 	assert.Equal(t, 1, result.TargetState.PortsByStatus["filtered"], "filtered ports bucketed separately")
 }
+
+// TestBaselineDeltaIsEmpty guards the SUR-244 P0 invariant: when a scan
+// is a baseline (first run against a target), the delta payload is
+// uniformly empty across all buckets, regardless of what the scan
+// observed. Consumers key off is_baseline=true to know "all state here
+// is new"; populating delta.new_findings while leaving delta.new_assets
+// empty (the pre-fix behavior) produced an inconsistent shape that
+// LLMs and dashboards had to special-case.
+func TestBaselineDeltaIsEmpty(t *testing.T) {
+	s := newTestStore(t)
+	target := createTarget(t, s, "example.com")
+	ctx := context.Background()
+
+	// Baseline scan that also produces a finding. Pre-fix this would
+	// yield delta.new_findings = {high: 1} while delta.new_assets = {}.
+	tools := []detection.DetectionTool{
+		&mockTool{name: "subfinder", phase: "discovery",
+			assets: []model.Asset{{Type: model.AssetTypeSubdomain, Value: "a.example.com", Status: model.AssetStatusNew}}},
+		&mockTool{name: "dnsx", phase: "resolution",
+			assets: []model.Asset{{Type: model.AssetTypeIPv4, Value: "1.2.3.4", Status: model.AssetStatusNew}}},
+		&mockTool{name: "naabu", phase: "port_scan",
+			assets: []model.Asset{{Type: model.AssetTypePort, Value: "1.2.3.4:443/tcp", Status: model.AssetStatusNew, Metadata: map[string]any{"status": "open"}}}},
+		&mockTool{name: "httpx", phase: "http_probe",
+			assets: []model.Asset{{Type: model.AssetTypeURL, Value: "https://a.example.com", Status: model.AssetStatusNew}}},
+		&mockTool{
+			name: "nuclei", phase: "assessment",
+			findings: []model.Finding{
+				{TemplateID: "CVE-X", Severity: model.SeverityHigh, Title: "High vuln", Status: model.FindingStatusOpen, SourceTool: "nuclei"},
+			},
+		},
+	}
+
+	reg := mockRegistry(tools...)
+	pipe := New(s, reg)
+	result, err := pipe.Run(ctx, target.ID, PipelineOptions{ScanType: model.ScanTypeFull})
+	require.NoError(t, err)
+
+	d := result.Delta
+	assert.True(t, d.IsBaseline, "first scan must be flagged baseline")
+	assert.Empty(t, d.NewAssets, "baseline: new_assets must be empty")
+	assert.Empty(t, d.DisappearedAssets, "baseline: disappeared_assets must be empty")
+	assert.Empty(t, d.ModifiedAssets, "baseline: modified_assets must be empty")
+	assert.Empty(t, d.NewFindings, "baseline: new_findings must be empty (was populated pre-fix)")
+	assert.Empty(t, d.ResolvedFindings, "baseline: resolved_findings must be empty")
+	assert.Empty(t, d.ReturnedFindings, "baseline: returned_findings must be empty")
+
+	// Target State is how the consumer should learn about what exists
+	// after a baseline scan — verify the finding shows up there.
+	assert.Equal(t, 1, result.TargetState.FindingsOpenTotal,
+		"target_state must reflect what the baseline observed (single source of truth for baselines)")
+}
+
+// TestFindingsScanScopeIncludesDiscovered covers the storage-level half of
+// the SUR-244 P0 fix: a finding observed by scan1 and re-observed by
+// scan2 must stay visible in scan1's detail view. ScanScope=scan1 must
+// match both findings that scan1 observed last (scan_id=scan1) AND
+// findings that scan1 discovered originally (first_seen_scan_id=scan1),
+// regardless of who observed them last.
+func TestFindingsScanScopeIncludesDiscovered(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	target := &model.Target{Value: "example.com"}
+	require.NoError(t, s.CreateTarget(ctx, target))
+
+	scan1 := &model.Scan{TargetID: target.ID, Type: model.ScanTypeFull, Status: model.ScanStatusRunning}
+	require.NoError(t, s.CreateScan(ctx, scan1))
+	scan2 := &model.Scan{TargetID: target.ID, Type: model.ScanTypeFull, Status: model.ScanStatusRunning}
+	require.NoError(t, s.CreateScan(ctx, scan2))
+
+	asset := &model.Asset{TargetID: target.ID, Type: model.AssetTypeSubdomain, Value: "a.example.com", Status: model.AssetStatusNew}
+	require.NoError(t, s.UpsertAsset(ctx, asset))
+
+	// scan1 discovers the finding.
+	require.NoError(t, s.UpsertFinding(ctx, &model.Finding{
+		AssetID: asset.ID, ScanID: scan1.ID,
+		TemplateID: "T-1", SourceTool: "nuclei",
+		Severity: model.SeverityHigh, Title: "v", Status: model.FindingStatusOpen,
+	}))
+	// scan2 re-observes it → scan_id flips to scan2, first_seen_scan_id
+	// stays on scan1 (tested separately in storage/scan_aggregates_test.go).
+	require.NoError(t, s.UpsertFinding(ctx, &model.Finding{
+		AssetID: asset.ID, ScanID: scan2.ID,
+		TemplateID: "T-1", SourceTool: "nuclei",
+		Severity: model.SeverityHigh, Title: "v", Status: model.FindingStatusOpen,
+	}))
+
+	// Stricter ScanID filter: scan1 has nothing (scan_id now points at scan2).
+	byScan1ID, err := s.ListFindings(ctx, storage.FindingListOptions{ScanID: scan1.ID, Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, byScan1ID, "ScanID=scan1 returns empty after re-observation — expected")
+
+	// Broader ScanScope filter: scan1 still owns the finding via
+	// first_seen_scan_id. This is what the scan-detail UI should use.
+	byScan1Scope, err := s.ListFindings(ctx, storage.FindingListOptions{ScanScope: scan1.ID, Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, byScan1Scope, 1, "ScanScope=scan1 must include findings scan1 originally discovered")
+
+	// scan2 picks it up via either filter (it's the latest observer AND
+	// its ScanScope includes the finding via scan_id match).
+	byScan2Scope, err := s.ListFindings(ctx, storage.FindingListOptions{ScanScope: scan2.ID, Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, byScan2Scope, 1, "ScanScope=scan2 must include findings scan2 re-observed")
+}
