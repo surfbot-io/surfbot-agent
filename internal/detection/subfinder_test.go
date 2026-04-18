@@ -1,7 +1,6 @@
 package detection
 
 import (
-	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,12 +29,22 @@ func TestSubfinderOutputDedup(t *testing.T) {
 	assert.Contains(t, results, "api.example.com")
 }
 
+// TestSubfinderAvailable documents the SDK-embedded contract: since the
+// tool no longer shells out to a binary, Available() is a constant true.
+// Preserving the test ensures nobody silently regresses this by bringing
+// back a binary dependency.
 func TestSubfinderAvailable(t *testing.T) {
 	s := NewSubfinderTool()
-	available := s.Available()
+	assert.True(t, s.Available(),
+		"subfinder is SDK-embedded (ToolKindLibrary); Available must be unconditionally true")
+	assert.Equal(t, ToolKindLibrary, s.Kind(),
+		"subfinder was migrated from a subprocess binary to the SDK — ToolKind must reflect that")
+}
 
-	_, err := exec.LookPath("subfinder")
-	expectedAvailable := err == nil
-
-	assert.Equal(t, expectedAvailable, available)
+// TestSubfinderKindIsLibrary pins the contract at the Kind level too so a
+// future change that flips Kind back to Native without updating Available
+// also fails.
+func TestSubfinderKindIsLibrary(t *testing.T) {
+	s := NewSubfinderTool()
+	assert.Equal(t, ToolKindLibrary, s.Kind())
 }
