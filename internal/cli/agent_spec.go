@@ -15,6 +15,14 @@ import (
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
 //
+// 2.0.0 — scan aggregates redesign. ScanStats is removed; Scan now exposes
+//
+//	target_state (what the target looks like), delta (what this scan
+//	changed), and work (telemetry). Finding gains first_seen_scan_id;
+//	scan_id now tracks the latest observing scan. AssetType vocabulary
+//	is declared open (new detection tools may introduce new keys).
+//	See SUR-244 / SPEC-QA3.
+//
 // 1.2.0 — portscan assets gain `status` (open|filtered) and
 //
 //	`banner_preview` metadata fields. See SUR-243/SUR-248.
@@ -22,7 +30,7 @@ import (
 // 1.1.0 — probe accepts the enriched "hostname|ip:port/tcp" input format
 //
 //	alongside the legacy bare ip:port/tcp. See SUR-242.
-const SpecVersion = "1.2.0"
+const SpecVersion = "2.0.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {

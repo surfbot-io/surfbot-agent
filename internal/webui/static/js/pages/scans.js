@@ -106,7 +106,7 @@ const ScansPage = {
           <td>${Components.statusBadge(s.status)}</td>
           <td>${s.type}</td>
           <td class="mono">${dur}</td>
-          <td>${s.stats.findings_total || 0} findings</td>
+          <td>${(s.target_state && s.target_state.findings_open_total) || 0} findings</td>
           <td class="text-muted">${Components.timeAgo(s.created_at)}</td>
         </tr>
       `;
@@ -384,13 +384,21 @@ const ScansPage = {
         duration = `<span class="tool-duration mono" data-started="${tr.started_at}">${this.formatElapsed(elapsed)}</span>`;
       } else if (tr.duration_ms > 0) {
         duration = `<span class="tool-duration mono">${this.formatDurationMs(tr.duration_ms)}</span>`;
+      } else if (tr.status === 'completed') {
+        // Sub-millisecond runs show as <1ms rather than silently omitting
+        // the column — otherwise subfinder looks like it has no data.
+        duration = `<span class="tool-duration mono text-muted">&lt;1ms</span>`;
       }
 
       const stats = [];
-      if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} targets</span>`);
-      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding">${tr.findings_count} results</span>`);
+      if (tr.targets_count > 0) stats.push(`<span class="stat-badge">${tr.targets_count} ${tr.targets_count === 1 ? 'target' : 'targets'}</span>`);
+      if (tr.findings_count > 0) stats.push(`<span class="stat-badge stat-badge-finding" title="Raw findings emitted by the tool before storage dedup">${tr.findings_count} emitted</span>`);
 
-      return `<div class="pipeline-node ${statusClass}">
+      // Clicking the whole node toggles the paired log detail row.
+      // Providing a hint chevron makes the affordance discoverable.
+      const hasLogs = this.toolRunHasLogs(tr);
+
+      return `<div class="pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}" data-tr-idx="${i}"${hasLogs ? ' title="Click to view logs"' : ''}>
         <div class="pipeline-connector">
           <div class="pipeline-dot"></div>
           ${isLast ? '' : '<div class="pipeline-vline"></div>'}
@@ -401,8 +409,10 @@ const ScansPage = {
             <span class="tool-name">${escapeHtml(tr.tool_name)}</span>
             ${Components.statusBadge(tr.status)}
             ${duration}
+            ${hasLogs ? '<span class="pipeline-chevron text-muted" aria-hidden="true">▸</span>' : ''}
           </div>
           ${stats.length > 0 ? `<div class="pipeline-stats">${stats.join('')}</div>` : ''}
+          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" hidden>${this.renderToolRunDetail(tr)}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -413,6 +423,106 @@ const ScansPage = {
     </div>`;
   },
 
+  // A tool run "has logs" worth showing if it carries any of the enriched
+  // telemetry fields the detection wrappers fill in. Nodes without logs
+  // (e.g. skipped-because-no-urls) stay non-clickable.
+  toolRunHasLogs(tr) {
+    if (tr.output_summary) return true;
+    if (tr.error_message) return true;
+    const cfg = tr.config || {};
+    return !!(cfg.command || cfg.stderr_tail || (cfg.input_preview && cfg.input_preview.length > 0));
+  },
+
+  // renderToolRunDetail builds the accordion content for one pipeline
+  // node. Surfaces command args, output summary, input preview, tool-
+  // specific config keys, error message, and stderr tail — all captured
+  // in the wrapper layer (see internal/detection/*.go) and persisted in
+  // tool_runs.config.
+  renderToolRunDetail(tr) {
+    const cfg = tr.config || {};
+    const parts = [];
+
+    if (tr.output_summary) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Summary</div>
+        <div class="pipeline-detail-text">${escapeHtml(tr.output_summary)}</div>
+      </div>`);
+    }
+
+    if (cfg.command) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Command</div>
+        <pre class="pipeline-detail-pre">${escapeHtml(cfg.command)}</pre>
+      </div>`);
+    }
+
+    // Per-tool config (the keys that aren't the generic exec context).
+    // Presenting them as a definition list keeps the layout predictable.
+    const genericKeys = new Set(['command', 'stderr_tail', 'exit_code', 'input_preview', 'inputs_truncated']);
+    const toolKeys = Object.keys(cfg).filter(k => !genericKeys.has(k));
+    if (toolKeys.length > 0) {
+      const rows = toolKeys.map(k => `<span class="detail-label">${escapeHtml(k)}</span><span class="detail-value mono">${escapeHtml(this.formatConfigValue(cfg[k]))}</span>`).join('');
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Config</div>
+        <div class="pipeline-detail-grid">${rows}</div>
+      </div>`);
+    }
+
+    if (cfg.input_preview && cfg.input_preview.length > 0) {
+      const truncated = cfg.inputs_truncated ? ' <span class="text-muted">(truncated)</span>' : '';
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Inputs${truncated}</div>
+        <pre class="pipeline-detail-pre">${cfg.input_preview.map(escapeHtml).join('\n')}</pre>
+      </div>`);
+    }
+
+    if (cfg.stderr_tail) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading">Stderr tail</div>
+        <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(cfg.stderr_tail)}</pre>
+      </div>`);
+    }
+
+    if (tr.error_message) {
+      parts.push(`<div class="pipeline-detail-section">
+        <div class="pipeline-detail-heading pipeline-detail-heading-error">Error</div>
+        <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(tr.error_message)}</pre>
+      </div>`);
+    }
+
+    // Meta row at the bottom with timestamps and exit code.
+    const meta = [];
+    if (tr.started_at) meta.push(`started ${Components.timeAgo(tr.started_at)}`);
+    if (typeof cfg.exit_code === 'number') meta.push(`exit ${cfg.exit_code}`);
+    if (meta.length > 0) {
+      parts.push(`<div class="pipeline-detail-meta text-muted">${meta.join(' · ')}</div>`);
+    }
+
+    return `<div class="pipeline-detail-body">${parts.join('')}</div>`;
+  },
+
+  // bindPipelineAccordion wires click handlers on pipeline nodes.
+  // Re-invoked after every render (polling re-renders the whole detail)
+  // so listeners are always fresh.
+  bindPipelineAccordion() {
+    document.querySelectorAll('.pipeline-node-clickable').forEach(node => {
+      node.addEventListener('click', (e) => {
+        if (e.target.closest('a, button')) return;
+        const idx = node.dataset.trIdx;
+        const detail = node.querySelector(`.pipeline-detail[data-tr-idx="${idx}"]`);
+        if (!detail) return;
+        const isOpen = !detail.hasAttribute('hidden');
+        if (isOpen) {
+          detail.setAttribute('hidden', '');
+          node.classList.remove('pipeline-node-open');
+        } else {
+          detail.removeAttribute('hidden');
+          node.classList.add('pipeline-node-open');
+        }
+      });
+    });
+  },
+
   renderFindings(findings, scanId) {
     if (!findings || findings.length === 0) {
       return `<div class="card">
@@ -421,56 +531,327 @@ const ScansPage = {
       </div>`;
     }
 
-    const rows = findings.map(f => `
-      <tr class="clickable" onclick="location.hash='#/findings/${f.id}'">
-        <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
-        <td>${escapeHtml(f.title)}</td>
-        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.template_id || '-')}</td>
-        <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
-        <td>${Components.statusBadge(f.status)}</td>
-      </tr>
-    `).join('');
+    // Two <tr> per finding: a clickable summary row and a collapsible
+    // detail row that is expanded inline on click. Keeping the detail
+    // inline (rather than navigating to /findings/{id}) preserves the
+    // surrounding scan context so the user can compare rows without
+    // losing their place.
+    //
+    // The ASSET column surfaces the distinguishing host/endpoint so
+    // findings from the same template against different targets stop
+    // looking identical in the list (the common case: "HTTP Missing
+    // Security Headers" × 9 with no hint of what's affected).
+    const rows = findings.map((f, idx) => {
+      const assetTypeCell = this.formatAssetTypeCell(f);
+      const assetValueCell = this.formatAssetValueCell(f);
+      const detailHTML = this.renderFindingDetail(f);
+      return `
+        <tr class="finding-row" data-finding-idx="${idx}" title="Click to expand">
+          <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
+          <td>${escapeHtml(f.title)}</td>
+          <td class="finding-asset-type">${assetTypeCell}</td>
+          <td class="finding-asset-value mono" title="${escapeHtml(f.asset_value || '')}">${assetValueCell}</td>
+          <td class="mono text-muted" style="font-size:11px">${escapeHtml(f.source_tool || '-')}</td>
+          <td>${Components.statusBadge(f.status)}</td>
+          <td class="finding-chevron text-muted" aria-hidden="true">▸</td>
+        </tr>
+        <tr class="finding-detail-row" data-finding-idx="${idx}" hidden>
+          <td colspan="7" class="finding-detail-cell">${detailHTML}</td>
+        </tr>
+      `;
+    }).join('');
 
     return `<div class="card">
       <div class="card-label">Findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
       <div class="table-container" style="border:none;margin:8px 0 0">
-        <table>
-          <thead><tr><th>Severity</th><th>Title</th><th>Template</th><th>Tool</th><th>Status</th></tr></thead>
+        <table class="findings-table">
+          <thead><tr>
+            <th>Severity</th>
+            <th>Title</th>
+            <th>Type</th>
+            <th>Asset</th>
+            <th>Tool</th>
+            <th>Status</th>
+            <th aria-label="expand"></th>
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     </div>`;
   },
 
-  renderScanStats(stats) {
-    // Only show stats that have non-zero values
-    const items = [
-      { label: 'Subdomains', value: stats.subdomains_found },
-      { label: 'IPs Resolved', value: stats.ips_resolved },
-      { label: 'Ports Scanned', value: stats.ports_scanned },
-      { label: 'Open Ports', value: stats.open_ports },
-      { label: 'HTTP Probed', value: stats.http_probed },
-      { label: 'Findings', value: stats.findings_total },
+  // Asset is split into two cells so each column is scannable on its own:
+  // TYPE uses a uniform-width muted badge (good for eyeballing groupings
+  // like "all port_service findings"), while ASSET carries the raw value
+  // in monospace. template_id drops out of the main table entirely —
+  // it's reference-level detail better shown in the accordion.
+  formatAssetTypeCell(f) {
+    if (!f.asset_type) return '<span class="text-muted">—</span>';
+    return `<span class="badge badge-muted">${escapeHtml(this.titleCase(f.asset_type))}</span>`;
+  },
+
+  formatAssetValueCell(f) {
+    if (f.asset_value) {
+      const label = f.asset_value.length > 60 ? f.asset_value.slice(0, 57) + '…' : f.asset_value;
+      return escapeHtml(label);
+    }
+    if (f.asset_id) {
+      return `<span class="text-muted">${f.asset_id.slice(0, 8)}</span>`;
+    }
+    return '<span class="text-muted">—</span>';
+  },
+
+  // renderFindingDetail renders the expanded-row content for a single
+  // finding. Shows the distinguishing bits the list row omits (evidence,
+  // description, confidence/CVSS/CVE, timestamps) and offers a "View
+  // finding" link for the full-page view.
+  renderFindingDetail(f) {
+    const meta = [];
+    if (f.asset_value) {
+      meta.push({ label: 'Asset', value: `<span class="mono">${escapeHtml(f.asset_value)}</span>` });
+    }
+    if (f.template_id) {
+      meta.push({ label: 'Template', value: `<span class="mono">${escapeHtml(f.template_id)}</span>` });
+    }
+    if (f.cvss) meta.push({ label: 'CVSS', value: String(f.cvss) });
+    if (f.cve) meta.push({ label: 'CVE', value: `<span class="mono">${escapeHtml(f.cve)}</span>` });
+    if (typeof f.confidence === 'number') meta.push({ label: 'Confidence', value: f.confidence + '%' });
+    if (f.first_seen) meta.push({ label: 'First seen', value: Components.timeAgo(f.first_seen) });
+    if (f.last_seen) meta.push({ label: 'Last seen', value: Components.timeAgo(f.last_seen) });
+
+    const metaGrid = meta.length > 0
+      ? `<div class="finding-detail-grid">${meta.map(m => `<span class="detail-label">${m.label}</span><span class="detail-value">${m.value}</span>`).join('')}</div>`
+      : '';
+
+    const desc = f.description
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Description</div><div class="finding-detail-text">${escapeHtml(f.description)}</div></div>`
+      : '';
+    const evidence = f.evidence
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Evidence</div><pre class="finding-detail-evidence">${escapeHtml(f.evidence)}</pre></div>`
+      : '';
+    const remediation = f.remediation
+      ? `<div class="finding-detail-section"><div class="finding-detail-heading">Remediation</div><div class="finding-detail-text">${escapeHtml(f.remediation)}</div></div>`
+      : '';
+
+    const viewBtn = `<a href="#/findings/${f.id}" class="btn btn-sm" onclick="event.stopPropagation()">View finding →</a>`;
+
+    return `
+      <div class="finding-detail-body">
+        ${metaGrid}
+        ${desc}
+        ${evidence}
+        ${remediation}
+        <div class="finding-detail-actions">${viewBtn}</div>
+      </div>
+    `;
+  },
+
+  // bindFindingsAccordion wires click handlers on finding summary rows
+  // to toggle their paired detail row. Uses data-finding-idx for
+  // pairing so repeated re-renders (polling) don't lose or duplicate
+  // listeners — we re-bind fresh each time.
+  bindFindingsAccordion() {
+    document.querySelectorAll('.finding-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        // Ignore clicks that originated on interactive descendants so
+        // the "View finding" link continues to navigate instead of
+        // toggling.
+        if (e.target.closest('a, button')) return;
+        const idx = row.dataset.findingIdx;
+        const detail = document.querySelector(`.finding-detail-row[data-finding-idx="${idx}"]`);
+        if (!detail) return;
+        const isOpen = !detail.hasAttribute('hidden');
+        if (isOpen) {
+          detail.setAttribute('hidden', '');
+          row.classList.remove('finding-row-open');
+        } else {
+          detail.removeAttribute('hidden');
+          row.classList.add('finding-row-open');
+        }
+      });
+    });
+  },
+
+  // agent-spec 2.0: a Scan exposes three semantically distinct aggregates.
+  // Each gets its own card so the user can read them as separate questions:
+  //
+  //   Target state — what currently exists on the target
+  //   Changes      — what THIS scan changed vs. prior state
+  //   Work         — telemetry of the execution itself
+  //
+  // Mirrors the three-block layout of `surfbot scan` CLI output for
+  // CLI ↔ webui parity.
+  renderScanAggregates(scan) {
+    return `
+      ${this.renderTargetStateBlock(scan)}
+      ${this.renderScanDeltaBlock(scan)}
+      ${this.renderScanWorkBlock(scan)}
+    `;
+  },
+
+  renderTargetStateBlock(scan) {
+    const state = scan.target_state || {};
+    const assets = state.assets_by_type || {};
+    const ports = state.ports_by_status || {};
+
+    const stateItems = [
+      { label: 'Subdomains', value: assets.subdomain },
+      { label: 'IPs (v4)', value: assets.ipv4 },
+      { label: 'IPs (v6)', value: assets.ipv6 },
+      { label: 'Ports (open)', value: ports.open },
+      { label: 'Ports (filtered)', value: ports.filtered },
+      { label: 'Endpoints', value: assets.url },
+      { label: 'Technologies', value: assets.technology },
+      { label: 'Findings open', value: state.findings_open_total },
     ].filter(i => i.value > 0);
 
-    if (items.length === 0) return '';
+    // AssetType is an open vocabulary — surface keys we don't recognize
+    // explicitly so a tool that emits e.g. "cloud_bucket" still shows up.
+    const known = new Set(['subdomain', 'ipv4', 'ipv6', 'port_service', 'url', 'technology', 'domain', 'service']);
+    Object.entries(assets).forEach(([k, v]) => {
+      if (!known.has(k) && v > 0) {
+        stateItems.push({ label: this.titleCase(k), value: v });
+      }
+    });
 
-    const sevs = {
-      critical: stats.findings_critical || 0,
-      high: stats.findings_high || 0,
-      medium: stats.findings_medium || 0,
-      low: stats.findings_low || 0,
-      info: stats.findings_info || 0,
-    };
+    if (stateItems.length === 0) return '';
+
+    const sevs = state.findings_open || {};
     const hasSev = Object.values(sevs).some(v => v > 0);
 
     return `<div class="card">
-      <div class="card-label">Scan Stats</div>
+      <div class="card-label">Target state</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${stateItems.map(i => `<span class="detail-label">${escapeHtml(i.label)}</span><span class="detail-value">${i.value}</span>`).join('')}
+      </div>
+      ${hasSev ? Components.severityBars({
+        critical: sevs.critical || 0,
+        high: sevs.high || 0,
+        medium: sevs.medium || 0,
+        low: sevs.low || 0,
+        info: sevs.info || 0,
+      }) : ''}
+    </div>`;
+  },
+
+  renderScanDeltaBlock(scan) {
+    const delta = scan.delta || {};
+
+    // Baseline scans have no meaningful delta — surface that honestly
+    // instead of showing zeros that look like "nothing happened".
+    if (delta.is_baseline) {
+      return `<div class="card">
+        <div class="card-label">Changes</div>
+        <p class="text-muted" style="margin-top:8px">Baseline scan — run again to detect changes.</p>
+      </div>`;
+    }
+
+    const sumMap = (m) => Object.values(m || {}).reduce((a, b) => a + b, 0);
+    const newAssetsTotal = sumMap(delta.new_assets);
+    const disAssetsTotal = sumMap(delta.disappeared_assets);
+    const modAssetsTotal = sumMap(delta.modified_assets);
+    const newFindingsTotal = sumMap(delta.new_findings);
+    const resolvedFindingsTotal = sumMap(delta.resolved_findings);
+    const total = newAssetsTotal + disAssetsTotal + modAssetsTotal + newFindingsTotal + resolvedFindingsTotal;
+
+    if (total === 0) {
+      return `<div class="card">
+        <div class="card-label">Changes</div>
+        <p class="text-muted" style="margin-top:8px">No changes since last scan.</p>
+      </div>`;
+    }
+
+    const formatTypeBreakdown = (m) => {
+      const entries = Object.entries(m || {}).filter(([, v]) => v > 0);
+      if (entries.length === 0) return '';
+      return ' <span class="text-muted">(' + entries.map(([k, v]) => `${v} ${this.titleCase(k)}`).join(', ') + ')</span>';
+    };
+
+    const formatSevBreakdown = (m) => {
+      const order = ['critical', 'high', 'medium', 'low', 'info'];
+      const parts = order.filter(s => (m || {})[s] > 0).map(s => `${m[s]} ${s}`);
+      if (parts.length === 0) return '';
+      return ' <span class="text-muted">(' + parts.join(', ') + ')</span>';
+    };
+
+    const rows = [];
+    if (newAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">+ New assets</span><span class="detail-value">${newAssetsTotal}${formatTypeBreakdown(delta.new_assets)}</span>`);
+    }
+    if (disAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--danger)">− Disappeared assets</span><span class="detail-value">${disAssetsTotal}${formatTypeBreakdown(delta.disappeared_assets)}</span>`);
+    }
+    if (modAssetsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--sev-medium)">~ Modified assets</span><span class="detail-value">${modAssetsTotal}${formatTypeBreakdown(delta.modified_assets)}</span>`);
+    }
+    if (newFindingsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">+ New findings</span><span class="detail-value">${newFindingsTotal}${formatSevBreakdown(delta.new_findings)}</span>`);
+    }
+    if (resolvedFindingsTotal > 0) {
+      rows.push(`<span class="detail-label" style="color:var(--success)">✓ Resolved findings</span><span class="detail-value">${resolvedFindingsTotal}</span>`);
+    }
+
+    return `<div class="card">
+      <div class="card-label">Changes</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${rows.join('')}
+      </div>
+    </div>`;
+  },
+
+  renderScanWorkBlock(scan) {
+    const work = scan.work || {};
+    if (!work.tools_run) return '';
+
+    const items = [
+      { label: 'Duration', value: this.formatDurationMs(work.duration_ms || 0) },
+      { label: 'Tools run', value: work.tools_run },
+    ];
+    if (work.tools_failed > 0) items.push({ label: 'Tools failed', value: work.tools_failed });
+    if (work.tools_skipped > 0) items.push({ label: 'Tools skipped', value: work.tools_skipped });
+    if (work.raw_emissions > 0) {
+      // raw_emissions is the pre-storage-dedup tool output. Surfacing it
+      // in the UI helps debug noisy detectors (e.g. nuclei emitting many
+      // duplicates that storage merges into a few unique findings).
+      items.push({ label: 'Raw emissions', value: `${work.raw_emissions} <span class="text-muted">(pre-dedup)</span>` });
+    }
+    if (work.phases_run && work.phases_run.length > 0) {
+      items.push({ label: 'Phases', value: work.phases_run.map(escapeHtml).join(' → ') });
+    }
+
+    return `<div class="card">
+      <div class="card-label">Work</div>
       <div class="detail-grid" style="margin-top:8px">
         ${items.map(i => `<span class="detail-label">${i.label}</span><span class="detail-value">${i.value}</span>`).join('')}
       </div>
-      ${hasSev ? Components.severityBars(sevs) : ''}
     </div>`;
+  },
+
+  titleCase(s) {
+    if (!s) return s;
+    return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  },
+
+  // formatConfigValue renders a tool-run config value for the config grid.
+  // Arrays become comma lists, objects become compact JSON, everything
+  // else falls back to String(). Long strings get trimmed so the row
+  // doesn't blow out the width.
+  formatConfigValue(v) {
+    if (v == null) return '—';
+    if (Array.isArray(v)) {
+      const joined = v.map(x => String(x)).join(', ');
+      return joined.length > 120 ? joined.slice(0, 117) + '…' : joined;
+    }
+    if (typeof v === 'object') {
+      try {
+        const j = JSON.stringify(v);
+        return j.length > 120 ? j.slice(0, 117) + '…' : j;
+      } catch {
+        return '[object]';
+      }
+    }
+    const s = String(v);
+    return s.length > 120 ? s.slice(0, 117) + '…' : s;
   },
 
   formatElapsed(seconds) {
@@ -513,10 +894,17 @@ const ScansPage = {
         </div>`
       : '';
 
+    // Asset Changes table is noisy during a baseline scan — every asset
+    // the target has gets an "appeared (Baseline)" row that duplicates the
+    // Target State card. The delta card already says "Baseline scan — run
+    // again to detect changes", so hide the raw table to avoid repeating
+    // the same info in three places (Target State + Changes card + Asset
+    // Changes table). Non-baseline scans render the table as before.
+    const isBaseline = !!(s.delta && s.delta.is_baseline);
     const changeRows = data.changes.map(c => `
       <tr>
         <td><span class="change-${c.change_type}">${c.change_type}</span></td>
-        <td>${c.asset_type}</td>
+        <td>${escapeHtml(this.titleCase(c.asset_type || ''))}</td>
         <td class="mono">${escapeHtml(c.asset_value)}</td>
         <td>${escapeHtml(c.summary || '-')}</td>
       </tr>
@@ -545,9 +933,9 @@ const ScansPage = {
 
         ${this.renderFindings(findings, s.id)}
 
-        ${this.renderScanStats(s.stats)}
+        ${this.renderScanAggregates(s)}
 
-        ${data.changes.length > 0 ? `
+        ${(!isBaseline && data.changes.length > 0) ? `
           <div>
             <h3 style="margin-bottom:16px">Asset Changes <span class="text-muted" style="font-size:13px;font-weight:400">(${data.changes.length})</span></h3>
             ${Components.table(['Change', 'Type', 'Value', 'Summary'], [changeRows])}
@@ -555,6 +943,12 @@ const ScansPage = {
         ` : ''}
       </div>
     `;
+
+    // Accordions (findings + pipeline): rebind after every render (polling
+    // may re-render the whole detail, and template literal innerHTML drops
+    // previous listeners).
+    this.bindFindingsAccordion();
+    this.bindPipelineAccordion();
 
     // Bind cancel button
     if (isRunning) {
@@ -580,6 +974,13 @@ const ScansPage = {
   async renderDetail(app, id) {
     this.stopPolling();
     app.innerHTML = '<div class="loading">Loading scan...</div>';
+
+    // Reset the main scroll container so navigating between scan details
+    // lands at the top instead of wherever the previous page was
+    // scrolled to. Window scrollY is already 0 (body doesn't scroll);
+    // it's the inner <main class="content"> that holds the scrollbar.
+    const scroller = document.querySelector('main.content');
+    if (scroller) scroller.scrollTop = 0;
 
     try {
       const [data, findingsData] = await Promise.all([

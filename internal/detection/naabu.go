@@ -122,17 +122,21 @@ func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 
 	results, dialErrs, failuresAll := n.runScan(ctx, inputs, ports, dialTimeout, concurrency, retryCap, noBanner, br, defaultDialer)
 
-	// Log at most one stderr line per unique dial error class. Timeout and
-	// RST/refused are normal and not surfaced here; everything else (DNS
-	// failures on hostname inputs, unroutable networks, etc.) gets logged
-	// exactly once per unique (ip, err-class) so a million identical errors
-	// don't spam the user.
+	// Build a stderr-ish log from the de-duplicated dial errors so the
+	// tool_run surfaces unusual failures (DNS, unroutable net, etc.)
+	// without spamming. Timeouts and refused connections are omitted by
+	// runScan's classifyErr filter — they're routine on a port scan.
+	// Mirror each line to stderr live so the operator also sees them.
+	var errLog strings.Builder
 	for _, d := range dialErrs {
-		fmt.Fprintf(os.Stderr, "[naabu] reason=dial_error ip=%s port=%d err=%s\n", d.ip, d.port, d.err)
+		line := fmt.Sprintf("[naabu] reason=dial_error ip=%s port=%d err=%s\n", d.ip, d.port, d.err)
+		errLog.WriteString(line)
+		fmt.Fprint(os.Stderr, line)
 	}
 	_ = failuresAll // reserved for future per-IP breaker, SPEC-QA2 R12
 
 	runResult := &RunResult{}
+	openCount, filteredCount := 0, 0
 	for _, r := range results {
 		md := map[string]interface{}{
 			"port":           r.Port,
@@ -140,6 +144,11 @@ func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 			"ip":             r.IP,
 			"status":         r.Status,
 			"banner_preview": r.BannerPreview,
+		}
+		if r.Status == "filtered" {
+			filteredCount++
+		} else {
+			openCount++
 		}
 		runResult.Assets = append(runResult.Assets, model.Asset{
 			ID:        uuid.New().String(),
@@ -153,10 +162,23 @@ func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 		})
 	}
 
-	runResult.ToolRun = buildToolRun(n, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
-	runResult.ToolRun.Config["concurrency_halvings"] = br.halvingsCount()
-	runResult.ToolRun.Config["default_concurrency"] = defaultConcurrency
-	runResult.ToolRun.Config["effective_concurrency"] = concurrency
+	tr := buildToolRun(n, startedAt, model.ToolRunCompleted, "", len(inputs), len(runResult.Assets))
+	tr.OutputSummary = fmt.Sprintf("Probed %d host(s) × %d port(s) → %d open, %d filtered (dialTimeout=%s, concurrency=%d)",
+		len(inputs), len(ports), openCount, filteredCount, dialTimeout, concurrency)
+	attachExecContext(&tr,
+		fmt.Sprintf("naabu (in-process scanner, ports=%s, timeout=%s, concurrency=%d, banner=%v)",
+			opts.ExtraArgs["ports"], dialTimeout, concurrency, !noBanner),
+		0,
+		errLog.String(),
+		inputs,
+	)
+	tr.Config["concurrency_halvings"] = br.halvingsCount()
+	tr.Config["default_concurrency"] = defaultConcurrency
+	tr.Config["effective_concurrency"] = concurrency
+	tr.Config["ports_scanned"] = len(ports)
+	tr.Config["open_count"] = openCount
+	tr.Config["filtered_count"] = filteredCount
+	runResult.ToolRun = tr
 	return runResult, nil
 }
 

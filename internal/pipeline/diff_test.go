@@ -244,36 +244,11 @@ func TestNormalizeAssetStatuses(t *testing.T) {
 	}
 }
 
-func TestBuildChangeSummary(t *testing.T) {
-	changes := []model.AssetChange{
-		{ChangeType: model.ChangeTypeAppeared, AssetType: "subdomain"},
-		{ChangeType: model.ChangeTypeAppeared, AssetType: "subdomain"},
-		{ChangeType: model.ChangeTypeAppeared, AssetType: "ipv4"},
-		{ChangeType: model.ChangeTypeDisappeared, AssetType: "subdomain"},
-		{ChangeType: model.ChangeTypeModified, Significance: model.SignificanceCritical},
-	}
-
-	summary := BuildChangeSummary(changes, 2, 1)
-	assert.Equal(t, 3, summary.NewAssets)
-	assert.Equal(t, 1, summary.DisappearedAssets)
-	assert.Equal(t, 1, summary.ModifiedAssets)
-	assert.Equal(t, 1, summary.CriticalModified)
-	assert.Equal(t, 2, summary.NewFindings)
-	assert.Equal(t, 1, summary.ResolvedFindings)
-	assert.False(t, summary.IsBaseline)
-}
-
-func TestBuildChangeSummaryBaseline(t *testing.T) {
-	changes := []model.AssetChange{
-		{ChangeType: model.ChangeTypeAppeared, Baseline: true},
-		{ChangeType: model.ChangeTypeAppeared, Baseline: true},
-	}
-
-	summary := BuildChangeSummary(changes, 0, 0)
-	assert.True(t, summary.IsBaseline)
-	assert.Equal(t, 2, summary.TotalBaselineAssets)
-	assert.Equal(t, 0, summary.NewAssets)
-}
+// Note: BuildChangeSummary / ChangeSummary were removed — ScanDelta is now
+// computed directly by FinalizeScanDelta from DB ground truth (see
+// finalize.go). Equivalent behavioral coverage is in diff_integration_test.go
+// (TestDiffIntegrationInPipeline, TestFindingAutoResolveInPipeline) which
+// asserts ScanDelta fields end-to-end through a real pipeline run.
 
 // --- Helpers ---
 

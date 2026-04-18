@@ -362,6 +362,237 @@ tr:hover td { background: var(--bg-hover); }
 
 tr.clickable { cursor: pointer; }
 
+/* === Findings table accordion (scan detail) === */
+
+/* Summary rows are clickable with a visible chevron that rotates when
+   the paired detail row is expanded. We avoid CSS transitions on [hidden]
+   because hidden is binary — the UX just needs a crisp open/closed
+   state, not an animation. */
+tr.finding-row {
+  cursor: pointer;
+}
+
+tr.finding-row td {
+  /* Collapse the border between summary and its expanded detail row so
+     the accordion reads as one visual unit. */
+  transition: background 0.15s ease;
+}
+
+tr.finding-row-open td {
+  background: var(--bg-hover);
+  border-bottom-color: transparent;
+}
+
+.finding-chevron {
+  width: 16px;
+  text-align: center;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+tr.finding-row-open .finding-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+tr.finding-detail-row td.finding-detail-cell {
+  /* Detail row spans the full table width; kill the default row padding
+     so the nested .finding-detail-body controls its own spacing. */
+  padding: 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+}
+
+.finding-detail-body {
+  padding: 14px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.finding-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  font-size: 12px;
+}
+
+.finding-detail-section {
+  font-size: 12px;
+}
+
+.finding-detail-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.finding-detail-text {
+  color: var(--text-primary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.finding-detail-evidence {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  max-height: 240px;
+}
+
+.finding-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* TYPE cell is narrow (badge-only) so a whole column of "Port service",
+   "Url", "Technology" lines up cleanly. Width is explicit to prevent
+   the longer titles from stretching it. */
+.finding-asset-type {
+  width: 120px;
+  white-space: nowrap;
+}
+
+.finding-asset-value {
+  font-size: 11px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compact muted badge used for asset type tags inside the ASSET column.
+   Sized smaller than the existing .badge variants to sit inline without
+   pushing row height. */
+.badge.badge-muted {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* === Pipeline node accordion (scan detail) ================================
+   Each pipeline node in the scan-detail view can expand inline to show the
+   per-tool telemetry the detection wrappers captured (command, stderr,
+   config, summary). Visual language mirrors the findings table accordion so
+   the interaction is learned once. */
+
+.pipeline-node.pipeline-node-clickable {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.pipeline-node.pipeline-node-clickable:hover .pipeline-content {
+  background: var(--bg-hover);
+}
+
+.pipeline-node.pipeline-node-open .pipeline-content {
+  background: var(--bg-hover);
+}
+
+.pipeline-content {
+  padding: 6px 10px;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.pipeline-chevron {
+  margin-left: auto;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.pipeline-node-open .pipeline-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.pipeline-detail {
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.pipeline-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.pipeline-detail-section + .pipeline-detail-section {
+  margin-top: 0;
+}
+
+.pipeline-detail-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.pipeline-detail-heading-error {
+  color: var(--sev-critical, #f85149);
+}
+
+.pipeline-detail-text {
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.pipeline-detail-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+}
+
+/* Stderr/error blocks get a subtle red left border to draw the eye when
+   something went wrong. Stays readable in dark mode. */
+.pipeline-detail-pre.pipeline-detail-stderr {
+  border-left: 2px solid var(--sev-critical, #f85149);
+}
+
+.pipeline-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.pipeline-detail-meta {
+  font-size: 11px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;

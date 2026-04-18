@@ -62,8 +62,24 @@ func allowedOrigins(port int) []string {
 // securityHeaders sets the baseline response headers on every response.
 // Cache-Control: no-store is added for /api/* so JSON snapshots are never
 // cached by intermediaries (or by the browser tab).
+//
+// CSP rationale (loopback UI):
+//   - script-src 'unsafe-inline' is required because the SPA shell uses
+//     inline <script> blocks for bootstrap (token injection, route hash
+//     handling). All scripts are self-authored and there is no third-party
+//     content surface.
+//   - style-src 'unsafe-inline' is required because the rendered HTML
+//     uses ad-hoc style="..." attributes for one-off per-element values
+//     (progress bar widths, severity colors, layout tweaks). Without it
+//     CSP silently drops every inline style — e.g. the running-scan
+//     progress bar always rendered at 100% because style="width:N%" was
+//     never parsed (SUR-244 follow-up). Switching to JS-set styles or
+//     nonce/hash-based CSP would tighten this further; deferred for now.
+//   - script/style execution risk is bounded by the loopback bind +
+//     bearer-token-on-/api gates; remote callers can't reach the UI to
+//     exploit either.
 func securityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; " +
+	const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
 		"base-uri 'none'; form-action 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

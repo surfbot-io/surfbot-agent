@@ -12,6 +12,22 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
+func sumAssetTypeMap(m map[model.AssetType]int) int {
+	total := 0
+	for _, n := range m {
+		total += n
+	}
+	return total
+}
+
+func sumSeverityMap(m map[model.Severity]int) int {
+	total := 0
+	for _, n := range m {
+		total += n
+	}
+	return total
+}
+
 func TestDiffIntegrationInPipeline(t *testing.T) {
 	s := newTestStore(t)
 	target := createTarget(t, s, "example.com")
@@ -40,9 +56,9 @@ func TestDiffIntegrationInPipeline(t *testing.T) {
 	require.NoError(t, err)
 
 	// First scan should be baseline
-	require.NotNil(t, result1.DiffSummary)
-	assert.True(t, result1.DiffSummary.IsBaseline)
-	assert.Equal(t, 3, result1.DiffSummary.TotalBaselineAssets)
+	assert.True(t, result1.Delta.IsBaseline)
+	// Baseline: 3 assets discovered (2 subs + 1 ip)
+	assert.Equal(t, 3, result1.TargetState.AssetsTotal)
 
 	// Run 2: different assets (sub1 still present, sub2 gone, sub3 new)
 	tools2 := []detection.DetectionTool{
@@ -67,10 +83,9 @@ func TestDiffIntegrationInPipeline(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should detect changes
-	require.NotNil(t, result2.DiffSummary)
-	assert.False(t, result2.DiffSummary.IsBaseline)
-	assert.True(t, result2.DiffSummary.NewAssets > 0, "should have new assets")
-	assert.True(t, result2.DiffSummary.DisappearedAssets > 0, "should have disappeared assets")
+	assert.False(t, result2.Delta.IsBaseline)
+	assert.NotZero(t, sumAssetTypeMap(result2.Delta.NewAssets), "should have new assets")
+	assert.NotZero(t, sumAssetTypeMap(result2.Delta.DisappearedAssets), "should have disappeared assets")
 
 	// Verify changes were persisted
 	changes, err := s.ListAssetChanges(ctx, storage.AssetChangeListOptions{ScanID: result2.ScanID, Limit: 100})
@@ -171,8 +186,7 @@ func TestFindingAutoResolveInPipeline(t *testing.T) {
 	require.NoError(t, err)
 
 	// Finding should now be auto-resolved
-	require.NotNil(t, result2.DiffSummary)
-	assert.True(t, result2.DiffSummary.ResolvedFindings > 0, "should have resolved findings")
+	assert.NotZero(t, sumSeverityMap(result2.Delta.ResolvedFindings), "should have resolved findings")
 
 	// Check in DB
 	resolved, _ := s.ListFindings(ctx, storage.FindingListOptions{Status: model.FindingStatusResolved, Limit: 10})

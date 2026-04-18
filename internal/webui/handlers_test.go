@@ -48,11 +48,11 @@ func seedTestData(t *testing.T, s *storage.SQLiteStore) {
 		Progress:   100,
 		StartedAt:  &started,
 		FinishedAt: &now,
-		Stats: model.ScanStats{
-			SubdomainsFound:  3,
-			FindingsTotal:    2,
-			FindingsCritical: 1,
-			FindingsHigh:     1,
+		TargetState: model.TargetState{
+			AssetsByType:      map[model.AssetType]int{model.AssetTypeSubdomain: 3},
+			AssetsTotal:       3,
+			FindingsOpen:      map[model.Severity]int{model.SeverityCritical: 1, model.SeverityHigh: 1},
+			FindingsOpenTotal: 2,
 		},
 	}
 	require.NoError(t, s.CreateScan(ctx, scan))
@@ -132,6 +132,38 @@ func TestHandleOverview(t *testing.T) {
 	require.Len(t, resp.ScoreBreakdown, 2)
 	assert.Equal(t, "critical", resp.ScoreBreakdown[0].Severity)
 	assert.Equal(t, 25, resp.ScoreBreakdown[0].Penalty)
+
+	// agent-spec 2.0: last_scan must surface the three aggregates so the
+	// dashboard can render them without a second round-trip.
+	assert.Equal(t, 3, resp.LastScan.TargetState.AssetsByType[model.AssetTypeSubdomain],
+		"last_scan.target_state must surface the persisted snapshot")
+	assert.Equal(t, 2, resp.LastScan.TargetState.FindingsOpenTotal)
+}
+
+// TestChangeSummaryFromDelta is the regression gate for the latent webui
+// bug where getChangeSummary always returned new_findings == 0 because it
+// recomputed from asset_changes (which only tracks asset deltas, not
+// findings). After the SUR-244 cleanup the dashboard reads the persisted
+// ScanDelta directly, so new_findings / resolved_findings are now correct.
+func TestChangeSummaryFromDelta(t *testing.T) {
+	delta := model.ScanDelta{
+		NewAssets:         map[model.AssetType]int{model.AssetTypeSubdomain: 2, model.AssetTypeURL: 1},
+		DisappearedAssets: map[model.AssetType]int{model.AssetTypeIPv4: 1},
+		ModifiedAssets:    map[model.AssetType]int{model.AssetTypePort: 1},
+		NewFindings:       map[model.Severity]int{model.SeverityCritical: 1, model.SeverityHigh: 2},
+		ResolvedFindings:  map[model.Severity]int{model.SeverityMedium: 1},
+	}
+
+	cs := changeSummaryFromDelta(delta)
+	assert.Equal(t, 3, cs.NewAssets, "totals across asset types")
+	assert.Equal(t, 1, cs.DisappearedAssets)
+	assert.Equal(t, 1, cs.ModifiedAssets)
+	assert.Equal(t, 3, cs.NewFindings, "must include findings, not just asset_changes (was always 0 pre-SUR-244)")
+	assert.Equal(t, 1, cs.ResolvedFindings)
+	assert.False(t, cs.IsBaseline)
+
+	baseline := changeSummaryFromDelta(model.ScanDelta{IsBaseline: true})
+	assert.True(t, baseline.IsBaseline, "baseline flag must propagate")
 }
 
 func TestHandleFindings(t *testing.T) {

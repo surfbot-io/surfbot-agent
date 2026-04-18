@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -28,15 +29,20 @@ type PipelineOptions struct {
 }
 
 // PipelineResult holds the output of a pipeline execution.
+//
+// The three aggregate fields (TargetState, Delta, Work) are populated by the
+// finalize* functions at end-of-scan. They mirror the three blobs persisted
+// to scans.target_state / scans.delta / scans.work. Consumers should read
+// these rather than recomputing counts from Phases.
 type PipelineResult struct {
-	ScanID        string
-	Target        string
-	TotalAssets   int
-	TotalFindings int
-	Duration      time.Duration
-	Stats         model.ScanStats
-	Phases        []PhaseResult
-	DiffSummary   *ChangeSummary
+	ScanID      string
+	Target      string
+	Type        model.ScanType
+	Duration    time.Duration
+	TargetState model.TargetState
+	Delta       model.ScanDelta
+	Work        model.ScanWork
+	Phases      []PhaseResult
 }
 
 // PhaseResult describes the outcome of a single pipeline phase.
@@ -292,15 +298,24 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			}
 		}
 
-		// Update stats
-		updateStats(&scan.Stats, tool.Phase(), toolResult)
+		// Per-scan stats are no longer accumulated here — they are computed
+		// from the database at end-of-scan via FinalizeTargetState /
+		// FinalizeScanDelta / FinalizeScanWork. See SPEC-QA3.
 
 		outputCount := len(toolResult.Assets) + len(toolResult.Findings)
 		pr.Status = "completed"
 		pr.OutputCount = outputCount
 		result.Phases = append(result.Phases, pr)
 
-		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), outputCount, model.ToolRunCompleted, "")
+		// tool_runs.findings_count is the count of FINDINGS emitted by this
+		// tool (pre-storage-dedup). Not the output total — assets and
+		// findings are counted separately in the data model.
+		//
+		// Detection wrappers may populate RunResult.ToolRun with rich
+		// telemetry (command args, stderr tail, output summary, exit
+		// code). Merge those into the persisted record so the webui and
+		// `surfbot scan detail` can show per-tool logs.
+		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "", &toolResult.ToolRun)
 
 		// Print phase summary
 		printPhaseSummary(tool, toolResult)
@@ -373,37 +388,55 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 
 	postAssets, _ := SnapshotAssets(ctx, p.store, targetID)
 	changes := ComputeChanges(targetID, scan.ID, preAssets, postAssets, isFirstScan)
-	newFindingCount, resolvedFindingCount := 0, 0
+	var newFindings, resolvedFindings []model.Finding
 
 	for i := range changes {
 		p.store.CreateAssetChange(ctx, &changes[i]) //nolint:errcheck
 	}
 	ApplyStatusChanges(ctx, p.store, changes) //nolint:errcheck
 
-	newFindings, resolvedFindings, findingErr := ComputeFindingChanges(ctx, p.store, targetID, scan.ID)
+	var findingErr error
+	newFindings, resolvedFindings, findingErr = ComputeFindingChanges(ctx, p.store, targetID, scan.ID)
 	if findingErr == nil {
 		AutoResolveFindings(ctx, p.store, resolvedFindings) //nolint:errcheck
-		newFindingCount = len(newFindings)
-		resolvedFindingCount = len(resolvedFindings)
 	}
 
-	summary := BuildChangeSummary(changes, newFindingCount, resolvedFindingCount)
-	result.DiffSummary = &summary
-	PrintChangeSummary(summary)
+	// Finalize aggregates from DB ground truth. Order matters for logging:
+	// delta first (cheap, depends on already-written asset_changes), then
+	// target_state (queries the live tables), then work (reads tool_runs).
+	finishedAt := time.Now().UTC()
+	duration := finishedAt.Sub(*scan.StartedAt)
 
-	// Complete scan
+	delta, err := FinalizeScanDelta(ctx, p.store, scan.ID, newFindings, resolvedFindings)
+	if err != nil {
+		pp.warn("finalize delta: %v", err)
+	}
+	targetState, err := FinalizeTargetState(ctx, p.store, targetID)
+	if err != nil {
+		pp.warn("finalize target_state: %v", err)
+	}
+	work, err := FinalizeScanWork(ctx, p.store, scan.ID, duration)
+	if err != nil {
+		pp.warn("finalize work: %v", err)
+	}
+
+	scan.TargetState = targetState
+	scan.Delta = delta
+	scan.Work = work
 	scan.Status = model.ScanStatusCompleted
 	scan.Phase = "completed"
 	scan.Progress = 100
-	finishedAt := time.Now().UTC()
 	scan.FinishedAt = &finishedAt
 	p.store.UpdateScan(ctx, scan)                                         //nolint:errcheck
 	p.store.UpdateTargetLastScan(ctx, scan.TargetID, scan.ID, finishedAt) //nolint:errcheck
 
-	result.Stats = scan.Stats
-	result.Duration = finishedAt.Sub(*scan.StartedAt)
-	result.TotalAssets = scan.Stats.SubdomainsFound + scan.Stats.IPsResolved + scan.Stats.OpenPorts + scan.Stats.HTTPProbed
-	result.TotalFindings = scan.Stats.FindingsTotal
+	result.Type = opts.ScanType
+	result.Duration = duration
+	result.TargetState = targetState
+	result.Delta = delta
+	result.Work = work
+
+	PrintChangeSummary(delta)
 
 	return result, nil
 }
@@ -428,7 +461,17 @@ func (p *Pipeline) selectTools(opts PipelineOptions) []detection.DetectionTool {
 	return selected
 }
 
-func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string) {
+// recordToolRun persists a tool_run row. The optional `enrich` argument is
+// the ToolRun returned by the tool wrapper — it carries telemetry the
+// pipeline can't infer from outside (command args, output_summary, stderr
+// tail, tool-specific config). When present, its Config map and
+// OutputSummary are merged into the persisted record so the webui can
+// show per-tool logs without additional round-trips to the subprocess.
+//
+// The pipeline-controlled fields (scan_id, timing, counts, status)
+// always win — the wrapper doesn't know scan_id and its own timing may
+// be slightly off vs. the outer timer.
+func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string, enrich ...*model.ToolRun) {
 	finishedAt := startedAt.Add(duration)
 	tr := &model.ToolRun{
 		ID:            uuid.New().String(),
@@ -443,6 +486,29 @@ func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTo
 		FindingsCount: outputCount,
 		ErrorMessage:  errMsg,
 		Config:        map[string]interface{}{},
+	}
+	if len(enrich) > 0 && enrich[0] != nil {
+		src := enrich[0]
+		tr.OutputSummary = src.OutputSummary
+		// Wrapper's ErrorMessage wins when it's non-empty and the outer
+		// caller didn't pass one. This lets wrappers surface partial-run
+		// warnings without being classified as failed.
+		if tr.ErrorMessage == "" && src.ErrorMessage != "" {
+			tr.ErrorMessage = src.ErrorMessage
+		}
+		// Wrapper's Status wins when it reports a non-success terminal
+		// state (skipped / failed / timeout). The outer caller can only
+		// infer "completed" from the absence of a Go error — the wrapper
+		// knows when e.g. the binary is missing or the SDK init failed
+		// and had to skip. Without this merge, subfinder-not-in-PATH
+		// appears as "completed" in the UI.
+		switch src.Status {
+		case model.ToolRunSkipped, model.ToolRunFailed, model.ToolRunTimeout:
+			tr.Status = src.Status
+		}
+		for k, v := range src.Config {
+			tr.Config[k] = v
+		}
 	}
 	p.store.CreateToolRun(ctx, tr) //nolint:errcheck
 }
@@ -667,50 +733,6 @@ func extractInputsForNextPhase(phase string, result *detection.RunResult) []stri
 	return nil
 }
 
-func updateStats(stats *model.ScanStats, phase string, result *detection.RunResult) {
-	switch phase {
-	case "discovery":
-		for _, a := range result.Assets {
-			if a.Type == model.AssetTypeSubdomain {
-				stats.SubdomainsFound++
-			}
-		}
-	case "resolution":
-		for _, a := range result.Assets {
-			if a.Type == model.AssetTypeIPv4 || a.Type == model.AssetTypeIPv6 {
-				stats.IPsResolved++
-			}
-		}
-	case "port_scan":
-		stats.OpenPorts = len(result.Assets)
-	case "http_probe":
-		for _, a := range result.Assets {
-			switch a.Type {
-			case model.AssetTypeURL:
-				stats.HTTPProbed++
-			case model.AssetTypeTechnology:
-				stats.TechDetected++
-			}
-		}
-	case "assessment":
-		for _, f := range result.Findings {
-			stats.FindingsTotal++
-			switch f.Severity {
-			case model.SeverityCritical:
-				stats.FindingsCritical++
-			case model.SeverityHigh:
-				stats.FindingsHigh++
-			case model.SeverityMedium:
-				stats.FindingsMedium++
-			case model.SeverityLow:
-				stats.FindingsLow++
-			case model.SeverityInfo:
-				stats.FindingsInfo++
-			}
-		}
-	}
-}
-
 func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult) {
 	pp := newPipelinePrinter(os.Stderr)
 	switch tool.Phase() {
@@ -782,31 +804,46 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 			}
 		}
 		total := len(result.Findings)
-		pp.muted("    Scanned %d URLs, found %d findings (%d critical, %d high, %d medium, %d low, %d info)\n",
-			len(result.Assets)+total, total, crit, high, med, low, info)
+		// Pre-dedup emission count. The final per-scan findings total is
+		// reported at the end from the DB (see PrintSummary) — this phase
+		// line just tells the operator what nuclei emitted right now.
+		pp.muted("    Emitted %d findings (%d critical, %d high, %d medium, %d low, %d info)\n",
+			total, crit, high, med, low, info)
 	}
 }
 
-// WriteJSONResult writes the pipeline result as JSON to the given path.
-func WriteJSONResult(result *PipelineResult, path string) error {
-	type jsonResult struct {
-		ScanID     string          `json:"scan_id"`
-		Target     string          `json:"target"`
-		Type       string          `json:"type"`
-		Status     string          `json:"status"`
-		DurationMs int64           `json:"duration_ms"`
-		Stats      model.ScanStats `json:"stats"`
-		Phases     []PhaseResult   `json:"phases"`
-	}
+// JSONResult is the canonical JSON shape written by WriteJSONResult. Exposed
+// so consumers (webui, CI helpers) can share the type instead of re-declaring
+// it. Mirrors the scan.target_state / scan.delta / scan.work model exactly.
+type JSONResult struct {
+	ScanID      string            `json:"scan_id"`
+	Target      string            `json:"target"`
+	Type        string            `json:"type"`
+	Status      string            `json:"status"`
+	DurationMs  int64             `json:"duration_ms"`
+	TargetState model.TargetState `json:"target_state"`
+	Delta       model.ScanDelta   `json:"delta"`
+	Work        model.ScanWork    `json:"work"`
+	Phases      []PhaseResult     `json:"phases"`
+}
 
-	out := jsonResult{
-		ScanID:     result.ScanID,
-		Target:     result.Target,
-		Type:       "full",
-		Status:     "completed",
-		DurationMs: result.Duration.Milliseconds(),
-		Stats:      result.Stats,
-		Phases:     result.Phases,
+// WriteJSONResult writes the pipeline result as JSON to the given path.
+// Shape version: agent-spec 2.0 (see docs/agent-spec.md).
+func WriteJSONResult(result *PipelineResult, path string) error {
+	scanType := string(result.Type)
+	if scanType == "" {
+		scanType = string(model.ScanTypeFull)
+	}
+	out := JSONResult{
+		ScanID:      result.ScanID,
+		Target:      result.Target,
+		Type:        scanType,
+		Status:      "completed",
+		DurationMs:  result.Duration.Milliseconds(),
+		TargetState: result.TargetState,
+		Delta:       result.Delta,
+		Work:        result.Work,
+		Phases:      result.Phases,
 	}
 
 	data, err := json.MarshalIndent(out, "", "  ")
@@ -816,32 +853,132 @@ func WriteJSONResult(result *PipelineResult, path string) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// PrintSummary prints the findings summary table to stderr with colored severity.
+// PrintSummary prints a three-section human summary to stderr:
+//
+//	TARGET STATE — what currently exists on the target
+//	CHANGES      — what this scan changed (printed separately via PrintChangeSummary)
+//	WORK         — telemetry of the execution
+//
+// The CHANGES block is emitted earlier in the flow by PrintChangeSummary.
+// PrintSummary handles state + findings table + work.
 func PrintSummary(result *PipelineResult) {
 	pp := newPipelinePrinter(os.Stderr)
 
 	pp.theme.Success.Fprintf(os.Stderr, "\nScan completed in %s\n", formatDuration(result.Duration))
 
-	if result.Stats.FindingsTotal > 0 {
-		pp.theme.Bold.Fprintf(os.Stderr, "\nFINDINGS SUMMARY\n")
+	printTargetStateBlock(pp, result.TargetState)
+	printFindingsBlock(pp, result.TargetState)
+	printWorkBlock(pp, result.Work)
+}
 
-		w := tabwriter.NewWriter(os.Stderr, 0, 0, 3, ' ', 0)
-		pp.theme.Bold.Fprintln(w, "Severity\tCount")
-		pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
+//nolint:errcheck // stderr writes are unrecoverable and not actionable
+func printTargetStateBlock(pp *pipelinePrinter, state model.TargetState) {
+	if state.AssetsTotal == 0 && state.FindingsOpenTotal == 0 {
+		return
+	}
 
-		printSeverityRow(w, pp.theme.Critical, "CRITICAL", result.Stats.FindingsCritical, pp.theme.Muted)
-		printSeverityRow(w, pp.theme.High, "HIGH", result.Stats.FindingsHigh, pp.theme.Muted)
-		printSeverityRow(w, pp.theme.Medium, "MEDIUM", result.Stats.FindingsMedium, pp.theme.Muted)
-		printSeverityRow(w, pp.theme.Low, "LOW", result.Stats.FindingsLow, pp.theme.Muted)
-		printSeverityRow(w, pp.theme.Info, "INFO", result.Stats.FindingsInfo, pp.theme.Muted)
+	pp.theme.Bold.Fprintf(os.Stderr, "\nTARGET STATE\n")
 
-		pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
-		pp.theme.Bold.Fprintf(w, "%-12s\t%d\n", "TOTAL", result.Stats.FindingsTotal)
-		w.Flush()
+	// Render asset counts in a stable order. Known types first in pipeline
+	// order; any unknown types (from tools that aren't built-in) follow
+	// alphabetically so the output is deterministic.
+	known := []model.AssetType{
+		model.AssetTypeSubdomain, model.AssetTypeIPv4, model.AssetTypeIPv6,
+		model.AssetTypePort, model.AssetTypeURL, model.AssetTypeTechnology,
+		model.AssetTypeDomain, model.AssetTypeService,
+	}
+	seen := make(map[model.AssetType]bool, len(known))
+	parts := make([]string, 0, len(state.AssetsByType))
+	for _, t := range known {
+		if n, ok := state.AssetsByType[t]; ok && n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, pluralize(string(t), n)))
+			seen[t] = true
+		}
+	}
+	extras := make([]string, 0)
+	for t, n := range state.AssetsByType {
+		if !seen[t] && n > 0 {
+			extras = append(extras, fmt.Sprintf("%d %s", n, pluralize(string(t), n)))
+		}
+	}
+	sort.Strings(extras)
+	parts = append(parts, extras...)
 
-		fmt.Fprintln(os.Stderr, "")
-		pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings list` to see details.")
-		pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings show <id>` for full evidence.")
+	if len(parts) > 0 {
+		pp.muted("%s", "  "+strings.Join(parts, " · ")+"\n")
+	}
+
+	// Ports detail (open/filtered/…) when any ports exist.
+	if len(state.PortsByStatus) > 0 {
+		portParts := make([]string, 0, len(state.PortsByStatus))
+		statusOrder := []string{"open", "filtered", "closed", "unknown"}
+		seenStatus := make(map[string]bool)
+		for _, st := range statusOrder {
+			if n := state.PortsByStatus[st]; n > 0 {
+				portParts = append(portParts, fmt.Sprintf("%d %s", n, st))
+				seenStatus[st] = true
+			}
+		}
+		extraStatus := make([]string, 0)
+		for st, n := range state.PortsByStatus {
+			if !seenStatus[st] && n > 0 {
+				extraStatus = append(extraStatus, fmt.Sprintf("%d %s", n, st))
+			}
+		}
+		sort.Strings(extraStatus)
+		portParts = append(portParts, extraStatus...)
+		if len(portParts) > 0 {
+			pp.muted("%s", "  ports: "+strings.Join(portParts, ", ")+"\n")
+		}
+	}
+}
+
+//nolint:errcheck // all terminal writes below are unrecoverable and not actionable
+func printFindingsBlock(pp *pipelinePrinter, state model.TargetState) {
+	if state.FindingsOpenTotal == 0 {
+		return
+	}
+
+	pp.theme.Bold.Fprintf(os.Stderr, "\nFINDINGS (open)\n")
+
+	w := tabwriter.NewWriter(os.Stderr, 0, 0, 3, ' ', 0)
+	pp.theme.Bold.Fprintln(w, "Severity\tCount")
+	pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
+
+	printSeverityRow(w, pp.theme.Critical, "CRITICAL", state.FindingsOpen[model.SeverityCritical], pp.theme.Muted)
+	printSeverityRow(w, pp.theme.High, "HIGH", state.FindingsOpen[model.SeverityHigh], pp.theme.Muted)
+	printSeverityRow(w, pp.theme.Medium, "MEDIUM", state.FindingsOpen[model.SeverityMedium], pp.theme.Muted)
+	printSeverityRow(w, pp.theme.Low, "LOW", state.FindingsOpen[model.SeverityLow], pp.theme.Muted)
+	printSeverityRow(w, pp.theme.Info, "INFO", state.FindingsOpen[model.SeverityInfo], pp.theme.Muted)
+
+	pp.theme.Muted.Fprintln(w, strings.Repeat("─", 20)+"\t")
+	pp.theme.Bold.Fprintf(w, "%-12s\t%d\n", "TOTAL", state.FindingsOpenTotal)
+	w.Flush()
+
+	fmt.Fprintln(os.Stderr, "")
+	pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings list` to see details.")
+	pp.theme.Muted.Fprintln(os.Stderr, "Use `surfbot findings show <id>` for full evidence.")
+}
+
+//nolint:errcheck // stderr writes are unrecoverable and not actionable
+func printWorkBlock(pp *pipelinePrinter, work model.ScanWork) {
+	if work.ToolsRun == 0 {
+		return
+	}
+	pp.theme.Bold.Fprintf(os.Stderr, "\nWORK\n")
+	details := fmt.Sprintf("  %d %s run", work.ToolsRun, pluralize("tool", work.ToolsRun))
+	if work.ToolsFailed > 0 {
+		details += fmt.Sprintf(", %d failed", work.ToolsFailed)
+	}
+	if work.ToolsSkipped > 0 {
+		details += fmt.Sprintf(", %d skipped", work.ToolsSkipped)
+	}
+	if work.RawEmissions > 0 {
+		details += fmt.Sprintf(" · %d raw emissions (pre-dedup)", work.RawEmissions)
+	}
+	pp.muted("%s\n", details)
+	if len(work.PhasesRun) > 0 {
+		pp.muted("%s", "  phases: "+strings.Join(work.PhasesRun, " → ")+"\n")
 	}
 }
 

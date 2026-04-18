@@ -82,20 +82,34 @@ type overviewResponse struct {
 }
 
 
+// scanSummary mirrors the three-concept Scan model (agent-spec 2.0) so the
+// dashboard can render target_state / delta / work sections without a
+// second round-trip. FindingsCount is kept as a flat convenience for the
+// existing "Findings" cell; new consumers should read TargetState directly.
 type scanSummary struct {
-	ID              string     `json:"id"`
-	Target          string     `json:"target"`
-	Status          string     `json:"status"`
-	StartedAt       *time.Time `json:"started_at"`
-	FinishedAt      *time.Time `json:"finished_at"`
-	DurationSeconds int        `json:"duration_seconds"`
-	FindingsCount   int        `json:"findings_count"`
+	ID              string            `json:"id"`
+	Target          string            `json:"target"`
+	Status          string            `json:"status"`
+	StartedAt       *time.Time        `json:"started_at"`
+	FinishedAt      *time.Time        `json:"finished_at"`
+	DurationSeconds int               `json:"duration_seconds"`
+	FindingsCount   int               `json:"findings_count"`
+	TargetState     model.TargetState `json:"target_state"`
+	Delta           model.ScanDelta   `json:"delta"`
+	Work            model.ScanWork    `json:"work"`
 }
 
+// changeSummary is the dashboard's "Changes Since Last Scan" card payload.
+// Mirrors a flattened view of model.ScanDelta — totals collapsed across
+// asset types and severities so the small card stays readable. The richer
+// per-type breakdown lives in last_scan.delta for clients that want it.
 type changeSummary struct {
-	NewFindings       int `json:"new_findings"`
 	NewAssets         int `json:"new_assets"`
 	DisappearedAssets int `json:"disappeared_assets"`
+	ModifiedAssets    int `json:"modified_assets"`
+	NewFindings       int `json:"new_findings"`
+	ResolvedFindings  int `json:"resolved_findings"`
+	IsBaseline        bool `json:"is_baseline"`
 }
 
 type agentInfo struct {
@@ -190,42 +204,59 @@ func (h *handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 			StartedAt:       last.StartedAt,
 			FinishedAt:      last.FinishedAt,
 			DurationSeconds: dur,
-			FindingsCount:   last.Stats.FindingsTotal,
+			FindingsCount:   last.TargetState.FindingsOpenTotal,
+			TargetState:     last.TargetState,
+			Delta:           last.Delta,
+			Work:            last.Work,
 		}
-		resp.ChangesSinceLast = h.getChangeSummary(ctx, last.ID)
+		resp.ChangesSinceLast = changeSummaryFromDelta(last.Delta)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *handler) getChangeSummary(ctx context.Context, scanID string) *changeSummary {
-	changes, err := h.store.ListAssetChanges(ctx, storage.AssetChangeListOptions{
-		ScanID: scanID,
-		Limit:  1000,
-	})
-	if err != nil {
-		return nil
+// changeSummaryFromDelta flattens a ScanDelta into the dashboard's compact
+// "Changes Since Last Scan" card payload. Replaces the previous
+// getChangeSummary which re-queried asset_changes and never populated
+// new_findings (latent bug — see SUR-244 follow-up). Reads from the
+// already-persisted delta so backend and CLI agree on what changed.
+func changeSummaryFromDelta(delta model.ScanDelta) *changeSummary {
+	cs := &changeSummary{IsBaseline: delta.IsBaseline}
+	for _, n := range delta.NewAssets {
+		cs.NewAssets += n
 	}
-
-	cs := &changeSummary{}
-	for _, c := range changes {
-		switch c.ChangeType {
-		case model.ChangeTypeAppeared:
-			cs.NewAssets++
-		case model.ChangeTypeDisappeared:
-			cs.DisappearedAssets++
-		}
+	for _, n := range delta.DisappearedAssets {
+		cs.DisappearedAssets += n
+	}
+	for _, n := range delta.ModifiedAssets {
+		cs.ModifiedAssets += n
+	}
+	for _, n := range delta.NewFindings {
+		cs.NewFindings += n
+	}
+	for _, n := range delta.ResolvedFindings {
+		cs.ResolvedFindings += n
 	}
 	return cs
 }
 
 // --- Findings ---
 
+// findingEnriched extends a Finding with the affected asset's value and type
+// so the webui can render the distinguishing host/endpoint column without a
+// per-row round-trip. Asset fields are derived via a single bulk lookup
+// keyed by asset_id at list time.
+type findingEnriched struct {
+	model.Finding
+	AssetValue string `json:"asset_value,omitempty"`
+	AssetType  string `json:"asset_type,omitempty"`
+}
+
 type findingsResponse struct {
-	Findings []model.Finding `json:"findings"`
-	Total    int             `json:"total"`
-	Page     int             `json:"page"`
-	Limit    int             `json:"limit"`
+	Findings []findingEnriched `json:"findings"`
+	Total    int               `json:"total"`
+	Page     int               `json:"page"`
+	Limit    int               `json:"limit"`
 }
 
 func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
@@ -279,11 +310,50 @@ func (h *handler) handleFindings(w http.ResponseWriter, r *http.Request) {
 	total, _ := h.store.CountFindingsFiltered(r.Context(), opts)
 
 	writeJSON(w, http.StatusOK, findingsResponse{
-		Findings: findings,
+		Findings: h.enrichFindings(r.Context(), findings),
 		Total:    total,
 		Page:     page,
 		Limit:    limit,
 	})
+}
+
+// enrichFindings resolves each finding's asset_id to the asset's value and
+// type via a single pass over the unique asset_ids. Findings whose asset no
+// longer exists (e.g. deleted target) are returned with empty asset fields
+// rather than dropped — the raw finding data is still useful.
+//
+// Bulk-loading all referenced assets at once keeps list-page rendering at
+// O(1) DB round-trips regardless of page size.
+func (h *handler) enrichFindings(ctx context.Context, findings []model.Finding) []findingEnriched {
+	out := make([]findingEnriched, len(findings))
+	if len(findings) == 0 {
+		return out
+	}
+
+	// Collect unique asset_ids to avoid repeated lookups when many
+	// findings share the same host.
+	seen := make(map[string]struct{}, len(findings))
+	for _, f := range findings {
+		if f.AssetID != "" {
+			seen[f.AssetID] = struct{}{}
+		}
+	}
+	lookup := make(map[string]model.Asset, len(seen))
+	for id := range seen {
+		if a, err := h.store.GetAsset(ctx, id); err == nil && a != nil {
+			lookup[id] = *a
+		}
+	}
+
+	for i, f := range findings {
+		e := findingEnriched{Finding: f}
+		if a, ok := lookup[f.AssetID]; ok {
+			e.AssetValue = a.Value
+			e.AssetType = string(a.Type)
+		}
+		out[i] = e
+	}
+	return out
 }
 
 func (h *handler) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
@@ -891,8 +961,8 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[webui] scan error for %s: %v", target.Value, err)
 			return
 		}
-		log.Printf("[webui] scan completed for %s: %d findings, %d assets in %s",
-			target.Value, result.TotalFindings, result.TotalAssets, result.Duration)
+		log.Printf("[webui] scan completed for %s: %d findings open, %d assets in %s",
+			target.Value, result.TargetState.FindingsOpenTotal, result.TargetState.AssetsTotal, result.Duration)
 	}()
 
 	resp := map[string]any{
