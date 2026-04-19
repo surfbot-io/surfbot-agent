@@ -1373,6 +1373,86 @@ tr.finding-detail-row td.finding-detail-cell {
 .error-banner ul { margin: 6px 0 0 18px; color: var(--text-secondary); font-size: 12px; }
 .error-banner .mono { color: var(--sev-critical); font-weight: 600; }
 
+/* SPEC-SCHED1.4b: form fields + inline errors. */
+.form-field { margin-bottom: 14px; }
+.form-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.form-required { color: var(--sev-critical); margin-left: 2px; }
+.form-help { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.form-input-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.field-error {
+  font-size: 12px;
+  color: var(--sev-critical);
+  margin-top: 4px;
+}
+
+/* Modal dialog (SCHED1.4b). */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+body.modal-open { overflow: hidden; }
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+  width: 100%;
+  max-width: 540px;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-lg { max-width: 780px; }
+.modal-sm { max-width: 420px; }
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { margin: 0; font-size: 15px; }
+.modal-close {
+  background: transparent; border: 0; color: var(--text-secondary);
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 4px 8px;
+}
+.modal-close:hover { color: var(--text-primary); }
+.modal-body { padding: 18px; overflow: auto; flex: 1; }
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* Bulk actions bar (SCHED1.4b). */
+.bulk-actions-bar {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  border-radius: var(--radius);
+  z-index: 10;
+}
+.bulk-actions-bar.hidden { display: none; }
+.bulk-actions-count { font-size: 13px; color: var(--text-secondary); }
+.bulk-actions-count strong { color: var(--text-primary); }
+.bulk-actions-buttons { display: flex; gap: 8px; }
+tr.row-selected { background: rgba(0,229,153,0.06); }
+
 /* Schedule/template/blackout detail grids reuse .detail-grid but the
  * rrule/JSON blocks benefit from a fixed-height scroll. */
 .json-block {

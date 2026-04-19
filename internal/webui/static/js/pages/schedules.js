@@ -63,23 +63,31 @@ const SchedulesPage = {
     if (items.length === 0) {
       const hint = (f.status || f.target_id || f.template_id)
         ? 'No schedules match the current filters.'
-        : 'No schedules yet. Create one via CLI: <code class="mono">surfbot schedule create --target &lt;id&gt; --template &lt;id&gt; --rrule \'...\' --dtstart \'...\'</code>';
+        : 'No schedules yet. Click <strong>New schedule</strong> above or use <code class="mono">surfbot schedule create</code>.';
       return `
-        <div class="page-header"><h2>Schedules</h2></div>
+        <div class="page-header">
+          <h2>Schedules</h2>
+          <div style="margin-left:auto">
+            <button type="button" class="btn btn-primary" id="schedules-new">New schedule</button>
+          </div>
+        </div>
         ${filterBar}
         ${Components.emptyState('No schedules', hint)}
       `;
     }
 
     const rows = items.map(s => `
-      <tr class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">
-        <td class="mono">${Components.truncateID(s.id)}</td>
-        <td>${escapeHtml(s.name || '-')}</td>
-        <td class="mono">${Components.truncateID(s.target_id)}</td>
-        <td class="mono">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
-        <td>${Components.scheduleStatusBadge(s.status)}</td>
-        <td>${Components.rruleCompact(s.rrule)}</td>
-        <td class="text-muted">${Components.nextRun(s.next_run_at)}</td>
+      <tr data-schedule-id="${encodeURIComponent(s.id)}">
+        <td class="bulk-cell" onclick="event.stopPropagation()">
+          <input type="checkbox" class="bulk-row-check" data-id="${escapeHtml(s.id)}">
+        </td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.id)}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${escapeHtml(s.name || '-')}</td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.target_id)}</td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.scheduleStatusBadge(s.status)}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.rruleCompact(s.rrule)}</td>
+        <td class="text-muted clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.nextRun(s.next_run_at)}</td>
       </tr>
     `).join('');
 
@@ -89,13 +97,26 @@ const SchedulesPage = {
       <div class="page-header">
         <h2>Schedules</h2>
         <p>${total} schedule${total === 1 ? '' : 's'}</p>
+        <div style="margin-left:auto">
+          <button type="button" class="btn btn-primary" id="schedules-new">New schedule</button>
+        </div>
       </div>
       ${filterBar}
+      <div id="schedules-bulk-error" style="margin-bottom:8px"></div>
       ${Components.table(
-        ['ID', 'Name', 'Target', 'Template', 'Status', 'RRULE', 'Next run'],
+        ['<input type="checkbox" id="bulk-select-all" title="Select all on this page">',
+         'ID', 'Name', 'Target', 'Template', 'Status', 'RRULE', 'Next run'],
         [rows]
       )}
       ${pager}
+      <div id="schedules-bulk-bar-host">${Components.bulkActionsBar({
+        selectedCount: 0,
+        actions: [
+          { label: 'Pause selected' },
+          { label: 'Resume selected' },
+          { label: 'Delete selected', danger: true },
+        ],
+      })}</div>
     `;
   },
 
@@ -127,18 +148,188 @@ const SchedulesPage = {
 
   bindEvents(app, f) {
     const form = document.getElementById('schedules-filters');
-    if (!form) return;
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const next = {
-        status: document.getElementById('filter-status').value,
-        target_id: document.getElementById('filter-target').value.trim(),
-        template_id: document.getElementById('filter-template').value.trim(),
-        limit: f.limit,
-        offset: 0,
-      };
-      location.hash = this.hashFor(next, 0);
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const next = {
+          status: document.getElementById('filter-status').value,
+          target_id: document.getElementById('filter-target').value.trim(),
+          template_id: document.getElementById('filter-template').value.trim(),
+          limit: f.limit,
+          offset: 0,
+        };
+        location.hash = this.hashFor(next, 0);
+      });
+    }
+    const newBtn = document.getElementById('schedules-new');
+    if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm(app, f));
+
+    // Bulk selection wiring. Selection state lives on the page module
+    // as a Set<string> so toggling checkboxes doesn't force a list
+    // re-render; after a successful bulk op we refresh the whole page
+    // and selection resets naturally.
+    this._selected = new Set();
+    const checks = app.querySelectorAll('.bulk-row-check');
+    checks.forEach(cb => cb.addEventListener('change', () => this.onRowCheck(app, f)));
+
+    const all = document.getElementById('bulk-select-all');
+    if (all) all.addEventListener('change', () => {
+      checks.forEach(cb => { cb.checked = all.checked; });
+      this.onRowCheck(app, f);
     });
+
+    this.rebindBulkBar(app, f);
+  },
+
+  onRowCheck(app, f) {
+    const checks = app.querySelectorAll('.bulk-row-check');
+    this._selected = new Set();
+    checks.forEach(cb => {
+      const row = cb.closest('tr');
+      if (cb.checked) {
+        this._selected.add(cb.dataset.id);
+        if (row) row.classList.add('row-selected');
+      } else if (row) {
+        row.classList.remove('row-selected');
+      }
+    });
+    const host = document.getElementById('schedules-bulk-bar-host');
+    if (host) {
+      host.innerHTML = Components.bulkActionsBar({
+        selectedCount: this._selected.size,
+        actions: [
+          { label: 'Pause selected' },
+          { label: 'Resume selected' },
+          { label: 'Delete selected', danger: true },
+        ],
+      });
+      this.rebindBulkBar(app, f);
+    }
+  },
+
+  rebindBulkBar(app, f) {
+    const host = document.getElementById('schedules-bulk-bar-host');
+    if (!host) return;
+    const btns = host.querySelectorAll('[data-bulk-action]');
+    btns.forEach(btn => {
+      const idx = parseInt(btn.dataset.bulkAction, 10);
+      btn.addEventListener('click', () => {
+        if (idx === 0) this.runBulk(app, f, 'pause');
+        else if (idx === 1) this.runBulk(app, f, 'resume');
+        else if (idx === 2) this.confirmBulkDelete(app, f);
+      });
+    });
+  },
+
+  async confirmBulkDelete(app, f) {
+    const ids = Array.from(this._selected);
+    if (!ids.length) return;
+    const ok = await Components.confirmDialog({
+      title: 'Delete schedules?',
+      message: `Delete ${ids.length} schedule(s)? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.runBulk(app, f, 'delete');
+  },
+
+  async runBulk(app, f, operation) {
+    const ids = Array.from(this._selected);
+    if (!ids.length) return;
+    const errBox = document.getElementById('schedules-bulk-error');
+    if (errBox) errBox.innerHTML = '';
+    try {
+      const resp = await API.bulkSchedules({ operation, schedule_ids: ids });
+      const succeeded = resp && resp.succeeded ? resp.succeeded.length : 0;
+      const failed = resp && resp.failed ? resp.failed : [];
+      if (errBox) {
+        const parts = [`<div class="text-muted">Bulk ${escapeHtml(operation)}: <strong>${succeeded}</strong> succeeded, <strong>${failed.length}</strong> failed.</div>`];
+        if (failed.length) {
+          parts.push('<ul>' + failed.map(fe =>
+            `<li class="mono">${escapeHtml(fe.schedule_id)}: ${escapeHtml(fe.error)}</li>`
+          ).join('') + '</ul>');
+        }
+        errBox.innerHTML = parts.join('');
+      }
+      // Refresh the list so paused→active (etc.) visibly flips and
+      // deleted rows disappear. Keep filters.
+      SchedulesPage.render(app, f);
+    } catch (err) {
+      if (errBox) errBox.innerHTML = Components.errorBanner(err);
+    }
+  },
+
+  // --- SPEC-SCHED1.4b: create / edit form modal ---
+
+  openCreateForm(app, listFilters) {
+    this.openForm({
+      mode: 'create',
+      onSaved: () => SchedulesPage.render(app, listFilters || {}),
+    });
+  },
+
+  openEditForm(app, schedule) {
+    this.openForm({
+      mode: 'edit',
+      schedule,
+      onSaved: () => SchedulesPage.renderDetail(app, schedule.id),
+    });
+  },
+
+  openForm({ mode, schedule, onSaved }) {
+    const s = schedule || {};
+    const body = `
+      <form id="schedule-form" novalidate>
+        <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
+        ${Components.formInput({ label: 'Name', name: 'name', value: s.name, required: true })}
+        ${Components.formInput({
+          label: 'Target ID', name: 'target_id', value: s.target_id, required: true,
+          placeholder: 'UUID from /targets',
+          help: mode === 'edit' ? 'Target cannot be changed after creation.' : '',
+        })}
+        ${Components.formInput({ label: 'Template ID', name: 'template_id', value: s.template_id || '',
+          help: 'Optional. Omit to run with tool_config directly.' })}
+        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: s.rrule })}
+        ${Components.formDatetime({ label: 'DTSTART', name: 'dtstart', value: s.dtstart, required: true })}
+        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: s.timezone || 'UTC', required: true })}
+        ${Components.formInput({
+          label: 'Estimated duration (seconds)', name: 'estimated_duration_seconds',
+          type: 'number', value: '',
+          help: 'Used for overlap checks at create/update time. Leave blank to use the server default (3600s).',
+        })}
+        ${mode === 'edit' ? Components.formSelect({
+          label: 'Status', name: 'status',
+          options: [{ value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }],
+          value: s.status || 'active',
+        }) : ''}
+      </form>
+    `;
+
+    const m = Components.modal({
+      title: mode === 'create' ? 'New schedule' : 'Edit schedule',
+      body,
+      size: 'md',
+      primaryAction: {
+        label: mode === 'create' ? 'Create' : 'Save',
+        onClick: async ({ close }) => {
+          const form = document.getElementById('schedule-form');
+          const data = readScheduleForm(form, mode);
+          if (!data) return;
+          try {
+            if (mode === 'create') await API.createSchedule(data);
+            else await API.updateSchedule(schedule.id, data);
+            if (onSaved) onSaved();
+            close('saved');
+          } catch (err) {
+            showFormError(form, err);
+          }
+        },
+      },
+      secondaryAction: { label: 'Cancel' },
+    });
+    // Non-blocking RRULE syntax warning wires after the DOM is in place.
+    Components.rruleAttachBlurCheck(m.root.querySelector('#schedule-form'), 'rrule');
   },
 
   // --- Schedule detail ---
@@ -161,11 +352,60 @@ const SchedulesPage = {
         upcoming = [];
       }
       app.innerHTML = this.detailTemplate(s, upcoming);
+      this.bindDetailActions(app, s);
     } catch (err) {
       app.innerHTML = `
         ${Components.backLink('#/schedules', 'Back to schedules')}
         ${Components.errorBanner(err)}
       `;
+    }
+  },
+
+  bindDetailActions(app, s) {
+    const editBtn = document.getElementById('schedule-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', () => this.openEditForm(app, s));
+
+    const pauseBtn = document.getElementById('schedule-pause-btn');
+    if (pauseBtn) pauseBtn.addEventListener('click', () => this.setPauseState(app, s, false));
+
+    const resumeBtn = document.getElementById('schedule-resume-btn');
+    if (resumeBtn) resumeBtn.addEventListener('click', () => this.setPauseState(app, s, true));
+
+    const delBtn = document.getElementById('schedule-delete-btn');
+    if (delBtn) delBtn.addEventListener('click', () => this.confirmDelete(app, s));
+  },
+
+  async setPauseState(app, s, toActive) {
+    const btnId = toActive ? 'schedule-resume-btn' : 'schedule-pause-btn';
+    const btn = document.getElementById(btnId);
+    const origLabel = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      if (toActive) await API.resumeSchedule(s.id);
+      else await API.pauseSchedule(s.id);
+      SchedulesPage.renderDetail(app, s.id);
+    } catch (err) {
+      const box = document.getElementById('schedule-action-error');
+      if (box) box.innerHTML = Components.errorBanner(err);
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    }
+  },
+
+  async confirmDelete(app, s) {
+    const ok = await Components.confirmDialog({
+      title: 'Delete schedule?',
+      message: `Delete schedule "${s.name || s.id}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await API.deleteSchedule(s.id);
+      location.hash = '#/schedules';
+      SchedulesPage.render(app, {});
+    } catch (err) {
+      const box = document.getElementById('schedule-action-error');
+      if (box) box.innerHTML = Components.errorBanner(err);
     }
   },
 
@@ -193,6 +433,14 @@ const SchedulesPage = {
           <div class="detail-header">
             <h2>${escapeHtml(s.name || s.id)}</h2>
             ${Components.scheduleStatusBadge(s.status)}
+            <div style="margin-left:auto;display:flex;gap:8px" id="schedule-detail-actions">
+              <button type="button" class="btn btn-ghost" id="schedule-edit-btn">Edit</button>
+              ${s.status === 'active'
+                ? '<button type="button" class="btn btn-ghost" id="schedule-pause-btn">Pause</button>'
+                : '<button type="button" class="btn btn-ghost" id="schedule-resume-btn">Resume</button>'}
+              <button type="button" class="btn btn-danger" id="schedule-delete-btn">Delete</button>
+            </div>
+            <div id="schedule-action-error" style="margin-top:8px"></div>
           </div>
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(s.id)}</span>
@@ -232,3 +480,73 @@ const SchedulesPage = {
     `;
   },
 };
+
+// readScheduleForm serializes the schedule form into the API shape.
+// DTSTART is converted from "datetime-local" ("YYYY-MM-DDTHH:MM") to a
+// UTC ISO string; empty template_id is submitted as "" so the server
+// treats it as "no template" (edit flow uses clear_template when the
+// caller wants to explicitly drop the link, but the UI doesn't surface
+// that nuance yet — 1.4c may expose a dedicated "clear template" ticker).
+// Returns null after surfacing field errors when the form is syntactically
+// bad at the client level.
+function readScheduleForm(form, mode) {
+  if (!form) return null;
+  const fd = new FormData(form);
+  const out = {
+    name: (fd.get('name') || '').toString().trim(),
+    target_id: (fd.get('target_id') || '').toString().trim(),
+    template_id: (fd.get('template_id') || '').toString().trim(),
+    rrule: (fd.get('rrule') || '').toString().trim(),
+    timezone: (fd.get('timezone') || '').toString().trim() || 'UTC',
+  };
+  const dtLocal = (fd.get('dtstart') || '').toString().trim();
+  if (dtLocal) {
+    const d = new Date(dtLocal);
+    if (isNaN(d.getTime())) {
+      Components.applyFieldErrors(form, [{ field: 'dtstart', message: 'invalid date/time' }]);
+      return null;
+    }
+    out.dtstart = d.toISOString();
+  }
+  const dur = (fd.get('estimated_duration_seconds') || '').toString().trim();
+  if (dur) {
+    const n = parseInt(dur, 10);
+    if (isNaN(n) || n < 0) {
+      Components.applyFieldErrors(form, [{ field: 'estimated_duration_seconds', message: 'must be a non-negative integer' }]);
+      return null;
+    }
+    out.estimated_duration_seconds = n;
+  }
+  // template_id: empty string means "not set" — drop the key on create
+  // so the omitempty JSON handling on the server treats it naturally.
+  // On edit we send "" if the user cleared it so the server applies
+  // clear_template semantics via the partial patch.
+  if (!out.template_id) {
+    delete out.template_id;
+  }
+  if (mode === 'edit') {
+    const status = (fd.get('status') || '').toString();
+    if (status === 'active' || status === 'paused') {
+      out.enabled = status === 'active';
+    }
+  }
+  return out;
+}
+
+// showFormError routes an APIError into the right surface: 422 with
+// field_errors → inline via applyFieldErrors; everything else → the
+// general banner at the top of the form.
+function showFormError(form, err) {
+  if (!form) return;
+  if (err && err.fieldErrors && err.fieldErrors.length) {
+    Components.applyFieldErrors(form, err.fieldErrors);
+    return;
+  }
+  const general = form.querySelector('[data-field-error="__general__"]');
+  if (general) {
+    const title = (err && err.problem && err.problem.title) || (err && err.message) || 'Request failed';
+    const detail = err && err.problem && err.problem.detail ? ' — ' + err.problem.detail : '';
+    general.textContent = title + detail;
+    general.style.display = 'block';
+  }
+}
