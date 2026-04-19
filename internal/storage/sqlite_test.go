@@ -32,10 +32,10 @@ func TestNewSQLiteStore(t *testing.T) {
 	}
 
 	// Verify agent_meta seeded. schema_version tracks the latest applied
-	// migration: 003 bumps it to "3".
+	// migration: 0004 bumps it to "4".
 	v, err := s.GetMeta(ctx, "schema_version")
 	require.NoError(t, err)
-	assert.Equal(t, "3", v)
+	assert.Equal(t, "4", v)
 }
 
 func TestTargetCRUD(t *testing.T) {

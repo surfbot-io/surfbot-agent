@@ -202,6 +202,17 @@ func (s *SQLiteStore) runMigrations() error {
 		}
 	}
 
+	schemaVersion, _ = s.getSchemaVersion()
+	if schemaVersion < 4 {
+		m004, err := migrationsFS.ReadFile("migrations/0004_first_class_schedules.sql")
+		if err != nil {
+			return fmt.Errorf("reading migration 0004: %w", err)
+		}
+		if _, err = s.db.Exec(string(m004)); err != nil {
+			return fmt.Errorf("executing migration 0004: %w", err)
+		}
+	}
+
 	return nil
 }
 
