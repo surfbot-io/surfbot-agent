@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -58,12 +57,12 @@ func silentLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestLegacyScanRunner_IgnoresToolConfig(t *testing.T) {
+func TestScanRunner_HonorsToolConfig(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_42"}
-	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
 
 	tc := model.ToolConfig{}
-	require.NoError(t, model.SetTool(tc, "nuclei", map[string]string{"severity": "critical"}))
+	require.NoError(t, model.SetTool(tc, "nuclei", model.NucleiParams{Severity: []string{"critical"}}))
 	eff := model.EffectiveConfig{
 		RRule:      "FREQ=DAILY",
 		Timezone:   "UTC",
@@ -74,18 +73,25 @@ func TestLegacyScanRunner_IgnoresToolConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "s_42", scanID)
 	assert.Equal(t, "tgt_1", orch.gotID)
-	// Pre-SCHED1 behavior: full scan, no Tools restriction.
-	assert.Equal(t, model.ScanTypeFull, orch.gotOpts.ScanType)
-	assert.Empty(t, orch.gotOpts.Tools)
-	// Defensive sanity: the tool config from the schedule must not have leaked
-	// into the pipeline options.
-	raw, _ := json.Marshal(orch.gotOpts)
-	assert.NotContains(t, string(raw), "severity")
+	// ToolConfig must reach the pipeline so it can per-unmarshal into typed
+	// RunOptions for each detection tool.
+	assert.Equal(t, tc, orch.gotOpts.ToolConfig,
+		"scanRunner must forward EffectiveConfig.ToolConfig into PipelineOptions")
 }
 
-func TestLegacyScanRunner_PropagatesCtx(t *testing.T) {
+func TestScanRunner_UsesDefaultsWhenEmpty(t *testing.T) {
+	orch := &fakeOrchestrator{scanID: "s_default"}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
+
+	_, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{})
+	require.NoError(t, err)
+	assert.Empty(t, orch.gotOpts.ToolConfig,
+		"empty EffectiveConfig.ToolConfig must surface as nil/empty in PipelineOptions; tools then derive defaults")
+}
+
+func TestScanRunner_PropagatesCtx(t *testing.T) {
 	orch := &fakeOrchestrator{blockCh: make(chan struct{})}
-	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -102,9 +108,9 @@ func TestLegacyScanRunner_PropagatesCtx(t *testing.T) {
 	assert.True(t, orch.observed, "orchestrator must observe ctx cancellation")
 }
 
-func TestLegacyScanRunner_ReturnsScanID(t *testing.T) {
+func TestScanRunner_ReturnsScanID(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_123"}
-	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
 
 	scanID, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{})
 	require.NoError(t, err)
@@ -112,11 +118,28 @@ func TestLegacyScanRunner_ReturnsScanID(t *testing.T) {
 	assert.Equal(t, 1, orch.calls)
 }
 
-func TestLegacyScanRunner_PropagatesError(t *testing.T) {
+func TestScanRunner_PropagatesError(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_partial", runErr: errors.New("boom")}
-	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
 
 	scanID, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{})
 	require.Error(t, err)
 	assert.Equal(t, "s_partial", scanID)
+}
+
+func TestScanRunner_InvalidToolConfigForwardsAnyway(t *testing.T) {
+	// Malformed JSON for one tool must not fail the runner — the pipeline's
+	// applyToolConfig falls through silently and the tool defaults kick in.
+	// Here we only assert scanRunner forwards whatever ToolConfig came in;
+	// pipeline.applyToolConfig is responsible for the per-tool fallback.
+	orch := &fakeOrchestrator{scanID: "s_ok"}
+	r := &ScanRunner{orchestrator: orch, log: silentLog()}
+
+	tc := model.ToolConfig{
+		"nuclei": []byte(`{"severity": "not-an-array"}`),
+		"naabu":  []byte(`{"ports": "22,80"}`),
+	}
+	_, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{ToolConfig: tc})
+	require.NoError(t, err)
+	assert.Equal(t, tc, orch.gotOpts.ToolConfig)
 }

@@ -21,11 +21,19 @@ import (
 )
 
 // PipelineOptions configures a pipeline execution.
+//
+// SCHED1.2c: ToolConfig carries the per-schedule typed tool params
+// resolved by scanRunner from a Schedule's EffectiveConfig. The pipeline
+// pre-unmarshals each registered tool's payload into the matching
+// detection.RunOptions.<Tool>Params pointer; tools then read their typed
+// field, falling back to model.DefaultXxxParams() per-field. ToolConfig
+// is optional — when nil/empty the pipeline preserves pre-1.2c behavior.
 type PipelineOptions struct {
-	ScanType  model.ScanType // full|quick|discovery (default: full)
-	Tools     []string       // Specific tools to run (empty = all available)
-	RateLimit int            // Global rate limit (0 = per-tool defaults)
-	Timeout   int            // Per-phase timeout in seconds (0 = 300s default)
+	ScanType   model.ScanType   // full|quick|discovery (default: full)
+	Tools      []string         // Specific tools to run (empty = all available)
+	RateLimit  int              // Global rate limit (0 = per-tool defaults)
+	Timeout    int              // Per-phase timeout in seconds (0 = 300s default)
+	ToolConfig model.ToolConfig // SCHED1.2c per-tool typed params
 }
 
 // PipelineResult holds the output of a pipeline execution.
@@ -43,6 +51,46 @@ type PipelineResult struct {
 	Delta       model.ScanDelta
 	Work        model.ScanWork
 	Phases      []PhaseResult
+}
+
+// applyToolConfig pre-unmarshals the per-tool entry from the
+// per-schedule ToolConfig into the matching typed pointer on
+// RunOptions. Unknown tool names and unmarshal failures fall through
+// silently — each tool is responsible for its own default fallback via
+// resolveXxxParams, so a malformed payload just leaves RunOptions
+// untouched and the tool runs with defaults.
+func applyToolConfig(opts *detection.RunOptions, toolName string, tc model.ToolConfig) {
+	raw, ok := tc[toolName]
+	if !ok || len(raw) == 0 {
+		return
+	}
+	switch toolName {
+	case "nuclei":
+		var p model.NucleiParams
+		if err := json.Unmarshal(raw, &p); err == nil {
+			opts.NucleiParams = &p
+		}
+	case "naabu":
+		var p model.NaabuParams
+		if err := json.Unmarshal(raw, &p); err == nil {
+			opts.NaabuParams = &p
+		}
+	case "httpx":
+		var p model.HttpxParams
+		if err := json.Unmarshal(raw, &p); err == nil {
+			opts.HttpxParams = &p
+		}
+	case "subfinder":
+		var p model.SubfinderParams
+		if err := json.Unmarshal(raw, &p); err == nil {
+			opts.SubfinderParams = &p
+		}
+	case "dnsx":
+		var p model.DnsxParams
+		if err := json.Unmarshal(raw, &p); err == nil {
+			opts.DnsxParams = &p
+		}
+	}
 }
 
 // PhaseResult describes the outcome of a single pipeline phase.
@@ -207,6 +255,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			}
 			runOpts.ExtraArgs["profile"] = "fast"
 		}
+		applyToolConfig(&runOpts, tool.Name(), opts.ToolConfig)
 
 		startTime := time.Now()
 		toolResult, toolErr := tool.Run(phaseCtx, inputs, runOpts)
