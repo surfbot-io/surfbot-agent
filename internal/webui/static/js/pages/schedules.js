@@ -63,9 +63,14 @@ const SchedulesPage = {
     if (items.length === 0) {
       const hint = (f.status || f.target_id || f.template_id)
         ? 'No schedules match the current filters.'
-        : 'No schedules yet. Create one via CLI: <code class="mono">surfbot schedule create --target &lt;id&gt; --template &lt;id&gt; --rrule \'...\' --dtstart \'...\'</code>';
+        : 'No schedules yet. Click <strong>New schedule</strong> above or use <code class="mono">surfbot schedule create</code>.';
       return `
-        <div class="page-header"><h2>Schedules</h2></div>
+        <div class="page-header">
+          <h2>Schedules</h2>
+          <div style="margin-left:auto">
+            <button type="button" class="btn btn-primary" id="schedules-new">New schedule</button>
+          </div>
+        </div>
         ${filterBar}
         ${Components.emptyState('No schedules', hint)}
       `;
@@ -89,6 +94,9 @@ const SchedulesPage = {
       <div class="page-header">
         <h2>Schedules</h2>
         <p>${total} schedule${total === 1 ? '' : 's'}</p>
+        <div style="margin-left:auto">
+          <button type="button" class="btn btn-primary" id="schedules-new">New schedule</button>
+        </div>
       </div>
       ${filterBar}
       ${Components.table(
@@ -127,18 +135,93 @@ const SchedulesPage = {
 
   bindEvents(app, f) {
     const form = document.getElementById('schedules-filters');
-    if (!form) return;
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const next = {
-        status: document.getElementById('filter-status').value,
-        target_id: document.getElementById('filter-target').value.trim(),
-        template_id: document.getElementById('filter-template').value.trim(),
-        limit: f.limit,
-        offset: 0,
-      };
-      location.hash = this.hashFor(next, 0);
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const next = {
+          status: document.getElementById('filter-status').value,
+          target_id: document.getElementById('filter-target').value.trim(),
+          template_id: document.getElementById('filter-template').value.trim(),
+          limit: f.limit,
+          offset: 0,
+        };
+        location.hash = this.hashFor(next, 0);
+      });
+    }
+    const newBtn = document.getElementById('schedules-new');
+    if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm(app, f));
+  },
+
+  // --- SPEC-SCHED1.4b: create / edit form modal ---
+
+  openCreateForm(app, listFilters) {
+    this.openForm({
+      mode: 'create',
+      onSaved: () => SchedulesPage.render(app, listFilters || {}),
     });
+  },
+
+  openEditForm(app, schedule) {
+    this.openForm({
+      mode: 'edit',
+      schedule,
+      onSaved: () => SchedulesPage.renderDetail(app, schedule.id),
+    });
+  },
+
+  openForm({ mode, schedule, onSaved }) {
+    const s = schedule || {};
+    const body = `
+      <form id="schedule-form" novalidate>
+        <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
+        ${Components.formInput({ label: 'Name', name: 'name', value: s.name, required: true })}
+        ${Components.formInput({
+          label: 'Target ID', name: 'target_id', value: s.target_id, required: true,
+          placeholder: 'UUID from /targets',
+          help: mode === 'edit' ? 'Target cannot be changed after creation.' : '',
+        })}
+        ${Components.formInput({ label: 'Template ID', name: 'template_id', value: s.template_id || '',
+          help: 'Optional. Omit to run with tool_config directly.' })}
+        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: s.rrule })}
+        ${Components.formDatetime({ label: 'DTSTART', name: 'dtstart', value: s.dtstart, required: true })}
+        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: s.timezone || 'UTC', required: true })}
+        ${Components.formInput({
+          label: 'Estimated duration (seconds)', name: 'estimated_duration_seconds',
+          type: 'number', value: '',
+          help: 'Used for overlap checks at create/update time. Leave blank to use the server default (3600s).',
+        })}
+        ${mode === 'edit' ? Components.formSelect({
+          label: 'Status', name: 'status',
+          options: [{ value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }],
+          value: s.status || 'active',
+        }) : ''}
+      </form>
+    `;
+
+    const m = Components.modal({
+      title: mode === 'create' ? 'New schedule' : 'Edit schedule',
+      body,
+      size: 'md',
+      primaryAction: {
+        label: mode === 'create' ? 'Create' : 'Save',
+        onClick: async ({ close }) => {
+          const form = document.getElementById('schedule-form');
+          const data = readScheduleForm(form, mode);
+          if (!data) return;
+          try {
+            if (mode === 'create') await API.createSchedule(data);
+            else await API.updateSchedule(schedule.id, data);
+            if (onSaved) onSaved();
+            close('saved');
+          } catch (err) {
+            showFormError(form, err);
+          }
+        },
+      },
+      secondaryAction: { label: 'Cancel' },
+    });
+    // Non-blocking RRULE syntax warning wires after the DOM is in place.
+    Components.rruleAttachBlurCheck(m.root.querySelector('#schedule-form'), 'rrule');
   },
 
   // --- Schedule detail ---
@@ -161,12 +244,18 @@ const SchedulesPage = {
         upcoming = [];
       }
       app.innerHTML = this.detailTemplate(s, upcoming);
+      this.bindDetailActions(app, s);
     } catch (err) {
       app.innerHTML = `
         ${Components.backLink('#/schedules', 'Back to schedules')}
         ${Components.errorBanner(err)}
       `;
     }
+  },
+
+  bindDetailActions(app, s) {
+    const editBtn = document.getElementById('schedule-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', () => this.openEditForm(app, s));
   },
 
   detailTemplate(s, upcoming) {
@@ -193,6 +282,9 @@ const SchedulesPage = {
           <div class="detail-header">
             <h2>${escapeHtml(s.name || s.id)}</h2>
             ${Components.scheduleStatusBadge(s.status)}
+            <div style="margin-left:auto;display:flex;gap:8px" id="schedule-detail-actions">
+              <button type="button" class="btn btn-ghost" id="schedule-edit-btn">Edit</button>
+            </div>
           </div>
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(s.id)}</span>
@@ -232,3 +324,73 @@ const SchedulesPage = {
     `;
   },
 };
+
+// readScheduleForm serializes the schedule form into the API shape.
+// DTSTART is converted from "datetime-local" ("YYYY-MM-DDTHH:MM") to a
+// UTC ISO string; empty template_id is submitted as "" so the server
+// treats it as "no template" (edit flow uses clear_template when the
+// caller wants to explicitly drop the link, but the UI doesn't surface
+// that nuance yet — 1.4c may expose a dedicated "clear template" ticker).
+// Returns null after surfacing field errors when the form is syntactically
+// bad at the client level.
+function readScheduleForm(form, mode) {
+  if (!form) return null;
+  const fd = new FormData(form);
+  const out = {
+    name: (fd.get('name') || '').toString().trim(),
+    target_id: (fd.get('target_id') || '').toString().trim(),
+    template_id: (fd.get('template_id') || '').toString().trim(),
+    rrule: (fd.get('rrule') || '').toString().trim(),
+    timezone: (fd.get('timezone') || '').toString().trim() || 'UTC',
+  };
+  const dtLocal = (fd.get('dtstart') || '').toString().trim();
+  if (dtLocal) {
+    const d = new Date(dtLocal);
+    if (isNaN(d.getTime())) {
+      Components.applyFieldErrors(form, [{ field: 'dtstart', message: 'invalid date/time' }]);
+      return null;
+    }
+    out.dtstart = d.toISOString();
+  }
+  const dur = (fd.get('estimated_duration_seconds') || '').toString().trim();
+  if (dur) {
+    const n = parseInt(dur, 10);
+    if (isNaN(n) || n < 0) {
+      Components.applyFieldErrors(form, [{ field: 'estimated_duration_seconds', message: 'must be a non-negative integer' }]);
+      return null;
+    }
+    out.estimated_duration_seconds = n;
+  }
+  // template_id: empty string means "not set" — drop the key on create
+  // so the omitempty JSON handling on the server treats it naturally.
+  // On edit we send "" if the user cleared it so the server applies
+  // clear_template semantics via the partial patch.
+  if (!out.template_id) {
+    delete out.template_id;
+  }
+  if (mode === 'edit') {
+    const status = (fd.get('status') || '').toString();
+    if (status === 'active' || status === 'paused') {
+      out.enabled = status === 'active';
+    }
+  }
+  return out;
+}
+
+// showFormError routes an APIError into the right surface: 422 with
+// field_errors → inline via applyFieldErrors; everything else → the
+// general banner at the top of the form.
+function showFormError(form, err) {
+  if (!form) return;
+  if (err && err.fieldErrors && err.fieldErrors.length) {
+    Components.applyFieldErrors(form, err.fieldErrors);
+    return;
+  }
+  const general = form.querySelector('[data-field-error="__general__"]');
+  if (general) {
+    const title = (err && err.problem && err.problem.title) || (err && err.message) || 'Request failed';
+    const detail = err && err.problem && err.problem.detail ? ' — ' + err.problem.detail : '';
+    general.textContent = title + detail;
+    general.style.display = 'block';
+  }
+}
