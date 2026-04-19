@@ -775,6 +775,74 @@ func (h *handler) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"target": t})
 }
 
+// handleTargetDetail returns everything the target detail page needs in one
+// round trip: the target row, aggregate counts, the latest completed scan
+// (which carries TargetState + Delta + Work aggregates), and a handful of
+// recent scans. Composing server-side avoids the SPA having to chain four
+// API calls just to paint one page.
+func (h *handler) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/targets/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing target id")
+		return
+	}
+
+	t, err := h.store.GetTarget(r.Context(), id)
+	if err != nil {
+		t, err = h.store.GetTargetByValue(r.Context(), id)
+	}
+	if err != nil || t == nil {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+
+	findingCount, _ := h.store.CountFindingsByTargetID(r.Context(), t.ID)
+	assetCount, _ := h.store.CountAssetsByTargetID(r.Context(), t.ID)
+	scanCount, _ := h.store.CountScansByTargetID(r.Context(), t.ID)
+
+	scans, _ := h.store.ListScans(r.Context(), t.ID, 10)
+	if scans == nil {
+		scans = make([]model.Scan, 0)
+	}
+
+	// Latest completed scan carries the aggregate snapshot rendered in
+	// the "Target state" card. Running scans still have placeholder
+	// aggregates, so prefer a completed one when available.
+	var latest *model.Scan
+	for i := range scans {
+		if scans[i].Status == model.ScanStatusCompleted {
+			latest = &scans[i]
+			break
+		}
+	}
+	if latest == nil && len(scans) > 0 {
+		latest = &scans[0]
+	}
+
+	// Don't filter by status — a target with all-resolved findings would
+	// otherwise show an empty "findings" card while the stats summary up
+	// top still reports `finding_count=N`. Let the UI render each row with
+	// its own status badge and let the user see the full picture.
+	findings, _ := h.store.ListFindings(r.Context(), storage.FindingListOptions{
+		TargetID: t.ID,
+		Limit:    20,
+	})
+	if findings == nil {
+		findings = make([]model.Finding, 0)
+	}
+	enriched := h.enrichFindings(r.Context(), findings)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target":         t,
+		"finding_count":  findingCount,
+		"asset_count":    assetCount,
+		"scan_count":     scanCount,
+		"latest_scan":    latest,
+		"recent_scans":   scans,
+		"recent_findings": enriched,
+	})
+}
+
 func (h *handler) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

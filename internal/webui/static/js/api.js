@@ -71,6 +71,7 @@ const API = {
   scans(params)         { return this.get('/scans' + toQuery(params)); },
   scan(id)              { return this.get('/scans/' + id); },
   targets()             { return this.get('/targets'); },
+  target(id)            { return this.get('/targets/' + id); },
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
   scanStatus()          { return this.get('/scans/status'); },
