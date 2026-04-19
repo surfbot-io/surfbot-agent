@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/surfbot-io/surfbot-agent/internal/api/v1"
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
@@ -93,6 +94,11 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 
 	// Schedule: GET config, PUT config
 	mux.HandleFunc("/api/v1/schedule", h.handleSchedule)
+
+	// SPEC-SCHED1.3a: REST API for first-class schedules. Registered
+	// before /api/v1/scans/ so the more specific /api/v1/scans/ad-hoc
+	// handler (from apiv1) takes precedence for that path.
+	registerV1Routes(mux, store, opts.Daemon)
 
 	// Scans: GET list, GET detail, POST trigger
 	mux.HandleFunc("/api/v1/scans", func(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +182,29 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 	}
 
 	return srv, ln, nil
+}
+
+// registerV1Routes wires the SPEC-SCHED1.3a REST API onto mux. The
+// dispatcher slot is populated only when the caller plugged a live
+// AdHocDispatcher into the DaemonView — otherwise POST /scans/ad-hoc
+// returns 503 with the dispatcher-unreachable problem type, mirroring
+// the 1.2c /api/daemon/trigger fallback.
+func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *DaemonView) {
+	deps := apiv1.APIDeps{
+		Store:         store,
+		ScheduleStore: store.Schedules(),
+		TemplateStore: store.Templates(),
+		BlackoutStore: store.Blackouts(),
+		DefaultsStore: store.ScheduleDefaults(),
+		AdHocStore:    store.AdHocScanRuns(),
+	}
+	if view != nil && view.AdHocDispatcher != nil {
+		// webui.AdHocDispatcher and apiv1.Dispatcher have identical
+		// method sets; direct assignment wires the scheduler through
+		// without an adapter type.
+		deps.Dispatcher = view.AdHocDispatcher
+	}
+	apiv1.RegisterRoutes(mux, deps)
 }
 
 // isAssetPath reports whether a request path lives under one of the
