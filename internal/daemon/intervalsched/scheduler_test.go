@@ -451,6 +451,37 @@ func TestScheduler_RunnerErrorRecordedAsFailed(t *testing.T) {
 	assert.Equal(t, model.ScheduleRunFailed, rec[0].Status)
 }
 
+func TestScheduler_InflightCleanup(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+	waitFor(t, func() bool { return len(runner.snapshot()) >= 1 })
+	cancel()
+	require.NoError(t, s.Stop(context.Background()))
+
+	count := 0
+	s.inflight.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	assert.Equal(t, 0, count, "inflight map must be empty after job completion")
+}
+
 func TestNew_RejectsMissingDeps(t *testing.T) {
 	cases := []struct {
 		name string

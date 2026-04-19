@@ -58,9 +58,24 @@ type Dependencies struct {
 	JitterSeed    int64
 }
 
+// inflightJob tracks one dispatched scan so the master ticker can cancel
+// its ctx mid-flight when the target enters a new blackout window
+// (SCHED1.2c R8). Keyed in Scheduler.inflight by jobKey().
+type inflightJob struct {
+	scheduleID string
+	targetID   string
+	acquiredAt time.Time
+	cancel     context.CancelCauseFunc
+}
+
+// jobKey is the inflight map key. Schedule jobs use the schedule ID;
+// SCHED1.2c will dispatch ad-hoc jobs with the "adhoc:" prefix so both
+// kinds coexist without collision.
+func jobKey(scheduleID string) string { return scheduleID }
+
 // Scheduler is the master ticker. It owns the worker pool, target lock
-// index, blackout evaluator, and rrule expander. Construct via New, then
-// Start to launch the tick loop in a goroutine.
+// index, blackout evaluator, rrule expander, and the in-flight job
+// table used by pause-in-flight.
 type Scheduler struct {
 	deps      Dependencies
 	defaults  model.ScheduleDefaults
@@ -69,10 +84,11 @@ type Scheduler struct {
 	blackouts *BlackoutEvaluator
 	expander  *RRuleExpander
 
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	inflight sync.Map // map[string]*inflightJob, keyed by jobKey
 }
 
 // New wires the master ticker. It loads schedule_defaults synchronously
@@ -340,7 +356,20 @@ func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
 		return fmt.Errorf("resolve effective config: %w", err)
 	}
 
-	scanID, runErr := r.s.deps.Runner.Run(ctx, sched.ID, sched.TargetID, effective)
+	jobCtx, cancel := context.WithCancelCause(ctx)
+	key := jobKey(sched.ID)
+	r.s.inflight.Store(key, &inflightJob{
+		scheduleID: sched.ID,
+		targetID:   sched.TargetID,
+		acquiredAt: r.s.deps.Clock.Now(),
+		cancel:     cancel,
+	})
+	defer func() {
+		r.s.inflight.Delete(key)
+		cancel(nil)
+	}()
+
+	scanID, runErr := r.s.deps.Runner.Run(jobCtx, sched.ID, sched.TargetID, effective)
 	completedAt := time.Now().UTC()
 
 	status := model.ScheduleRunSuccess
