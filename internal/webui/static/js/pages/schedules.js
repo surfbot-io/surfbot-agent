@@ -77,14 +77,17 @@ const SchedulesPage = {
     }
 
     const rows = items.map(s => `
-      <tr class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">
-        <td class="mono">${Components.truncateID(s.id)}</td>
-        <td>${escapeHtml(s.name || '-')}</td>
-        <td class="mono">${Components.truncateID(s.target_id)}</td>
-        <td class="mono">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
-        <td>${Components.scheduleStatusBadge(s.status)}</td>
-        <td>${Components.rruleCompact(s.rrule)}</td>
-        <td class="text-muted">${Components.nextRun(s.next_run_at)}</td>
+      <tr data-schedule-id="${encodeURIComponent(s.id)}">
+        <td class="bulk-cell" onclick="event.stopPropagation()">
+          <input type="checkbox" class="bulk-row-check" data-id="${escapeHtml(s.id)}">
+        </td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.id)}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${escapeHtml(s.name || '-')}</td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.target_id)}</td>
+        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.scheduleStatusBadge(s.status)}</td>
+        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.rruleCompact(s.rrule)}</td>
+        <td class="text-muted clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.nextRun(s.next_run_at)}</td>
       </tr>
     `).join('');
 
@@ -99,11 +102,21 @@ const SchedulesPage = {
         </div>
       </div>
       ${filterBar}
+      <div id="schedules-bulk-error" style="margin-bottom:8px"></div>
       ${Components.table(
-        ['ID', 'Name', 'Target', 'Template', 'Status', 'RRULE', 'Next run'],
+        ['<input type="checkbox" id="bulk-select-all" title="Select all on this page">',
+         'ID', 'Name', 'Target', 'Template', 'Status', 'RRULE', 'Next run'],
         [rows]
       )}
       ${pager}
+      <div id="schedules-bulk-bar-host">${Components.bulkActionsBar({
+        selectedCount: 0,
+        actions: [
+          { label: 'Pause selected' },
+          { label: 'Resume selected' },
+          { label: 'Delete selected', danger: true },
+        ],
+      })}</div>
     `;
   },
 
@@ -150,6 +163,101 @@ const SchedulesPage = {
     }
     const newBtn = document.getElementById('schedules-new');
     if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm(app, f));
+
+    // Bulk selection wiring. Selection state lives on the page module
+    // as a Set<string> so toggling checkboxes doesn't force a list
+    // re-render; after a successful bulk op we refresh the whole page
+    // and selection resets naturally.
+    this._selected = new Set();
+    const checks = app.querySelectorAll('.bulk-row-check');
+    checks.forEach(cb => cb.addEventListener('change', () => this.onRowCheck(app, f)));
+
+    const all = document.getElementById('bulk-select-all');
+    if (all) all.addEventListener('change', () => {
+      checks.forEach(cb => { cb.checked = all.checked; });
+      this.onRowCheck(app, f);
+    });
+
+    this.rebindBulkBar(app, f);
+  },
+
+  onRowCheck(app, f) {
+    const checks = app.querySelectorAll('.bulk-row-check');
+    this._selected = new Set();
+    checks.forEach(cb => {
+      const row = cb.closest('tr');
+      if (cb.checked) {
+        this._selected.add(cb.dataset.id);
+        if (row) row.classList.add('row-selected');
+      } else if (row) {
+        row.classList.remove('row-selected');
+      }
+    });
+    const host = document.getElementById('schedules-bulk-bar-host');
+    if (host) {
+      host.innerHTML = Components.bulkActionsBar({
+        selectedCount: this._selected.size,
+        actions: [
+          { label: 'Pause selected' },
+          { label: 'Resume selected' },
+          { label: 'Delete selected', danger: true },
+        ],
+      });
+      this.rebindBulkBar(app, f);
+    }
+  },
+
+  rebindBulkBar(app, f) {
+    const host = document.getElementById('schedules-bulk-bar-host');
+    if (!host) return;
+    const btns = host.querySelectorAll('[data-bulk-action]');
+    btns.forEach(btn => {
+      const idx = parseInt(btn.dataset.bulkAction, 10);
+      btn.addEventListener('click', () => {
+        if (idx === 0) this.runBulk(app, f, 'pause');
+        else if (idx === 1) this.runBulk(app, f, 'resume');
+        else if (idx === 2) this.confirmBulkDelete(app, f);
+      });
+    });
+  },
+
+  async confirmBulkDelete(app, f) {
+    const ids = Array.from(this._selected);
+    if (!ids.length) return;
+    const ok = await Components.confirmDialog({
+      title: 'Delete schedules?',
+      message: `Delete ${ids.length} schedule(s)? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.runBulk(app, f, 'delete');
+  },
+
+  async runBulk(app, f, operation) {
+    const ids = Array.from(this._selected);
+    if (!ids.length) return;
+    const errBox = document.getElementById('schedules-bulk-error');
+    if (errBox) errBox.innerHTML = '';
+    try {
+      const resp = await API.bulkSchedules({ operation, schedule_ids: ids });
+      const succeeded = resp && resp.succeeded ? resp.succeeded.length : 0;
+      const failed = resp && resp.failed ? resp.failed : [];
+      if (errBox) {
+        const parts = [`<div class="text-muted">Bulk ${escapeHtml(operation)}: <strong>${succeeded}</strong> succeeded, <strong>${failed.length}</strong> failed.</div>`];
+        if (failed.length) {
+          parts.push('<ul>' + failed.map(fe =>
+            `<li class="mono">${escapeHtml(fe.schedule_id)}: ${escapeHtml(fe.error)}</li>`
+          ).join('') + '</ul>');
+        }
+        errBox.innerHTML = parts.join('');
+      }
+      // Refresh the list so paused→active (etc.) visibly flips and
+      // deleted rows disappear. Keep filters.
+      SchedulesPage.render(app, f);
+    } catch (err) {
+      if (errBox) errBox.innerHTML = Components.errorBanner(err);
+    }
   },
 
   // --- SPEC-SCHED1.4b: create / edit form modal ---
