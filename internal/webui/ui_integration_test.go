@@ -292,6 +292,80 @@ func TestIntegration_UIWriteFlows(t *testing.T) {
 	}
 }
 
+// TestIntegration_UITimeline asserts the 1.4c additions: timeline
+// page module, sidebar link + hash route, timeline helpers in
+// components.js, schedules-for-target section, target-detail ad-hoc
+// prefill support, dashboard Run scan now button, USED BY column
+// header, and the blackout activations placeholder. All assertions are
+// string-matches on embedded files or the served shell.
+func TestIntegration_UITimeline(t *testing.T) {
+	_, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	code, body := getBody(t, base+"/")
+	require.Equal(t, http.StatusOK, code)
+	html := string(body)
+
+	// Timeline nav link + <script> tag in the shell.
+	assert.Contains(t, html, `href="#/timeline"`, "shell missing Timeline nav link")
+	assert.Contains(t, html, `/js/pages/timeline.js`, "shell missing timeline.js <script> tag")
+
+	// Timeline page module embedded.
+	_, err := fs.Stat(staticFS, "static/js/pages/timeline.js")
+	assert.NoError(t, err, "embed.FS missing static/js/pages/timeline.js")
+
+	// app.js registers the #/timeline hash route. The regex literal
+	// uses JS-escaped `\/` so we assert on the stable symbol
+	// TimelinePage.render instead of the character-escape dance.
+	appJS := readEmbedded(t, "static/js/app.js")
+	assert.Contains(t, appJS, "TimelinePage.render", "app.js missing TimelinePage.render binding")
+	assert.Contains(t, appJS, "page: 'timeline'", "app.js missing timeline route registration")
+
+	// Timeline helpers in components.js.
+	components := readEmbedded(t, "static/js/components.js")
+	for _, name := range []string{
+		"groupByDay", "timelineRow", "timelineEmptySlot",
+		"horizonSelector", "targetFilterSelector",
+	} {
+		assert.Contains(t, components, name, "components.js missing %s", name)
+	}
+
+	// Target-detail schedules section + ad-hoc prefill launcher.
+	targetsJS := readEmbedded(t, "static/js/pages/targets.js")
+	for _, name := range []string{
+		"renderTargetSchedulesSection", "targetSchedulesCard",
+		"bindTargetSchedulesActions",
+		// 1.4c R4: the detail-page Scan now wires to AdHocPage.open.
+		"AdHocPage.open",
+	} {
+		assert.Contains(t, targetsJS, name, "targets.js missing %s", name)
+	}
+
+	// AdHoc modal accepts prefill (R4 signature extension).
+	adhocJS := readEmbedded(t, "static/js/pages/adhoc.js")
+	for _, name := range []string{"prefillTargetID", "lockTargetID", "adhoc-target-unlock"} {
+		assert.Contains(t, adhocJS, name, "adhoc.js missing %s", name)
+	}
+
+	// Dashboard Run scan now button restored.
+	dashJS := readEmbedded(t, "static/js/pages/dashboard.js")
+	for _, name := range []string{`data-action="run-scan-now"`, "dashboard-run-scan-btn"} {
+		assert.Contains(t, dashJS, name, "dashboard.js missing %s", name)
+	}
+
+	// Templates list USED BY column + hydration helper.
+	templatesJS := readEmbedded(t, "static/js/pages/templates.js")
+	for _, name := range []string{"USED BY", "hydrateUsedByCounts", "USED_BY_SOFT_THRESHOLD", "data-used-by"} {
+		assert.Contains(t, templatesJS, name, "templates.js missing %s", name)
+	}
+
+	// Blackout activations placeholder.
+	blackoutsJS := readEmbedded(t, "static/js/pages/blackouts.js")
+	for _, name := range []string{`data-section="blackout-activations-placeholder"`, "Activation preview will be available"} {
+		assert.Contains(t, blackoutsJS, name, "blackouts.js missing %s", name)
+	}
+}
+
 func readEmbedded(t *testing.T, path string) string {
 	t.Helper()
 	f, err := staticFS.Open(path)
