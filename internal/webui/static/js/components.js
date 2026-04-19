@@ -75,8 +75,10 @@ const Components = {
 
   severityBars(counts) {
     const severities = ['critical', 'high', 'medium', 'low', 'info'];
-    const max = Math.max(1, ...severities.map(s => counts[s] || 0));
-    return `<div class="sev-bars">${severities.map(sev => {
+    const visible = severities.filter(s => (counts[s] || 0) > 0);
+    if (visible.length === 0) return '';
+    const max = Math.max(1, ...visible.map(s => counts[s] || 0));
+    return `<div class="sev-bars">${visible.map(sev => {
       const count = counts[sev] || 0;
       const pct = (count / max) * 100;
       return `<div class="sev-bar-row">

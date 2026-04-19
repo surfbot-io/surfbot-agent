@@ -678,6 +678,41 @@ tr.finding-detail-row td.finding-detail-cell {
   word-break: break-all;
 }
 
+.detail-grid-message {
+  grid-template-columns: 1fr;
+  color: var(--text-muted);
+}
+
+.detail-divider {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.detail-meta-sep {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.scan-detail-target-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.scan-detail-target-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 /* === JSON Viewer === */
 .json-viewer {
   background: var(--bg-primary);

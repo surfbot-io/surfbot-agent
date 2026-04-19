@@ -1,6 +1,10 @@
-// Targets page
+// Targets page (list + detail)
 const TargetsPage = {
-  async render(app) {
+  async render(app, params) {
+    if (params && params.id) {
+      return this.renderDetail(app, params.id);
+    }
+
     app.innerHTML = '<div class="loading">Loading targets...</div>';
 
     try {
@@ -38,8 +42,11 @@ const TargetsPage = {
       `;
     }
 
+    // Rows navigate to the detail view on click. The actions cell stops
+    // propagation per-button so the row-level handler doesn't swallow the
+    // scan/findings/delete clicks.
     const rows = targets.map(t => `
-      <tr>
+      <tr class="clickable" onclick="location.hash='#/targets/${t.id}'">
         <td class="mono">${escapeHtml(t.value)}</td>
         <td><span class="badge badge-info">${t.type}</span></td>
         <td>${t.scope}</td>
@@ -48,7 +55,7 @@ const TargetsPage = {
         <td>${t.scan_count}</td>
         <td class="text-muted">${t.last_scan_at ? Components.timeAgo(t.last_scan_at) : 'never'}</td>
         <td>${t.enabled ? '<span style="color:var(--success)">active</span>' : '<span class="text-muted">disabled</span>'}</td>
-        <td class="actions-cell">
+        <td class="actions-cell" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-accent" onclick="TargetsPage.scanTarget('${t.id}', '${escapeHtml(t.value)}')" title="Scan">
             <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
           </button>
@@ -104,6 +111,242 @@ const TargetsPage = {
     });
   },
 
+  // --- Target Detail View ---
+
+  async renderDetail(app, id) {
+    app.innerHTML = '<div class="loading">Loading target...</div>';
+
+    const scroller = document.querySelector('main.content');
+    if (scroller) scroller.scrollTop = 0;
+
+    try {
+      const data = await API.target(id);
+      this.renderDetailContent(app, data);
+    } catch (err) {
+      app.innerHTML = Components.emptyState('Not Found', 'Target not found.');
+    }
+  },
+
+  renderDetailContent(app, data) {
+    const t = data.target;
+    const latest = data.latest_scan;
+    const scans = data.recent_scans || [];
+    const findings = data.recent_findings || [];
+
+    const typeBadge = `<span class="badge badge-info">${escapeHtml(t.type || 'domain')}</span>`;
+    const scopeBadge = `<span class="badge badge-muted">${escapeHtml(t.scope || 'external')}</span>`;
+    const enabledBadge = t.enabled
+      ? '<span style="color:var(--success)">active</span>'
+      : '<span class="text-muted">disabled</span>';
+
+    const metaParts = [
+      enabledBadge,
+      `<span class="text-muted">${data.scan_count} scan${data.scan_count === 1 ? '' : 's'}</span>`,
+      `<span class="text-muted">${data.asset_count} asset${data.asset_count === 1 ? '' : 's'}</span>`,
+      `<span class="text-muted">${data.finding_count} finding${data.finding_count === 1 ? '' : 's'}</span>`,
+    ];
+    if (t.last_scan_at) {
+      metaParts.push(`<span class="text-muted">last scan ${Components.timeAgo(t.last_scan_at)}</span>`);
+    } else {
+      metaParts.push('<span class="text-muted">never scanned</span>');
+    }
+    const metaRow = `<div class="detail-meta">${metaParts.join(' <span class="detail-meta-sep">\u00B7</span> ')}</div>`;
+
+    const stateCard = latest ? this.renderTargetStateCard(latest) : '';
+    const findingsCard = this.renderRecentFindings(findings);
+    const scansCard = this.renderRecentScans(scans);
+
+    app.innerHTML = `
+      ${Components.backLink('#/targets', 'Back to targets')}
+      <div class="scan-detail-stack">
+        <div class="detail-panel">
+          <div class="detail-header">
+            ${typeBadge}
+            <h2 class="mono">${escapeHtml(t.value)}</h2>
+            ${scopeBadge}
+            <div style="margin-left:auto">
+              <button class="btn btn-sm btn-accent" id="target-scan-btn">Scan now</button>
+              <button class="btn btn-sm btn-ghost" id="target-findings-btn">Findings</button>
+              <button class="btn btn-sm btn-ghost" id="target-assets-btn">Assets</button>
+              <button class="btn btn-sm btn-danger" id="target-delete-btn">Delete</button>
+            </div>
+          </div>
+          ${metaRow}
+        </div>
+
+        ${stateCard}
+        ${findingsCard}
+        ${scansCard}
+      </div>
+    `;
+
+    // Wire action buttons.
+    const scanBtn = document.getElementById('target-scan-btn');
+    if (scanBtn) scanBtn.addEventListener('click', () => this.scanTarget(t.id, t.value));
+    const fBtn = document.getElementById('target-findings-btn');
+    if (fBtn) fBtn.addEventListener('click', () => this.viewFindings(t.id));
+    const aBtn = document.getElementById('target-assets-btn');
+    if (aBtn) aBtn.addEventListener('click', () => { location.hash = '#/assets?target_id=' + t.id; });
+    const dBtn = document.getElementById('target-delete-btn');
+    if (dBtn) dBtn.addEventListener('click', () => this.deleteTarget(t.id, t.value));
+  },
+
+  renderTargetStateCard(scan) {
+    const state = scan.target_state || {};
+    const assets = state.assets_by_type || {};
+    const ports = state.ports_by_status || {};
+
+    // Mirror scan-detail Target state ordering (KnownAssetTypes order, with
+    // ports broken down by status). Keeps target / scan detail consistent.
+    const items = [
+      { label: 'Subdomains', value: assets.subdomain },
+      { label: 'IPs (v4)', value: assets.ipv4 },
+      { label: 'IPs (v6)', value: assets.ipv6 },
+      { label: 'Ports (open)', value: ports.open },
+      { label: 'Ports (filtered)', value: ports.filtered },
+      { label: 'Endpoints', value: assets.url },
+      { label: 'Technologies', value: assets.technology },
+      { label: 'Domains', value: assets.domain },
+      { label: 'Services', value: assets.service },
+    ].filter(i => i.value > 0);
+
+    const known = new Set(['subdomain', 'ipv4', 'ipv6', 'port_service', 'url', 'technology', 'domain', 'service']);
+    Object.entries(assets)
+      .filter(([k, v]) => !known.has(k) && v > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .forEach(([k, v]) => items.push({ label: this.titleCase(k), value: v }));
+
+    if (state.findings_open_total > 0) {
+      items.push({ label: 'Findings open', value: state.findings_open_total, divider: true });
+    }
+
+    if (items.length === 0) {
+      return `<div class="card">
+        <div class="card-label">Target state</div>
+        <div class="detail-grid detail-grid-message" style="margin-top:8px">
+          <span class="text-muted">No state recorded yet — run a scan to populate.</span>
+        </div>
+      </div>`;
+    }
+
+    const sevs = state.findings_open || {};
+    const hasSev = Object.values(sevs).some(v => v > 0);
+
+    const scanLink = `<a href="#/scans/${scan.id}" class="text-muted" style="font-weight:400;text-transform:none;font-size:11px;margin-left:8px">from scan ${Components.truncateID(scan.id)} \u00B7 ${Components.timeAgo(scan.finished_at || scan.created_at)}</a>`;
+
+    return `<div class="card">
+      <div class="card-label">Target state${scanLink}</div>
+      <div class="detail-grid" style="margin-top:8px">
+        ${items.map(i => {
+          const cls = i.divider ? ' detail-divider' : '';
+          return `<span class="detail-label${cls}">${escapeHtml(i.label)}</span><span class="detail-value${cls}">${i.value}</span>`;
+        }).join('')}
+      </div>
+      ${hasSev ? Components.severityBars({
+        critical: sevs.critical || 0,
+        high: sevs.high || 0,
+        medium: sevs.medium || 0,
+        low: sevs.low || 0,
+        info: sevs.info || 0,
+      }) : ''}
+    </div>`;
+  },
+
+  renderRecentFindings(findings) {
+    if (findings.length === 0) {
+      return `<div class="card">
+        <div class="card-label">Recent findings</div>
+        <div class="detail-grid detail-grid-message" style="margin-top:8px">
+          <span class="text-muted">No findings recorded for this target.</span>
+        </div>
+      </div>`;
+    }
+
+    const rows = findings.map(f => {
+      const assetCell = f.asset_id
+        ? `<a href="#/assets/${f.asset_id}" class="mono" onclick="event.stopPropagation()">${escapeHtml(f.asset_value || '—')}</a>`
+        : `<span class="mono text-muted">${escapeHtml(f.asset_value || '—')}</span>`;
+      return `
+        <tr class="clickable" onclick="location.hash='#/findings/${f.id}'">
+          <td>${Components.severityBadge ? Components.severityBadge(f.severity) : `<span class="badge badge-${f.severity}">${f.severity}</span>`}</td>
+          <td>${escapeHtml(f.title)}</td>
+          <td>${assetCell}</td>
+          <td>${Components.statusBadge(f.status)}</td>
+          <td class="text-muted">${f.source_tool ? escapeHtml(f.source_tool) : '-'}</td>
+          <td class="text-muted">${f.last_seen ? Components.timeAgo(f.last_seen) : '-'}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `<div class="card">
+      <div class="card-label">Recent findings <span class="text-muted" style="font-weight:400;text-transform:none">(${findings.length})</span></div>
+      <div class="table-container" style="border:none;margin:8px 0 0">
+        <table>
+          <thead><tr>
+            <th scope="col">Severity</th>
+            <th scope="col">Title</th>
+            <th scope="col">Asset</th>
+            <th scope="col">Status</th>
+            <th scope="col">Tool</th>
+            <th scope="col">Last seen</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  },
+
+  renderRecentScans(scans) {
+    if (scans.length === 0) {
+      return `<div class="card">
+        <div class="card-label">Recent scans</div>
+        <div class="detail-grid detail-grid-message" style="margin-top:8px">
+          <span class="text-muted">No scans recorded for this target yet.</span>
+        </div>
+      </div>`;
+    }
+
+    const rows = scans.map(s => {
+      let dur = '-';
+      if (s.started_at && s.finished_at) {
+        dur = Components.formatDuration(Math.floor((new Date(s.finished_at) - new Date(s.started_at)) / 1000));
+      }
+      const findingsOpen = (s.target_state && s.target_state.findings_open_total) || 0;
+      return `
+        <tr class="clickable" onclick="location.hash='#/scans/${s.id}'">
+          <td class="mono">${Components.truncateID(s.id)}</td>
+          <td>${Components.statusBadge(s.status)}</td>
+          <td>${s.type}</td>
+          <td class="mono">${dur}</td>
+          <td>${findingsOpen} findings</td>
+          <td class="text-muted">${Components.timeAgo(s.created_at)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `<div class="card">
+      <div class="card-label">Recent scans <span class="text-muted" style="font-weight:400;text-transform:none">(${scans.length})</span></div>
+      <div class="table-container" style="border:none;margin:8px 0 0">
+        <table>
+          <thead><tr>
+            <th scope="col">ID</th>
+            <th scope="col">Status</th>
+            <th scope="col">Type</th>
+            <th scope="col">Duration</th>
+            <th scope="col">Results</th>
+            <th scope="col">When</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  },
+
+  titleCase(s) {
+    if (!s) return s;
+    return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  },
+
   viewFindings(targetId) {
     location.hash = '#/findings?target_id=' + targetId;
   },
@@ -124,6 +367,7 @@ const TargetsPage = {
 
     try {
       await API.deleteTarget(id);
+      location.hash = '#/targets';
       TargetsPage.render(document.getElementById('app'));
     } catch (err) {
       alert('Failed to delete target: ' + err.message);

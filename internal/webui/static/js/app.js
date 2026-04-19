@@ -7,6 +7,7 @@ const Router = {
     { pattern: /^#\/assets/, page: 'assets', render: () => AssetsPage.render(app, parseQueryParams()) },
     { pattern: /^#\/scans\/(.+)$/, page: 'scans', render: (m) => ScansPage.render(app, { id: m[1] }) },
     { pattern: /^#\/scans/, page: 'scans', render: () => ScansPage.render(app, parseQueryParams()) },
+    { pattern: /^#\/targets\/(.+)$/, page: 'targets', render: (m) => TargetsPage.render(app, { id: m[1] }) },
     { pattern: /^#\/targets/, page: 'targets', render: () => TargetsPage.render(app) },
     { pattern: /^#\/tools/, page: 'tools', render: () => ToolsPage.render(app) },
     { pattern: /^#\/settings\/schedule/, page: 'settings', render: () => SettingsSchedulePage.render(app) },

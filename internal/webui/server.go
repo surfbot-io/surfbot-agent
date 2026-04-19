@@ -80,7 +80,16 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	})
-	mux.HandleFunc("/api/v1/targets/", h.handleDeleteTarget)
+	mux.HandleFunc("/api/v1/targets/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			h.handleTargetDetail(w, r)
+		case http.MethodDelete:
+			h.handleDeleteTarget(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
 
 	// Schedule: GET config, PUT config
 	mux.HandleFunc("/api/v1/schedule", h.handleSchedule)
