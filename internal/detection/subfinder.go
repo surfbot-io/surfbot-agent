@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,12 +79,22 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 			fmt.Fprintf(&stderrAcc, "[subfinder] %s: %v\n", domain, enumErr)
 		}
 
-		// enumerated is map[subdomain]map[source]struct{}. We only care
-		// about the subdomain keys.
-		for sub := range enumerated {
+		// enumerated is map[subdomain]map[source]struct{}. Persist the
+		// sources alongside the subdomain so operators can judge
+		// confidence (e.g. "only crt.sh knows about this — may be old").
+		for sub, sourceSet := range enumerated {
 			sub = strings.ToLower(strings.TrimSpace(sub))
 			if sub == "" {
 				continue
+			}
+			metadata := map[string]interface{}{}
+			if len(sourceSet) > 0 {
+				sources := make([]string, 0, len(sourceSet))
+				for src := range sourceSet {
+					sources = append(sources, src)
+				}
+				sort.Strings(sources)
+				metadata["sources"] = sources
 			}
 			result.Assets = append(result.Assets, model.Asset{
 				ID:        uuid.New().String(),
@@ -91,7 +102,7 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 				Value:     sub,
 				Status:    model.AssetStatusNew,
 				Tags:      []string{},
-				Metadata:  map[string]interface{}{},
+				Metadata:  metadata,
 				FirstSeen: time.Now().UTC(),
 				LastSeen:  time.Now().UTC(),
 			})
