@@ -12,6 +12,15 @@ const DashboardPage = {
       // own poll loop, independent of the dashboard refresh.
       const slot = document.getElementById('agent-card-slot');
       if (slot && typeof AgentCard !== 'undefined') AgentCard.mount(slot);
+
+      // SPEC-SCHED1.4c R5: restore the "Run scan now" button removed
+      // with the /api/daemon/trigger endpoint in 1.4a. Opens the 1.4b
+      // ad-hoc modal with no prefill — same behavior as the sidebar
+      // button, but in the more visible dashboard header location.
+      const runBtn = document.getElementById('dashboard-run-scan-btn');
+      if (runBtn) runBtn.addEventListener('click', () => {
+        if (typeof AdHocPage !== 'undefined' && AdHocPage.open) AdHocPage.open();
+      });
     } catch (err) {
       app.innerHTML = Components.emptyState('Error', 'Failed to load dashboard: ' + err.message);
     }
@@ -39,6 +48,9 @@ const DashboardPage = {
       <div class="page-header">
         <h2>Dashboard</h2>
         <p>Security posture overview</p>
+        <div style="margin-left:auto">
+          <button type="button" class="btn btn-accent" id="dashboard-run-scan-btn" data-action="run-scan-now">Run scan now</button>
+        </div>
       </div>
 
       <div id="agent-card-slot"></div>
