@@ -41,9 +41,11 @@ type APIDeps struct {
 func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	h := &handlers{deps: deps}
 
-	// Schedules CRUD + pause/resume.
+	// Schedules CRUD + pause/resume. Ordered so /upcoming and /bulk
+	// (registered below) take longest-prefix precedence.
 	mux.HandleFunc("/api/v1/schedules", h.routeSchedules)
 	mux.HandleFunc("/api/v1/schedules/", h.routeSchedulesSubtree)
+	mux.HandleFunc("/api/v1/schedules/upcoming", h.routeUpcoming)
 
 	// Templates CRUD.
 	mux.HandleFunc("/api/v1/templates", h.routeTemplates)
