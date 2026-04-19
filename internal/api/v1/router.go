@@ -52,6 +52,9 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	// Blackouts CRUD.
 	mux.HandleFunc("/api/v1/blackouts", h.routeBlackouts)
 	mux.HandleFunc("/api/v1/blackouts/", h.routeBlackoutByID)
+
+	// Singleton schedule defaults.
+	mux.HandleFunc("/api/v1/schedule-defaults", h.routeScheduleDefaults)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
