@@ -14,7 +14,6 @@ import (
 
 	"github.com/surfbot-io/surfbot-agent/internal/config"
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
-	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
 	"github.com/surfbot-io/surfbot-agent/internal/webui"
 )
 
@@ -36,14 +35,19 @@ func init() {
 // embedded UI can render the SPEC-X3.1 Agent card. It is best-effort:
 // errors collapse to a partially-populated view that the UI renders as
 // "agent not running" rather than failing the whole `surfbot ui` command.
+//
+// SCHED1.2b: the maintenance-window mirror previously sourced from
+// schedule.config.json is gone — first-class schedules carry their own
+// windows. The UI still echoes WindowStart/End/Timezone from config.yaml
+// for the existing display widget; SCHED1.3 will replace that with a
+// per-schedule view.
 func buildUIDaemonView() *webui.DaemonView {
 	mode := daemon.DefaultMode()
 	paths := daemon.Resolve(daemon.Default(mode))
 	view := &webui.DaemonView{
-		DaemonStatePath:     paths.StateFile(),
-		ScheduleStatePath:   scheduleStatePath(paths),
-		Heartbeat:           30 * time.Second,
-		ScheduleConfigStore: intervalsched.NewScheduleConfigStore(scheduleConfigPath(paths)),
+		DaemonStatePath:   paths.StateFile(),
+		ScheduleStatePath: scheduleStatePath(paths),
+		Heartbeat:         30 * time.Second,
 	}
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -60,45 +64,7 @@ func buildUIDaemonView() *webui.DaemonView {
 	if w, werr := buildWindow(mw); werr == nil {
 		view.Window = w
 	}
-
-	// If schedule.config.json exists, use its values instead.
-	if view.ScheduleConfigStore.Exists() {
-		sc, serr := view.ScheduleConfigStore.Load()
-		if serr == nil {
-			view.SchedulerEnabled = sc.Enabled
-			view.WindowStart = sc.MaintenanceWindow.Start
-			view.WindowEnd = sc.MaintenanceWindow.End
-			view.WindowTimezone = sc.MaintenanceWindow.Timezone
-			if w, werr := buildWindowFromConfig(sc.MaintenanceWindow); werr == nil {
-				view.Window = w
-			}
-		}
-	}
 	return view
-}
-
-func buildWindowFromConfig(mw intervalsched.ScheduleConfigWindow) (intervalsched.MaintenanceWindow, error) {
-	w := intervalsched.MaintenanceWindow{Enabled: mw.Enabled}
-	if !mw.Enabled {
-		return w, nil
-	}
-	start, err := intervalsched.ParseTimeOfDay(mw.Start)
-	if err != nil {
-		return w, err
-	}
-	end, err := intervalsched.ParseTimeOfDay(mw.End)
-	if err != nil {
-		return w, err
-	}
-	loc := time.Local
-	if mw.Timezone != "" {
-		loc, err = time.LoadLocation(mw.Timezone)
-		if err != nil {
-			return w, err
-		}
-	}
-	w.Start, w.End, w.Loc = start, end, loc
-	return w, nil
 }
 
 func runUI(cmd *cobra.Command, args []string) error {

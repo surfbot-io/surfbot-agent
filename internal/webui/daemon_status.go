@@ -50,13 +50,6 @@ type DaemonView struct {
 	WindowEnd      string
 	WindowTimezone string
 
-	// Scheduler is the live scheduler instance. When non-nil, the
-	// schedule API can read its config and reload it on updates.
-	Scheduler *intervalsched.IntervalScheduler
-	// ScheduleConfigStore persists schedule.config.json. When non-nil,
-	// the schedule API can read/write persisted schedule config.
-	ScheduleConfigStore *intervalsched.ScheduleConfigStore
-
 	// triggerMu serializes write access to the trigger flag file.
 	triggerMu sync.Mutex
 }

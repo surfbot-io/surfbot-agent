@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -158,9 +159,9 @@ func buildDaemonService() (*daemon.Service, service.Service, daemon.Mode, error)
 }
 
 // buildDaemonRunService is invoked by `daemon run`. It loads the full
-// surfbot config, opens the database, builds the IntervalScheduler from
-// daemon.scheduler config, and hands the result to daemon.Build. The
-// returned cleanup func closes the database — the caller must defer it.
+// surfbot config, opens the database, builds the SCHED1.2b master ticker,
+// and hands the result to daemon.Build. The returned cleanup func closes
+// the database — the caller must defer it.
 func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 	mode, err := resolveMode()
 	if err != nil {
@@ -178,6 +179,20 @@ func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
 	}
 	cleanup := func() { _ = runStore.Close() }
+
+	report, err := intervalsched.MigrateLegacyScheduleConfig(
+		context.Background(), paths.StateDir, runStore, slog.Default())
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("legacy schedule migration: %w", err)
+	}
+	if report.SkippedReason == "" {
+		slog.Default().Info("legacy schedule migrated",
+			"template_id", report.TemplateID,
+			"targets_migrated", report.TargetsMigrated,
+			"schedules_created", report.SchedulesCreated,
+		)
+	}
 
 	sched, err := buildScheduler(cfg.Daemon.Scheduler, paths, runStore)
 	if err != nil {
@@ -209,72 +224,33 @@ func durationOr(d, fallback time.Duration) time.Duration {
 	return d
 }
 
-// buildScheduler converts SchedulerConfig into a concrete daemon.Scheduler.
-// Returns the X1 NoopScheduler when scheduling is disabled so the daemon
-// still stays up (UI / logs are useful even without scans).
-func buildScheduler(sc config.SchedulerConfig, paths daemon.Paths, store storage.Store) (daemon.Scheduler, error) {
-	configStore := intervalsched.NewScheduleConfigStore(scheduleConfigPath(paths))
+// buildScheduler constructs the SCHED1.2b master ticker. The legacy
+// schedule.config.json migration runs separately in
+// runDaemonRunWithMigration so that boot can fail fatally on migration
+// errors before the scheduler starts.
+//
+// config.SchedulerConfig.Enabled is no longer consulted: with first-class
+// schedules the daemon always runs the master ticker. An empty
+// scan_schedules table simply produces an idle tick loop.
+func buildScheduler(_ config.SchedulerConfig, _ daemon.Paths, store *storage.SQLiteStore) (daemon.Scheduler, error) {
+	registry := detection.NewRegistry()
+	runner := daemon.NewLegacyScanRunner(store, registry, slog.Default())
 
-	// schedule.config.json takes precedence over config.yaml when it exists.
-	if configStore.Exists() {
-		persisted, err := configStore.Load()
-		if err == nil {
-			sc.Enabled = persisted.Enabled
-			if d, e := time.ParseDuration(persisted.FullScanInterval); e == nil {
-				sc.FullScanInterval = d
-			}
-			if d, e := time.ParseDuration(persisted.QuickCheckInterval); e == nil {
-				sc.QuickCheckInterval = d
-			}
-			if d, e := time.ParseDuration(persisted.Jitter); e == nil {
-				sc.Jitter = d
-			}
-			sc.RunOnStart = persisted.RunOnStart
-			sc.QuickCheckTools = persisted.QuickCheckTools
-			sc.MaintenanceWindow = config.MaintenanceWindowConfig{
-				Enabled:  persisted.MaintenanceWindow.Enabled,
-				Start:    persisted.MaintenanceWindow.Start,
-				End:      persisted.MaintenanceWindow.End,
-				Timezone: persisted.MaintenanceWindow.Timezone,
-			}
-		}
-	}
-
-	if !sc.Enabled {
-		return daemon.NewNoopScheduler(), nil
-	}
-	window, err := buildWindow(sc.MaintenanceWindow)
+	sched, err := intervalsched.New(intervalsched.Dependencies{
+		SchedStore:    store.Schedules(),
+		TmplStore:     store.Templates(),
+		BlackoutStore: store.Blackouts(),
+		DefaultsStore: store.ScheduleDefaults(),
+		AdHocStore:    store.AdHocScanRuns(),
+		Runner:        runner,
+		Log:           slog.Default(),
+		Clock:         intervalsched.NewRealClock(),
+		TickInterval:  intervalsched.DefaultTickInterval,
+	})
 	if err != nil {
 		return nil, err
 	}
-	icfg := intervalsched.Config{
-		FullInterval:  sc.FullScanInterval,
-		QuickInterval: sc.QuickCheckInterval,
-		Jitter:        sc.Jitter,
-		Window:        window,
-		QuickTools:    sc.QuickCheckTools,
-		RunOnStart:    sc.RunOnStart,
-		TriggerDir:    paths.StateDir, // SPEC-X3.1: on-demand trigger flag file
-	}
-	if warn, verr := icfg.Validate(); verr != nil {
-		return nil, verr
-	} else if warn != "" {
-		errp := NewPrinter(os.Stderr)
-		errp.Warn("scheduler: %s", warn)
-	}
-
-	registry := detection.NewRegistry()
-	if err := validateQuickTools(icfg.QuickTools, registry); err != nil {
-		return nil, err
-	}
-
-	scanRunner := newPipelineScanRunner(store, registry, icfg.QuickTools)
-	stateStore := intervalsched.NewScheduleStateStore(scheduleStatePath(paths))
-	return intervalsched.New(icfg, intervalsched.Options{
-		StateStore:  stateStore,
-		ConfigStore: configStore,
-		Scanner:     scanRunner,
-	}), nil
+	return sched, nil
 }
 
 func buildWindow(mw config.MaintenanceWindowConfig) (intervalsched.MaintenanceWindow, error) {
@@ -299,20 +275,6 @@ func buildWindow(mw config.MaintenanceWindowConfig) (intervalsched.MaintenanceWi
 	}
 	w.Start, w.End, w.Loc = start, end, loc
 	return w, nil
-}
-
-// validateQuickTools rejects unknown tool names so a typo in config
-// doesn't silently disable quick checks.
-func validateQuickTools(tools []string, registry *detection.Registry) error {
-	if len(tools) == 0 {
-		return nil
-	}
-	for _, name := range tools {
-		if _, ok := registry.GetByName(name); !ok {
-			return fmt.Errorf("quick_check_tools: unknown tool %q", name)
-		}
-	}
-	return nil
 }
 
 // loadSchedulerStatus reads schedule.state.json (if present) and translates
@@ -614,8 +576,8 @@ func runDaemonLogs(cmd *cobra.Command, _ []string) error {
 }
 
 // runDaemonRun is the entrypoint the OS service manager invokes. It loads
-// the surfbot config, opens the database, builds the IntervalScheduler,
-// and blocks inside service.Run until the service is asked to stop.
+// the surfbot config, opens the database, builds the master ticker, and
+// blocks inside service.Run until the service is asked to stop.
 func runDaemonRun(_ *cobra.Command, _ []string) error {
 	_, svc, cleanup, err := buildDaemonRunService()
 	if err != nil {

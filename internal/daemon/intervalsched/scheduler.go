@@ -1,3 +1,10 @@
+// Package intervalsched implements the surfbot daemon's master ticker for
+// first-class schedules (SPEC-SCHED1.2b). The ticker periodically polls
+// scan_schedules for due rows, claims a per-target lock, dispatches each
+// to a bounded worker pool, and updates next_run_at via the RRULE
+// expander. SCHED1.2a primitives (locks, worker pool, blackout evaluator,
+// rrule expander, no-overlap validator, cascade recompute) compose into
+// the loop below.
 package intervalsched
 
 import (
@@ -5,399 +12,365 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
+	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
-// Config controls the IntervalScheduler. All durations must be ≥ 1 minute
-// in production; tests bypass Validate to drive the scheduler with much
-// shorter intervals.
-type Config struct {
-	FullInterval  time.Duration
-	QuickInterval time.Duration
-	Jitter        time.Duration
-	Window        MaintenanceWindow
-	QuickTools    []string
-	RunOnStart    bool
-	// TriggerDir, when non-empty, enables on-demand trigger via a flag
-	// file at <TriggerDir>/trigger.json (SPEC-X3.1 §8.2). The scheduler
-	// claims the file via atomic rename to trigger.json.processing,
-	// runs the requested profile bypassing the maintenance window, then
-	// deletes the processing file.
-	TriggerDir string
-}
+// DefaultTickInterval is the master ticker poll cadence. SCHED1.3 will
+// surface this as a configurable field on schedule_defaults; for 1.2b it
+// is a hardcoded constant.
+const DefaultTickInterval = 30 * time.Second
 
-// Validate enforces the rules from spec §2. Returns a soft warning string
-// (non-fatal) when quick_check_interval ≥ full_scan_interval — the caller
-// logs it and the scheduler disables quick checks for the session.
-func (c *Config) Validate() (warning string, err error) {
-	if c.FullInterval < time.Minute {
-		return "", fmt.Errorf("full_scan_interval must be >= 1m, got %s", c.FullInterval)
-	}
-	if c.QuickInterval > 0 && c.QuickInterval < time.Minute {
-		return "", fmt.Errorf("quick_check_interval must be >= 1m, got %s", c.QuickInterval)
-	}
-	if c.QuickInterval > 0 && c.QuickInterval >= c.FullInterval {
-		warning = "quick_check_interval >= full_scan_interval; disabling quick checks"
-		c.QuickInterval = 0
-	}
-	if c.Window.Enabled {
-		startMins := c.Window.Start.Hour*60 + c.Window.Start.Minute
-		endMins := c.Window.End.Hour*60 + c.Window.End.Minute
-		if startMins == endMins {
-			return warning, errors.New("maintenance_window start and end must differ")
-		}
-	}
-	// Cap jitter so it never dominates short intervals (open question 13.1).
-	if c.Jitter > 0 {
-		minInterval := c.FullInterval
-		if c.QuickInterval > 0 && c.QuickInterval < minInterval {
-			minInterval = c.QuickInterval
-		}
-		if c.Jitter > minInterval/10 {
-			c.Jitter = minInterval / 10
-		}
-	}
-	return warning, nil
-}
+// listDueOverhead is the small extra count requested from ListDue beyond
+// the number of free worker slots, so blackout-skipped rows do not
+// starve real candidates within a tick.
+const listDueOverhead = 5
 
-// ScanResult is the structured outcome of one scheduled scan, fed into
-// the onTick callback so the outer Runner can mirror it into
-// daemon.state.json.
-type ScanResult struct {
-	Profile   Profile
-	StartedAt time.Time
-	Duration  time.Duration
-	Error     string
-}
-
-// ScanRunner is the boundary between the scheduler and the rest of
-// surfbot. The production implementation lives in the daemon package and
-// invokes internal/pipeline. Tests inject a fake.
+// ScanRunner is the boundary between the master ticker and whatever
+// actually executes a scan. SCHED1.2b ships internal/daemon.legacyScanRunner
+// which discards EffectiveConfig.ToolConfig and invokes the existing
+// pipeline orchestrator. SCHED1.2c will replace that with a runner that
+// threads the resolved tool params through each detection tool.
 type ScanRunner interface {
-	Run(ctx context.Context, profile Profile) error
+	// Run executes a scan for targetID using the resolved EffectiveConfig.
+	// Returns the new scan ID for persistence on
+	// scan_schedules.last_scan_id, or an error. The error is logged and
+	// surfaced as ScheduleRunFailed.
+	Run(ctx context.Context, scheduleID, targetID string, effective model.EffectiveConfig) (scanID string, err error)
 }
 
-// IntervalScheduler implements daemon.Scheduler. It runs full and quick
-// scans on independent cadences, persists cursors across restarts, and
-// honors a maintenance window.
-type IntervalScheduler struct {
-	cfg         Config
-	clock       Clock
-	store       *ScheduleStateStore
-	configStore *ScheduleConfigStore
-	scanner     ScanRunner
-	logger      *slog.Logger
-	onTick      func(ScanResult)
-	rng         *rand.Rand
-
-	mu       sync.Mutex
-	state    ScheduleState
-	reloadCh chan Config // signals Run loop to pick up new config
+// Dependencies bundles the stores + helpers the master ticker needs. The
+// AdHocStore is unused in 1.2b but is wired in now so SCHED1.2c can plug
+// pause-in-flight + ad-hoc dispatch without changing this signature.
+type Dependencies struct {
+	SchedStore    storage.ScheduleStore
+	TmplStore     storage.TemplateStore
+	BlackoutStore storage.BlackoutStore
+	DefaultsStore storage.ScheduleDefaultsStore
+	AdHocStore    storage.AdHocScanRunStore
+	Runner        ScanRunner
+	Log           *slog.Logger
+	Clock         Clock
+	TickInterval  time.Duration
+	JitterSeed    int64
 }
 
-// Options bundles non-config dependencies for New.
-type Options struct {
-	Clock       Clock
-	StateStore  *ScheduleStateStore
-	ConfigStore *ScheduleConfigStore // optional: enables config file watching
-	Scanner     ScanRunner
-	Logger      *slog.Logger
-	OnTick      func(ScanResult)
-	RandSeed    int64 // 0 → time.Now().UnixNano()
+// Scheduler is the master ticker. It owns the worker pool, target lock
+// index, blackout evaluator, and rrule expander. Construct via New, then
+// Start to launch the tick loop in a goroutine.
+type Scheduler struct {
+	deps      Dependencies
+	defaults  model.ScheduleDefaults
+	pool      *WorkerPool
+	locks     *TargetLockIndex
+	blackouts *BlackoutEvaluator
+	expander  *RRuleExpander
+
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-// New constructs an IntervalScheduler. Validate the Config before calling
-// — New does not re-validate.
-func New(cfg Config, opts Options) *IntervalScheduler {
-	if opts.Clock == nil {
-		opts.Clock = NewRealClock()
+// New wires the master ticker. It loads schedule_defaults synchronously
+// (returning an error if the singleton row is missing — schema migration
+// 0004 seeds a row, so this only happens against an empty DB) and primes
+// the blackout evaluator's cache. Start must be called to begin the tick
+// loop.
+func New(deps Dependencies) (*Scheduler, error) {
+	if deps.SchedStore == nil {
+		return nil, fmt.Errorf("intervalsched.New: SchedStore is required")
 	}
-	if opts.Logger == nil {
-		opts.Logger = slog.Default()
+	if deps.TmplStore == nil {
+		return nil, fmt.Errorf("intervalsched.New: TmplStore is required")
 	}
-	seed := opts.RandSeed
+	if deps.BlackoutStore == nil {
+		return nil, fmt.Errorf("intervalsched.New: BlackoutStore is required")
+	}
+	if deps.DefaultsStore == nil {
+		return nil, fmt.Errorf("intervalsched.New: DefaultsStore is required")
+	}
+	if deps.Runner == nil {
+		return nil, fmt.Errorf("intervalsched.New: Runner is required")
+	}
+	if deps.Log == nil {
+		deps.Log = slog.Default()
+	}
+	if deps.Clock == nil {
+		deps.Clock = NewRealClock()
+	}
+	if deps.TickInterval <= 0 {
+		deps.TickInterval = DefaultTickInterval
+	}
+	seed := deps.JitterSeed
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
-	return &IntervalScheduler{
-		cfg:         cfg,
-		clock:       opts.Clock,
-		store:       opts.StateStore,
-		configStore: opts.ConfigStore,
-		scanner:     opts.Scanner,
-		logger:      opts.Logger,
-		onTick:      opts.OnTick,
-		rng:         rand.New(rand.NewSource(seed)),
-		reloadCh:    make(chan Config, 1),
+
+	defaults, err := deps.DefaultsStore.Get(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("loading schedule_defaults: %w", err)
 	}
+	if defaults == nil {
+		return nil, fmt.Errorf("schedule_defaults singleton row missing")
+	}
+
+	blackouts := NewBlackoutEvaluator(deps.BlackoutStore)
+	if err := blackouts.Refresh(context.Background()); err != nil {
+		// Non-fatal: the evaluator falls back to "no blackouts" while the
+		// store is unavailable. Log and continue so the daemon still ticks.
+		deps.Log.Warn("blackout evaluator initial refresh failed", "err", err)
+	}
+
+	maxConcurrent := defaults.MaxConcurrentScans
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	locks := NewTargetLockIndex()
+	expander := NewRRuleExpander(*defaults, blackouts, deps.Clock, seed)
+
+	s := &Scheduler{
+		deps:      deps,
+		defaults:  *defaults,
+		locks:     locks,
+		blackouts: blackouts,
+		expander:  expander,
+	}
+	s.pool = NewWorkerPool(maxConcurrent, &scanJobRunner{s: s}, deps.Log)
+	return s, nil
 }
 
-// Reload applies a new Config to the running scheduler. The Run loop
-// picks it up on the next iteration and recalculates next scan times
-// using the existing cursors (last_full_at, last_quick_at).
-func (s *IntervalScheduler) Reload(cfg Config) {
-	// Non-blocking send — drop if the channel is full (a prior reload
-	// is already queued).
-	select {
-	case s.reloadCh <- cfg:
-		s.logger.Info("scheduler.reload_queued")
-	default:
-		s.logger.Warn("scheduler.reload_dropped", "reason", "channel_full")
-	}
-}
-
-// Config returns a snapshot of the current scheduler config.
-func (s *IntervalScheduler) Config() Config {
+// Start launches the worker pool and the tick goroutine. Non-blocking.
+// Calling Start twice on the same Scheduler is a no-op.
+func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cfg
-}
-
-// State returns a snapshot of the current schedule cursors. Safe for
-// concurrent callers (status display, tests).
-func (s *IntervalScheduler) State() ScheduleState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state
-}
-
-// Next satisfies the daemon.Scheduler interface. Returns the earliest of
-// the next full or quick tick, adjusted for maintenance window.
-func (s *IntervalScheduler) Next() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.clock.Now()
-	next := s.computeNext(now)
-	if s.cfg.Window.Contains(next) {
-		next = s.cfg.Window.NextOpen(next)
+	if s.cancel != nil {
+		s.mu.Unlock()
+		return nil
 	}
-	return next
-}
-
-// computeNext returns the earliest of the two configured ticks, taking
-// the persisted cursors into account. Caller holds s.mu.
-func (s *IntervalScheduler) computeNext(now time.Time) time.Time {
-	var nextFull, nextQuick time.Time
-	if s.cfg.FullInterval > 0 {
-		base := s.state.LastFullAt
-		if base.IsZero() {
-			base = now
-		}
-		nextFull = base.Add(s.cfg.FullInterval)
-	}
-	if s.cfg.QuickInterval > 0 {
-		base := s.state.LastQuickAt
-		if base.IsZero() {
-			base = now
-		}
-		nextQuick = base.Add(s.cfg.QuickInterval)
-	}
-	switch {
-	case nextFull.IsZero():
-		return nextQuick
-	case nextQuick.IsZero():
-		return nextFull
-	case nextQuick.Before(nextFull):
-		return nextQuick
-	default:
-		return nextFull
-	}
-}
-
-// Run blocks until ctx is canceled, triggering scans on schedule. It
-// implements the loop described in spec §3.3.
-func (s *IntervalScheduler) Run(ctx context.Context) error {
-	if s.store != nil {
-		st, err := s.store.Load()
-		if err != nil {
-			s.logger.Warn("schedule state load failed; starting fresh", "err", err)
-		} else {
-			s.mu.Lock()
-			s.state = st
-			s.mu.Unlock()
-		}
-	}
-
-	// SPEC-X3.1 §8: spawn the trigger watcher when configured. The
-	// goroutine exits when ctx is canceled, same as the main loop.
-	if s.cfg.TriggerDir != "" {
-		go s.runTriggerLoop(ctx)
-	}
-
-	// Watch schedule.config.json for changes from the UI/CLI.
-	if s.configStore != nil {
-		go s.WatchConfig(ctx, s.configStore)
-	}
-
-	if s.cfg.RunOnStart {
-		now := s.clock.Now()
-		if !s.cfg.Window.Contains(now) {
-			s.runScan(ctx, ProfileFull)
-		} else {
-			s.logger.Info("scheduler.skip", "reason", "run_on_start_in_window",
-				"resume", s.cfg.Window.NextOpen(now))
-		}
-	}
-
-	for {
-		now := s.clock.Now()
-		profile, target := s.nextTarget(now)
-		if target.IsZero() {
-			// No intervals configured — block until cancellation so the
-			// outer Runner does not exit.
-			<-ctx.Done()
-			return nil
-		}
-		if s.cfg.Window.Contains(target) {
-			open := s.cfg.Window.NextOpen(target)
-			s.logger.Info("scheduler.skip",
-				"reason", "maintenance_window",
-				"profile", string(profile),
-				"resume", open)
-			target = open
-		}
-
-		wait := target.Sub(now)
-		if wait < 0 {
-			wait = 0
-		}
-		// Apply jitter as a non-negative addition; subtracting could push
-		// us into the past on a fresh start.
-		if s.cfg.Jitter > 0 {
-			wait += time.Duration(s.rng.Int63n(int64(s.cfg.Jitter) + 1))
-		}
-
-		s.logger.Info("scheduler.tick",
-			"profile", string(profile),
-			"in", wait,
-			"at", now.Add(wait))
-
-		timer := s.clock.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case newCfg := <-s.reloadCh:
-			timer.Stop()
-			s.mu.Lock()
-			s.cfg = newCfg
-			s.mu.Unlock()
-			s.logger.Info("scheduler.reloaded",
-				"full_interval", newCfg.FullInterval,
-				"quick_interval", newCfg.QuickInterval)
-			continue // re-enter loop with new config
-		case <-timer.C():
-		}
-
-		if s.cfg.Window.Contains(s.clock.Now()) {
-			// Clock skew or DST shift pushed us into the window; retry.
-			continue
-		}
-		s.runScan(ctx, profile)
-	}
-}
-
-// nextTarget returns the profile that should fire next and the absolute
-// target time, BEFORE any jitter or window adjustment.
-func (s *IntervalScheduler) nextTarget(now time.Time) (Profile, time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var fullAt, quickAt time.Time
-	if s.cfg.FullInterval > 0 {
-		base := s.state.LastFullAt
-		if base.IsZero() {
-			base = now
-		}
-		fullAt = base.Add(s.cfg.FullInterval)
-	}
-	if s.cfg.QuickInterval > 0 {
-		base := s.state.LastQuickAt
-		if base.IsZero() {
-			base = now
-		}
-		quickAt = base.Add(s.cfg.QuickInterval)
-	}
-
-	switch {
-	case fullAt.IsZero() && quickAt.IsZero():
-		return "", time.Time{}
-	case fullAt.IsZero():
-		return ProfileQuick, quickAt
-	case quickAt.IsZero():
-		return ProfileFull, fullAt
-	case quickAt.Before(fullAt):
-		return ProfileQuick, quickAt
-	default:
-		return ProfileFull, fullAt
-	}
-}
-
-// runScan invokes the scan runner, updates the cursor, persists state,
-// and emits the onTick callback. A failed scan still advances the cursor
-// so a permanent failure does not cause a tight retry loop.
-func (s *IntervalScheduler) runScan(ctx context.Context, profile Profile) {
-	started := s.clock.Now()
-	s.logger.Info("scheduler.scan_start", "profile", string(profile))
-
-	var runErr error
-	if s.scanner != nil {
-		runErr = s.scanner.Run(ctx, profile)
-	}
-	duration := s.clock.Now().Sub(started)
-
-	s.mu.Lock()
-	finished := s.clock.Now()
-	status := "ok"
-	errStr := ""
-	if runErr != nil {
-		status = "failed"
-		errStr = runErr.Error()
-	}
-	switch profile {
-	case ProfileFull:
-		s.state.LastFullAt = finished
-		s.state.LastFullStatus = status
-		s.state.LastFullError = errStr
-		if s.cfg.FullInterval > 0 {
-			s.state.NextFullAt = finished.Add(s.cfg.FullInterval)
-		}
-	case ProfileQuick:
-		s.state.LastQuickAt = finished
-		s.state.LastQuickStatus = status
-		s.state.LastQuickError = errStr
-		if s.cfg.QuickInterval > 0 {
-			s.state.NextQuickAt = finished.Add(s.cfg.QuickInterval)
-		}
-	}
-	snapshot := s.state
+	runCtx, cancel := context.WithCancel(ctx)
+	s.ctx = runCtx
+	s.cancel = cancel
 	s.mu.Unlock()
 
-	if s.store != nil {
-		if err := s.store.Save(snapshot); err != nil {
-			s.logger.Warn("schedule state save failed", "err", err)
+	s.pool.Start(runCtx)
+	s.wg.Add(1)
+	go s.tickLoop()
+	return nil
+}
+
+// Stop cancels the tick loop and waits for in-flight workers to drain
+// (bounded by ctx). Safe to call multiple times.
+func (s *Scheduler) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	cancel := s.cancel
+	s.cancel = nil
+	s.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.pool.Stop(ctx)
+}
+
+// Run satisfies the daemon.Scheduler interface used by daemon.Runner. It
+// calls Start and blocks until ctx is canceled, then drains the pool with
+// a fresh background context bounded by 30s so a normal SIGTERM does not
+// terminate in-flight scans abruptly.
+func (s *Scheduler) Run(ctx context.Context) error {
+	if err := s.Start(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.Stop(stopCtx)
+}
+
+// Next satisfies the daemon.Scheduler interface. SCHED1.2b returns the
+// nearest schedule's next_run_at (best-effort; ignores blackouts and
+// errors). SCHED1.3 will surface a richer status.
+func (s *Scheduler) Next() time.Time {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	due, err := s.deps.SchedStore.ListDue(ctx, s.deps.Clock.Now().Add(365*24*time.Hour), 1)
+	if err != nil || len(due) == 0 {
+		return time.Time{}
+	}
+	if due[0].NextRunAt == nil {
+		return time.Time{}
+	}
+	return *due[0].NextRunAt
+}
+
+// tickLoop fires every TickInterval and dispatches due schedules.
+func (s *Scheduler) tickLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.deps.TickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.tick(now)
+		}
+	}
+}
+
+// tick performs one dispatch round.
+func (s *Scheduler) tick(now time.Time) {
+	if err := s.blackouts.Refresh(s.ctx); err != nil {
+		s.deps.Log.Warn("blackout refresh failed; using stale cache", "err", err)
+	}
+	s.evaluateInFlightBlackouts(now)
+
+	free := s.pool.Free()
+	if free <= 0 {
+		return
+	}
+	limit := free + listDueOverhead
+	due, err := s.deps.SchedStore.ListDue(s.ctx, now, limit)
+	if err != nil {
+		s.deps.Log.Error("listing due schedules", "err", err)
+		return
+	}
+	if len(due) == 0 {
+		return
+	}
+
+	dispatched := 0
+	for _, sched := range due {
+		if dispatched >= free {
+			break
+		}
+		if !s.locks.TryAcquire(sched.TargetID) {
+			continue
+		}
+		active, _ := s.blackouts.IsActive(sched.TargetID, now)
+		if active {
+			s.locks.Release(sched.TargetID)
+			s.handleBlackoutSkip(sched, now)
+			continue
+		}
+		job := Job{
+			ScheduleID: sched.ID,
+			TargetID:   sched.TargetID,
+			Payload:    sched,
+		}
+		if !s.pool.Dispatch(job) {
+			s.locks.Release(sched.TargetID)
+			break
+		}
+		dispatched++
+	}
+}
+
+// handleBlackoutSkip records a skipped run and advances next_run_at past
+// the active blackout. The lock is already released by the caller.
+func (s *Scheduler) handleBlackoutSkip(sched model.Schedule, now time.Time) {
+	if err := s.deps.SchedStore.RecordRun(s.ctx, sched.ID, model.ScheduleRunSkippedBlackout, nil, now); err != nil {
+		s.deps.Log.Warn("record blackout-skip", "schedule_id", sched.ID, "err", err)
+	}
+	tmpl := s.loadTemplate(s.ctx, sched.TemplateID)
+	next, err := s.expander.ComputeNextRunAt(sched, tmpl)
+	if err != nil {
+		s.deps.Log.Warn("compute next run after blackout skip",
+			"schedule_id", sched.ID, "err", err)
+		return
+	}
+	if err := s.deps.SchedStore.SetNextRunAt(s.ctx, sched.ID, next); err != nil {
+		s.deps.Log.Warn("set next_run_at after blackout skip",
+			"schedule_id", sched.ID, "err", err)
+	}
+}
+
+// evaluateInFlightBlackouts is a no-op in SCHED1.2b. SCHED1.2c will
+// iterate live jobs and cancel ctx for any whose target enters a new
+// blackout window.
+//
+// TODO: SCHED1.2c — implement pause-in-flight ctx cancellation.
+func (s *Scheduler) evaluateInFlightBlackouts(_ time.Time) {}
+
+func (s *Scheduler) loadTemplate(ctx context.Context, id *string) *model.Template {
+	if id == nil || *id == "" {
+		return nil
+	}
+	tmpl, err := s.deps.TmplStore.Get(ctx, *id)
+	if err != nil {
+		s.deps.Log.Warn("load template", "template_id", *id, "err", err)
+		return nil
+	}
+	return tmpl
+}
+
+// scanJobRunner adapts the worker pool's JobRunner contract to the
+// scheduler's ScanRunner. It resolves the EffectiveConfig, invokes the
+// runner, persists the run outcome, and recomputes next_run_at — all
+// while holding the per-target lock.
+type scanJobRunner struct {
+	s *Scheduler
+}
+
+func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
+	defer r.s.locks.Release(job.TargetID)
+
+	sched, ok := job.Payload.(model.Schedule)
+	if !ok {
+		return fmt.Errorf("scanJobRunner: unexpected payload type %T", job.Payload)
+	}
+	tmpl := r.s.loadTemplate(ctx, sched.TemplateID)
+	effective, err := model.ResolveEffectiveConfig(sched, tmpl, r.s.defaults)
+	if err != nil {
+		_ = r.s.deps.SchedStore.RecordRun(ctx, sched.ID, model.ScheduleRunFailed, nil, time.Now().UTC())
+		return fmt.Errorf("resolve effective config: %w", err)
+	}
+
+	scanID, runErr := r.s.deps.Runner.Run(ctx, sched.ID, sched.TargetID, effective)
+	completedAt := time.Now().UTC()
+
+	status := model.ScheduleRunSuccess
+	if runErr != nil {
+		// SCHED1.2c will distinguish blackout-cancel from operator-cancel
+		// from real failure. For 1.2b every error path lands as failed.
+		status = model.ScheduleRunFailed
+		if errors.Is(runErr, context.Canceled) {
+			r.s.deps.Log.Info("scan canceled",
+				"schedule_id", sched.ID, "target_id", sched.TargetID)
 		}
 	}
 
-	if runErr != nil {
-		s.logger.Warn("scheduler.scan_fail",
-			"profile", string(profile),
-			"duration", duration,
-			"err", runErr)
-	} else {
-		s.logger.Info("scheduler.scan_done",
-			"profile", string(profile),
-			"duration", duration)
+	var scanIDPtr *string
+	if scanID != "" {
+		scanIDPtr = &scanID
+	}
+	if err := r.s.deps.SchedStore.RecordRun(ctx, sched.ID, status, scanIDPtr, completedAt); err != nil {
+		r.s.deps.Log.Warn("record run", "schedule_id", sched.ID, "err", err)
 	}
 
-	if s.onTick != nil {
-		s.onTick(ScanResult{
-			Profile:   profile,
-			StartedAt: started,
-			Duration:  duration,
-			Error:     errStr,
-		})
+	next, nerr := r.s.expander.ComputeNextRunAt(sched, tmpl)
+	if nerr != nil {
+		r.s.deps.Log.Warn("compute next_run_at",
+			"schedule_id", sched.ID, "err", nerr)
+		return runErr
 	}
+	if err := r.s.deps.SchedStore.SetNextRunAt(ctx, sched.ID, next); err != nil {
+		r.s.deps.Log.Warn("set next_run_at",
+			"schedule_id", sched.ID, "err", err)
+	}
+	return runErr
 }

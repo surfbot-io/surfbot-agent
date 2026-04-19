@@ -2,6 +2,7 @@ package intervalsched
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,39 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
+
+// legacyScheduleConfig is the on-disk shape of pre-SCHED1
+// schedule.config.json. Kept private to this file so the public
+// intervalsched API has zero remaining trace of the legacy config
+// model — callers see only the migration entry point.
+type legacyScheduleConfig struct {
+	Enabled            bool                       `json:"enabled"`
+	FullScanInterval   string                     `json:"full_scan_interval"`
+	QuickCheckInterval string                     `json:"quick_check_interval"`
+	Jitter             string                     `json:"jitter"`
+	RunOnStart         bool                       `json:"run_on_start"`
+	QuickCheckTools    []string                   `json:"quick_check_tools"`
+	MaintenanceWindow  legacyScheduleConfigWindow `json:"maintenance_window"`
+}
+
+type legacyScheduleConfigWindow struct {
+	Enabled  bool   `json:"enabled"`
+	Start    string `json:"start"`
+	End      string `json:"end"`
+	Timezone string `json:"timezone"`
+}
+
+func loadLegacyScheduleConfig(path string) (legacyScheduleConfig, error) {
+	var sc legacyScheduleConfig
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sc, fmt.Errorf("reading schedule config: %w", err)
+	}
+	if err := json.Unmarshal(data, &sc); err != nil {
+		return sc, fmt.Errorf("parsing schedule config: %w", err)
+	}
+	return sc, nil
+}
 
 // ErrInvalidLegacyInterval is returned when full_scan_interval parses to
 // a value the scheduler cannot express as a safe RRULE (sub-minute
@@ -70,7 +104,7 @@ func MigrateLegacyScheduleConfig(
 		return MigrationReport{}, fmt.Errorf("stat source: %w", err)
 	}
 
-	cfg, err := NewScheduleConfigStore(source).Load()
+	cfg, err := loadLegacyScheduleConfig(source)
 	if err != nil {
 		return MigrationReport{}, fmt.Errorf("load legacy config: %w", err)
 	}
@@ -173,7 +207,7 @@ func MigrateLegacyScheduleConfig(
 	return report, nil
 }
 
-// durationToRRule maps a ScheduleConfig.FullScanInterval duration onto
+// durationToRRule maps a legacy FullScanInterval duration onto
 // an RFC-5545 RRULE. Mappings defined by SPEC-SCHED1 R21 step 4:
 //
 //	15m   → FREQ=MINUTELY;INTERVAL=15
@@ -229,7 +263,7 @@ func legacyToolsToConfig(tools []string) model.ToolConfig {
 
 // legacyWindowToMaintenance converts the legacy HH:MM window into a
 // nested RRULE-based MaintenanceWindow. A disabled window returns nil.
-func legacyWindowToMaintenance(w ScheduleConfigWindow) *model.MaintenanceWindow {
+func legacyWindowToMaintenance(w legacyScheduleConfigWindow) *model.MaintenanceWindow {
 	if !w.Enabled {
 		return nil
 	}
@@ -265,7 +299,7 @@ func legacyWindowToMaintenance(w ScheduleConfigWindow) *model.MaintenanceWindow 
 // migration time. Honors RunOnStart: true → now, false → now + 1 tick
 // of full_scan_interval. The scheduler re-materializes this on its next
 // tick via the RRULE library anyway; this is just a reasonable seed.
-func computeInitialNextRun(cfg ScheduleConfig, now time.Time) *time.Time {
+func computeInitialNextRun(cfg legacyScheduleConfig, now time.Time) *time.Time {
 	if cfg.RunOnStart {
 		t := now
 		return &t
