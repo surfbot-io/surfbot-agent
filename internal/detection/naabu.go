@@ -85,10 +85,50 @@ type dialFunc func(network, addr string, timeout time.Duration) (net.Conn, error
 // defaultDialer is the production dialer.
 var defaultDialer dialFunc = net.DialTimeout
 
+// resolveNaabuParams returns the params NaabuTool should run with,
+// preferring opts.NaabuParams when supplied and falling back to
+// model.DefaultNaabuParams() per-field. The legacy ExtraArgs["ports"]
+// and opts.RateLimit overrides still win when typed params are absent
+// so existing CLI/test callers keep working unchanged.
+func resolveNaabuParams(opts RunOptions) model.NaabuParams {
+	defaults := model.DefaultNaabuParams()
+	if opts.NaabuParams == nil {
+		if v, ok := opts.ExtraArgs["ports"]; ok && v != "" {
+			defaults.Ports = v
+		}
+		if opts.RateLimit > 0 {
+			defaults.Rate = opts.RateLimit
+		}
+		if v, ok := opts.ExtraArgs["no-banner"]; ok {
+			if v == "true" || v == "1" {
+				defaults.BannerGrab = false
+			}
+		}
+		return defaults
+	}
+	resolved := *opts.NaabuParams
+	if resolved.Ports == "" {
+		resolved.Ports = defaults.Ports
+	}
+	if resolved.Rate <= 0 {
+		resolved.Rate = defaults.Rate
+	}
+	if resolved.Retries <= 0 {
+		resolved.Retries = defaults.Retries
+	}
+	if resolved.ScanType == "" {
+		resolved.ScanType = defaults.ScanType
+	}
+	// BannerGrab is bool; the typed struct's zero value (false) is a
+	// valid explicit override, so we don't fill from defaults.
+	return resolved
+}
+
 func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	startedAt := time.Now().UTC()
 
-	ports, err := ParsePorts(opts.ExtraArgs["ports"])
+	params := resolveNaabuParams(opts)
+	ports, err := ParsePorts(params.Ports)
 	if err != nil {
 		return nil, fmt.Errorf("naabu: parsing ports: %w", err)
 	}
@@ -100,19 +140,12 @@ func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 		}
 	}
 
-	concurrency := opts.RateLimit
+	concurrency := params.Rate
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency
 	}
 
-	// --no-banner disables banner grab entirely (R11). Defaults to banner
-	// grab enabled. Accepts "true"/"1" for the flag.
-	noBanner := false
-	if v, ok := opts.ExtraArgs["no-banner"]; ok {
-		if v == "true" || v == "1" {
-			noBanner = true
-		}
-	}
+	noBanner := !params.BannerGrab
 
 	br := newBreaker(concurrency)
 	retryCap := concurrency / 4
@@ -167,7 +200,7 @@ func (n *NaabuTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 		len(inputs), len(ports), openCount, filteredCount, dialTimeout, concurrency)
 	attachExecContext(&tr,
 		fmt.Sprintf("naabu (in-process scanner, ports=%s, timeout=%s, concurrency=%d, banner=%v)",
-			opts.ExtraArgs["ports"], dialTimeout, concurrency, !noBanner),
+			params.Ports, dialTimeout, concurrency, !noBanner),
 		0,
 		errLog.String(),
 		inputs,

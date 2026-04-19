@@ -8,13 +8,120 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
+
+func swapNaabuDialer(t *testing.T, fn dialFunc) {
+	t.Helper()
+	prev := defaultDialer
+	defaultDialer = fn
+	t.Cleanup(func() { defaultDialer = prev })
+}
+
+func TestResolveNaabuParams_TypedOverridesWin(t *testing.T) {
+	got := resolveNaabuParams(RunOptions{
+		NaabuParams: &model.NaabuParams{Ports: "22,80", Rate: 5, Retries: 2},
+	})
+	assert.Equal(t, "22,80", got.Ports)
+	assert.Equal(t, 5, got.Rate)
+	assert.Equal(t, 2, got.Retries)
+}
+
+func TestResolveNaabuParams_FallsBackToDefaults(t *testing.T) {
+	got := resolveNaabuParams(RunOptions{})
+	def := model.DefaultNaabuParams()
+	assert.Equal(t, def.Ports, got.Ports)
+	assert.Equal(t, def.Rate, got.Rate)
+}
+
+func TestNaabu_ParamsPropagation_Ports(t *testing.T) {
+	var seen sync.Map
+	dial := func(network, addr string, _ time.Duration) (net.Conn, error) {
+		seen.Store(addr, true)
+		return nil, errors.New("dial tcp: connect: connection refused")
+	}
+	swapNaabuDialer(t, dial)
+
+	n := NewNaabuTool()
+	_, err := n.Run(context.Background(), []string{"1.2.3.4"}, RunOptions{
+		NaabuParams: &model.NaabuParams{Ports: "22,80", Rate: 4, BannerGrab: true},
+	})
+	require.NoError(t, err)
+	_, hit22 := seen.Load("1.2.3.4:22")
+	_, hit80 := seen.Load("1.2.3.4:80")
+	_, hit443 := seen.Load("1.2.3.4:443")
+	assert.True(t, hit22, "dialer must have been called for port 22 from params.Ports")
+	assert.True(t, hit80, "dialer must have been called for port 80 from params.Ports")
+	assert.False(t, hit443, "port 443 must not be probed when Ports=\"22,80\"")
+}
+
+func TestNaabu_ParamsPropagation_Rate(t *testing.T) {
+	var inflight, peak int32
+	dial := func(network, addr string, _ time.Duration) (net.Conn, error) {
+		cur := atomic.AddInt32(&inflight, 1)
+		defer atomic.AddInt32(&inflight, -1)
+		// Track high-water mark of concurrent dials.
+		for {
+			old := atomic.LoadInt32(&peak)
+			if cur <= old || atomic.CompareAndSwapInt32(&peak, old, cur) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		return nil, errors.New("connection refused")
+	}
+	swapNaabuDialer(t, dial)
+
+	n := NewNaabuTool()
+	// 16 ports, Rate=4 → effective concurrency capped at 4.
+	_, err := n.Run(context.Background(), []string{"1.2.3.4"}, RunOptions{
+		NaabuParams: &model.NaabuParams{
+			Ports:      "1-16",
+			Rate:       4,
+			BannerGrab: true,
+		},
+	})
+	require.NoError(t, err)
+	observed := atomic.LoadInt32(&peak)
+	assert.LessOrEqual(t, observed, int32(4),
+		"peak concurrency must be ≤ params.Rate (got %d)", observed)
+}
+
+func TestNaabu_CtxCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	dial := func(network, addr string, _ time.Duration) (net.Conn, error) {
+		// Block until ctx fires so cancellation propagates promptly through
+		// every in-flight dial. Without this, naabu's wg.Wait() would
+		// stall on goroutines blocked in net.DialTimeout.
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	swapNaabuDialer(t, dial)
+
+	n := NewNaabuTool()
+	done := make(chan struct{})
+	go func() {
+		_, _ = n.Run(ctx, []string{"1.2.3.4"}, RunOptions{
+			NaabuParams: &model.NaabuParams{Ports: "1-50", Rate: 10, BannerGrab: false},
+		})
+		close(done)
+	}()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return within 500ms after ctx cancel")
+	}
+}
 
 func TestPortParsing(t *testing.T) {
 	tests := []struct {
