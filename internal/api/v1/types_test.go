@@ -79,12 +79,11 @@ func TestMethodNotAllowedSetsHeader(t *testing.T) {
 	}
 }
 
-func TestRegisterRoutesNoop(t *testing.T) {
-	// R1 ships the scaffold; later commits add handlers.
+func TestRegisterRoutesHandlesUnknownPath(t *testing.T) {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, APIDeps{})
-	// A path not yet registered should 404 via the default mux behavior.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/schedules", nil)
+	// A path outside the registered tree 404s via the mux default.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {

@@ -39,8 +39,11 @@ type APIDeps struct {
 // phases of SPEC-SCHED1.3a add more handlers — each one extends this
 // function. No existing routes are replaced; the API is additive.
 func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
-	_ = &handlers{deps: deps}
-	// Routes are registered as subsequent 1.3a commits land.
+	h := &handlers{deps: deps}
+
+	// Schedules CRUD + pause/resume.
+	mux.HandleFunc("/api/v1/schedules", h.routeSchedules)
+	mux.HandleFunc("/api/v1/schedules/", h.routeSchedulesSubtree)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
