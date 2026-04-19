@@ -71,6 +71,67 @@ var RegisteredToolParams = map[string]reflect.Type{
 	"dnsx":      reflect.TypeOf(DnsxParams{}),
 }
 
+// DefaultNucleiParams returns the params reproducing nuclei's pre-SCHED1
+// behavior. These values mirror the hardcoded defaults from the
+// pre-1.2c body of internal/detection/nuclei.go::Run: severity covers
+// every level, rate limit 150 req/s, per-template timeout 5s.
+func DefaultNucleiParams() NucleiParams {
+	return NucleiParams{
+		Severity:  []string{"critical", "high", "medium", "low", "info"},
+		RateLimit: 150,
+		Timeout:   5 * time.Second,
+	}
+}
+
+// DefaultNaabuParams returns the params reproducing naabu's pre-SCHED1
+// behavior. These mirror the hardcoded defaults from the pre-1.2c body
+// of internal/detection/naabu.go::Run: top-100 ports, breaker-controlled
+// concurrency (~20 effective on residential links), one retry on timeout,
+// banner grab enabled.
+func DefaultNaabuParams() NaabuParams {
+	return NaabuParams{
+		Ports:      "top100",
+		Rate:       20,
+		Retries:    1,
+		ScanType:   "connect",
+		BannerGrab: true,
+	}
+}
+
+// DefaultHttpxParams returns the params reproducing httpx's pre-SCHED1
+// behavior. Mirrors internal/detection/httpx.go::Run: 50-way fan-out,
+// HTTP+HTTPS probes auto-derived per port, follow up to 3 redirects,
+// 10s per-probe timeout.
+func DefaultHttpxParams() HttpxParams {
+	return HttpxParams{
+		Threads:         50,
+		Probes:          []string{"http", "https"},
+		FollowRedirects: true,
+		Timeout:         10 * time.Second,
+	}
+}
+
+// DefaultSubfinderParams returns the params reproducing subfinder's
+// pre-SCHED1 behavior. Mirrors internal/detection/subfinder.go::
+// buildSubfinderOptions: 10 worker threads, every available passive
+// source.
+func DefaultSubfinderParams() SubfinderParams {
+	return SubfinderParams{
+		AllSources: true,
+	}
+}
+
+// DefaultDnsxParams returns the params reproducing dnsx's pre-SCHED1
+// behavior. Mirrors internal/detection/dnsx.go::Run: A+AAAA+CNAME
+// records resolved via the system resolver, no in-loop retries (the
+// resolver itself manages retries).
+func DefaultDnsxParams() DnsxParams {
+	return DnsxParams{
+		RecordTypes: []string{"A", "AAAA", "CNAME"},
+		Retries:     1,
+	}
+}
+
 // ValidateToolConfig returns ErrUnknownTool (wrapped with the offending
 // tool name) when the ToolConfig contains a key that is not in
 // RegisteredToolParams, and ErrInvalidToolParams when a payload fails to
