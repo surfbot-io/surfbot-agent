@@ -46,6 +46,7 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	mux.HandleFunc("/api/v1/schedules", h.routeSchedules)
 	mux.HandleFunc("/api/v1/schedules/", h.routeSchedulesSubtree)
 	mux.HandleFunc("/api/v1/schedules/upcoming", h.routeUpcoming)
+	mux.HandleFunc("/api/v1/schedules/bulk", h.routeBulkSchedules)
 
 	// Templates CRUD.
 	mux.HandleFunc("/api/v1/templates", h.routeTemplates)
