@@ -208,9 +208,13 @@ func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *Daem
 }
 
 // isAssetPath reports whether a request path lives under one of the
-// static-asset directory prefixes the SPA serves. The SPA fallback skips
-// these so that missing assets return 404 instead of HTML.
+// static-asset directory prefixes the SPA serves, or under /api/. The
+// SPA fallback skips these so that missing assets and unregistered API
+// routes return 404 instead of being masked by the HTML shell.
 func isAssetPath(p string) bool {
+	if strings.HasPrefix(p, "/api/") {
+		return true
+	}
 	for _, pfx := range []string{"/static/", "/js/", "/css/", "/img/", "/assets/", "/fonts/"} {
 		if strings.HasPrefix(p, pfx) {
 			return true

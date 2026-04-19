@@ -1,0 +1,304 @@
+//go:build integration
+
+package webui
+
+// SPEC-SCHED1.4a R11: integration coverage for the UI scaffold.
+//
+// The existing webui is a vanilla-JS SPA, so "page renders" is proven by
+// two signals the Go side owns end-to-end:
+//
+//   1. The shell (index.html) is served and contains the four new nav
+//      hrefs + the four new <script src="..."> tags; the legacy
+//      settings_schedule.js tag is gone.
+//   2. The embed.FS bundles the four new JS files and does NOT bundle
+//      the deleted settings_schedule.js.
+//
+// Both are cheap string-level checks but they catch the common break
+// modes: forgotten embed directive, sidebar link lost in a merge, or
+// regressed //go:embed pattern. The live API endpoints are exercised
+// with a seeded DB — two templates, three schedules, one blackout, one
+// defaults row — to confirm the SPA has real data to render against.
+//
+// Run with: go test -tags=integration ./internal/webui/... -race -count=1
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
+	"github.com/surfbot-io/surfbot-agent/internal/storage"
+)
+
+// startIntegrationServer boots a real webui.NewServer on a loopback
+// port with a file-backed SQLite store, matching the 1.2c deviation
+// (:memory: is per-connection, file backing gives a stable schema view
+// to every pool conn). Returns base URL and teardown.
+func startIntegrationServer(t *testing.T) (*storage.SQLiteStore, string, func()) {
+	t.Helper()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "ui.db"))
+	require.NoError(t, err)
+
+	tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := tmpLn.Addr().(*net.TCPAddr).Port
+	require.NoError(t, tmpLn.Close())
+
+	srv, ln, err := NewServer(store, ServerOptions{
+		Bind: "127.0.0.1", Port: port, Version: "integ-test",
+	})
+	require.NoError(t, err)
+
+	go func() { _ = srv.Serve(ln) }()
+	time.Sleep(20 * time.Millisecond)
+
+	base := "http://127.0.0.1:" + strings.TrimPrefix(ln.Addr().String(), "127.0.0.1:")
+	_ = base // the addr above has port literal; build cleanly
+	base = "http://127.0.0.1:" + itoaTest(port)
+
+	cleanup := func() {
+		_ = srv.Shutdown(context.Background())
+		_ = store.Close()
+	}
+	return store, base, cleanup
+}
+
+func itoaTest(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+// seedUIFixtures populates the DB with: 1 target, 2 templates, 3
+// schedules (2 active + 1 paused, one using a template), 1 blackout,
+// 1 defaults row. The API's list endpoints must then surface those
+// rows so the SPA has realistic shapes to render against.
+func seedUIFixtures(t *testing.T, store *storage.SQLiteStore) (targetID string, templateIDs []string, scheduleIDs []string, blackoutID string) {
+	t.Helper()
+	ctx := t.Context()
+
+	tgt := &model.Target{Value: "example.com"}
+	require.NoError(t, store.CreateTarget(ctx, tgt))
+	targetID = tgt.ID
+
+	for i, name := range []string{"nightly", "weekly"} {
+		tmpl := &model.Template{
+			Name:     name,
+			RRule:    "FREQ=DAILY",
+			Timezone: "UTC",
+		}
+		if i == 1 {
+			tmpl.RRule = "FREQ=WEEKLY"
+		}
+		require.NoError(t, store.Templates().Create(ctx, tmpl))
+		templateIDs = append(templateIDs, tmpl.ID)
+	}
+
+	mkSched := func(name string, tmplID *string, enabled bool) string {
+		s := &model.Schedule{
+			TargetID:   targetID,
+			Name:       name,
+			RRule:      "FREQ=DAILY",
+			DTStart:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Timezone:   "UTC",
+			TemplateID: tmplID,
+			Enabled:    enabled,
+		}
+		require.NoError(t, store.Schedules().Create(ctx, s))
+		return s.ID
+	}
+	scheduleIDs = append(scheduleIDs,
+		mkSched("sched-a", &templateIDs[0], true),
+		mkSched("sched-b", &templateIDs[1], true),
+		mkSched("sched-c", nil, false),
+	)
+
+	// Pad DTSTART by 1s to avoid the 1.1 blackout-overlap guard
+	// (propagated test discipline from prior SCHED1 phases).
+	bo := &model.BlackoutWindow{
+		Scope:       model.BlackoutScopeGlobal,
+		Name:        "maintenance",
+		RRule:       "FREQ=WEEKLY;BYDAY=SU",
+		DurationSec: 3600,
+		Timezone:    "UTC",
+		Enabled:     true,
+	}
+	require.NoError(t, store.Blackouts().Create(ctx, bo))
+	blackoutID = bo.ID
+
+	defaults := &model.ScheduleDefaults{
+		DefaultRRule:       "FREQ=DAILY;BYHOUR=2",
+		DefaultTimezone:    "UTC",
+		MaxConcurrentScans: 4,
+		RunOnStart:         false,
+		JitterSeconds:      60,
+	}
+	require.NoError(t, store.ScheduleDefaults().Update(ctx, defaults))
+	return
+}
+
+func getBody(t *testing.T, url string) (int, []byte) {
+	t.Helper()
+	resp, err := http.Get(url)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, body
+}
+
+// TestIntegration_UIScaffold_ShellAndEmbed asserts the SPA shell +
+// embed.FS are in the expected shape after the 1.4a additions and
+// deletions. Cheap string-level checks — they catch the common break
+// modes (dropped //go:embed, lost sidebar link, stale <script> tag).
+func TestIntegration_UIScaffold_ShellAndEmbed(t *testing.T) {
+	_, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	// (1) Shell served at `/`.
+	code, body := getBody(t, base+"/")
+	assert.Equal(t, http.StatusOK, code, "GET / must serve the SPA shell")
+	html := string(body)
+
+	// New nav hrefs are all present.
+	for _, href := range []string{
+		`href="#/schedules"`,
+		`href="#/templates"`,
+		`href="#/blackouts"`,
+		`href="#/settings/defaults"`,
+	} {
+		assert.Contains(t, html, href, "shell is missing nav link %s", href)
+	}
+
+	// New <script> tags are all present.
+	for _, src := range []string{
+		`/js/pages/schedules.js`,
+		`/js/pages/templates.js`,
+		`/js/pages/blackouts.js`,
+		`/js/pages/settings_defaults.js`,
+	} {
+		assert.Contains(t, html, src, "shell is missing script tag for %s", src)
+	}
+
+	// R10 deletion proofs: legacy page tag and sidebar link gone.
+	assert.NotContains(t, html, "settings_schedule.js",
+		"shell still references the deleted legacy page script")
+	assert.NotContains(t, html, `href="#/settings/schedule"`,
+		"shell still has the legacy sidebar link")
+
+	// (2) embed.FS inventory. The four new files must be bundled, the
+	// deleted one must not.
+	for _, p := range []string{
+		"static/js/pages/schedules.js",
+		"static/js/pages/templates.js",
+		"static/js/pages/blackouts.js",
+		"static/js/pages/settings_defaults.js",
+	} {
+		_, err := fs.Stat(staticFS, p)
+		assert.NoError(t, err, "embed.FS is missing %s", p)
+	}
+	_, err := fs.Stat(staticFS, "static/js/pages/settings_schedule.js")
+	assert.Error(t, err, "embed.FS still bundles the deleted settings_schedule.js")
+}
+
+// TestIntegration_UIScaffold_RemovedEndpoints proves R9 and R10 removal
+// at the HTTP surface. Without the handler, the SPA fallback catches
+// `GET /settings/schedule` and serves the shell (200); `POST
+// /api/daemon/trigger` is an /api/ path that is no longer registered
+// and must 404 cleanly rather than being swallowed by the SPA fallback.
+func TestIntegration_UIScaffold_RemovedEndpoints(t *testing.T) {
+	_, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	// R9: the former POST /api/daemon/trigger returns 404. The SPA
+	// fallback refuses to serve index.html for /api/ paths by design
+	// (only /js/, /css/, /img/, /static/, /assets/, /fonts/ prefixes
+	// and the root are asset paths; /api/ is unregistered and falls
+	// through to http.NotFound).
+	req, err := http.NewRequest(http.MethodPost, base+"/api/daemon/trigger", strings.NewReader(`{"profile":"full"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", base)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"POST /api/daemon/trigger must 404 after SPEC-SCHED1.4a removal")
+
+	// R10: GET /settings/schedule is handled by the SPA fallback
+	// (serves index.html with 200). The shell no longer registers
+	// `/^#\/settings\/schedule/` as a client-side route, so the SPA
+	// router will render its default "Page not found" empty-state once
+	// the hash is applied — acceptable per the user's 1.4a smoke
+	// protocol (no Go-side 404 expected here).
+	code, _ := getBody(t, base+"/settings/schedule")
+	assert.Equal(t, http.StatusOK, code,
+		"GET /settings/schedule should fall through to the SPA shell")
+}
+
+// TestIntegration_UIScaffold_APIEndpoints exercises the 1.3a list and
+// singleton endpoints the SPA pages call on load. Seeded fixtures
+// guarantee each list is non-empty so the schemas are tested against
+// real data, not zero-value responses.
+func TestIntegration_UIScaffold_APIEndpoints(t *testing.T) {
+	store, base, stop := startIntegrationServer(t)
+	defer stop()
+	_, templateIDs, scheduleIDs, blackoutID := seedUIFixtures(t, store)
+
+	// GET /api/v1/schedules — contains every seeded ID.
+	code, body := getBody(t, base+"/api/v1/schedules")
+	assert.Equal(t, http.StatusOK, code)
+	for _, id := range scheduleIDs {
+		assert.Contains(t, string(body), id, "schedules list missing %s", id)
+	}
+
+	// GET /api/v1/schedules/<id> — detail renders.
+	code, body = getBody(t, base+"/api/v1/schedules/"+scheduleIDs[0])
+	assert.Equal(t, http.StatusOK, code)
+	assert.Contains(t, string(body), scheduleIDs[0])
+
+	// GET /api/v1/templates — both templates surface.
+	code, body = getBody(t, base+"/api/v1/templates")
+	assert.Equal(t, http.StatusOK, code)
+	for _, id := range templateIDs {
+		assert.Contains(t, string(body), id, "templates list missing %s", id)
+	}
+
+	// GET /api/v1/templates/<id> — detail.
+	code, body = getBody(t, base+"/api/v1/templates/"+templateIDs[0])
+	assert.Equal(t, http.StatusOK, code)
+	assert.Contains(t, string(body), templateIDs[0])
+
+	// GET /api/v1/blackouts — blackout present.
+	code, body = getBody(t, base+"/api/v1/blackouts")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Contains(t, string(body), blackoutID)
+
+	// GET /api/v1/schedule-defaults — returns a shape with the
+	// expected scalar fields. This is a singleton so we just confirm
+	// the JSON parses and carries the saved values.
+	code, body = getBody(t, base+"/api/v1/schedule-defaults")
+	assert.Equal(t, http.StatusOK, code)
+	var defaults map[string]any
+	require.NoError(t, json.Unmarshal(body, &defaults))
+	assert.Equal(t, "UTC", defaults["default_timezone"])
+	assert.EqualValues(t, 4, defaults["max_concurrent_scans"])
+}
