@@ -33,7 +33,7 @@ func (s *SQLiteStore) Templates() TemplateStore {
 }
 
 type sqliteTemplateStore struct {
-	db *sql.DB
+	db dbtx
 }
 
 const templateColumns = `id, name, description, rrule, timezone, tool_config,

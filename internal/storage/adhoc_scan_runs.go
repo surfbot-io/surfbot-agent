@@ -34,7 +34,7 @@ func (s *SQLiteStore) AdHocScanRuns() AdHocScanRunStore {
 }
 
 type sqliteAdHocScanRunStore struct {
-	db *sql.DB
+	db dbtx
 }
 
 const adhocColumns = `id, target_id, template_id, tool_config, initiated_by, reason,
@@ -223,7 +223,7 @@ func scanAdHoc(r rowScanner) (*model.AdHocScanRun, error) {
 	return &ah, nil
 }
 
-func queryManyAdHoc(ctx context.Context, db *sql.DB, query string, args ...any) ([]model.AdHocScanRun, error) {
+func queryManyAdHoc(ctx context.Context, db dbtx, query string, args ...any) ([]model.AdHocScanRun, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying ad_hoc_scan_runs: %w", err)

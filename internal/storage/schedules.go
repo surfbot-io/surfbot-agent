@@ -41,7 +41,7 @@ func (s *SQLiteStore) Schedules() ScheduleStore {
 }
 
 type sqliteScheduleStore struct {
-	db *sql.DB
+	db dbtx
 }
 
 const scheduleColumns = `id, target_id, name, rrule, dtstart, timezone, template_id, tool_config,
@@ -343,7 +343,7 @@ func scanSchedule(r rowScanner) (*model.Schedule, error) {
 	return &s, nil
 }
 
-func queryManySchedules(ctx context.Context, db *sql.DB, query string, args ...any) ([]model.Schedule, error) {
+func queryManySchedules(ctx context.Context, db dbtx, query string, args ...any) ([]model.Schedule, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying schedules: %w", err)

@@ -25,7 +25,7 @@ func (s *SQLiteStore) ScheduleDefaults() ScheduleDefaultsStore {
 }
 
 type sqliteScheduleDefaultsStore struct {
-	db *sql.DB
+	db dbtx
 }
 
 func (st *sqliteScheduleDefaultsStore) Get(ctx context.Context) (*model.ScheduleDefaults, error) {

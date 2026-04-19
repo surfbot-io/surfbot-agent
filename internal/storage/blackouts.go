@@ -33,7 +33,7 @@ func (s *SQLiteStore) Blackouts() BlackoutStore {
 }
 
 type sqliteBlackoutStore struct {
-	db *sql.DB
+	db dbtx
 }
 
 const blackoutColumns = `id, scope, target_id, name, rrule, duration_sec, timezone,
@@ -195,7 +195,7 @@ func scanBlackout(r rowScanner) (*model.BlackoutWindow, error) {
 	return &b, nil
 }
 
-func queryManyBlackouts(ctx context.Context, db *sql.DB, query string, args ...any) ([]model.BlackoutWindow, error) {
+func queryManyBlackouts(ctx context.Context, db dbtx, query string, args ...any) ([]model.BlackoutWindow, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying blackouts: %w", err)
