@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/surfbot-io/surfbot-agent/internal/cli/apiclient"
 )
@@ -58,6 +59,7 @@ func runCLI(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	prevJSON := jsonOut
 	jsonOut = false
+	resetCobraFlags(rootCmd)
 	var out, errBuf bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errBuf)
@@ -70,6 +72,27 @@ func runCLI(t *testing.T, args ...string) (string, string, error) {
 	})
 	err := rootCmd.Execute()
 	return out.String(), errBuf.String(), err
+}
+
+// resetCobraFlags walks every flag under cmd (including subcommands)
+// and restores the flag value to its default. Cobra does not clear
+// parsed values between Execute calls, so leftover values leak
+// between tests — this helper keeps each test isolated.
+func resetCobraFlags(cmd *cobra.Command) {
+	walk := func(c *cobra.Command) {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+		c.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+	}
+	walk(cmd)
+	for _, sub := range cmd.Commands() {
+		resetCobraFlags(sub)
+	}
 }
 
 func TestTemplateListRendersTable(t *testing.T) {
