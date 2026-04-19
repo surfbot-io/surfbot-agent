@@ -267,7 +267,6 @@ const ScansPage = {
     { key: 'port_scan', label: 'Ports' },
     { key: 'http_probe', label: 'HTTP' },
     { key: 'assessment', label: 'Analyzing' },
-    { key: 'completed', label: 'Complete' },
   ],
 
   TOOL_ICONS: {
@@ -296,16 +295,7 @@ const ScansPage = {
       let content = num;
       let stepClass = 'phase-step';
 
-      if (p.key === 'completed') {
-        // Last step: "Complete"
-        if (isTerminal && scan.status === 'completed') {
-          circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
-        } else if (scan.status === 'failed') {
-          circleClass += ' phase-failed'; content = '\u2717';
-        } else if (scan.status === 'cancelled') {
-          circleClass += ' phase-cancelled'; content = '\u2013';
-        }
-      } else if (isTerminal && scan.status === 'completed' && ran.has(p.key)) {
+      if (isTerminal && scan.status === 'completed' && ran.has(p.key)) {
         circleClass += ' phase-done'; content = '\u2713'; stepClass += ' done';
       } else if (isTerminal && scan.status === 'completed' && !ran.has(p.key)) {
         circleClass += ' phase-skipped'; content = '\u2013'; stepClass += ' skipped';
@@ -593,10 +583,13 @@ const ScansPage = {
   formatAssetValueCell(f) {
     if (f.asset_value) {
       const label = f.asset_value.length > 60 ? f.asset_value.slice(0, 57) + '…' : f.asset_value;
+      if (f.asset_id) {
+        return `<a href="#/assets/${f.asset_id}" onclick="event.stopPropagation()">${escapeHtml(label)}</a>`;
+      }
       return escapeHtml(label);
     }
     if (f.asset_id) {
-      return `<span class="text-muted">${f.asset_id.slice(0, 8)}</span>`;
+      return `<a href="#/assets/${f.asset_id}" class="text-muted" onclick="event.stopPropagation()">${f.asset_id.slice(0, 8)}</a>`;
     }
     return '<span class="text-muted">—</span>';
   },
@@ -694,6 +687,11 @@ const ScansPage = {
     const assets = state.assets_by_type || {};
     const ports = state.ports_by_status || {};
 
+    // Ordering mirrors internal/pipeline/pipeline.go printTargetStateBlock:
+    // KnownAssetTypes order for assets, with ports broken down by status
+    // slotted in after port_service, and any unknown asset types (open
+    // vocabulary) appended alphabetically at the tail. Findings open
+    // closes the card after a divider.
     const stateItems = [
       { label: 'Subdomains', value: assets.subdomain },
       { label: 'IPs (v4)', value: assets.ipv4 },
@@ -702,17 +700,19 @@ const ScansPage = {
       { label: 'Ports (filtered)', value: ports.filtered },
       { label: 'Endpoints', value: assets.url },
       { label: 'Technologies', value: assets.technology },
-      { label: 'Findings open', value: state.findings_open_total },
+      { label: 'Domains', value: assets.domain },
+      { label: 'Services', value: assets.service },
     ].filter(i => i.value > 0);
 
-    // AssetType is an open vocabulary — surface keys we don't recognize
-    // explicitly so a tool that emits e.g. "cloud_bucket" still shows up.
     const known = new Set(['subdomain', 'ipv4', 'ipv6', 'port_service', 'url', 'technology', 'domain', 'service']);
-    Object.entries(assets).forEach(([k, v]) => {
-      if (!known.has(k) && v > 0) {
-        stateItems.push({ label: this.titleCase(k), value: v });
-      }
-    });
+    const extras = Object.entries(assets)
+      .filter(([k, v]) => !known.has(k) && v > 0)
+      .sort(([a], [b]) => a.localeCompare(b));
+    extras.forEach(([k, v]) => stateItems.push({ label: this.titleCase(k), value: v }));
+
+    if (state.findings_open_total > 0) {
+      stateItems.push({ label: 'Findings open', value: state.findings_open_total, divider: true });
+    }
 
     if (stateItems.length === 0) return '';
 
@@ -722,7 +722,10 @@ const ScansPage = {
     return `<div class="card">
       <div class="card-label">Target state</div>
       <div class="detail-grid" style="margin-top:8px">
-        ${stateItems.map(i => `<span class="detail-label">${escapeHtml(i.label)}</span><span class="detail-value">${i.value}</span>`).join('')}
+        ${stateItems.map(i => {
+          const dividerCls = i.divider ? ' detail-divider' : '';
+          return `<span class="detail-label${dividerCls}">${escapeHtml(i.label)}</span><span class="detail-value${dividerCls}">${i.value}</span>`;
+        }).join('')}
       </div>
       ${hasSev ? Components.severityBars({
         critical: sevs.critical || 0,
@@ -742,7 +745,9 @@ const ScansPage = {
     if (delta.is_baseline) {
       return `<div class="card">
         <div class="card-label">Changes</div>
-        <p class="text-muted" style="margin-top:8px">Baseline scan — run again to detect changes.</p>
+        <div class="detail-grid detail-grid-message" style="margin-top:8px">
+          <span class="text-muted">Baseline scan — run again to detect changes.</span>
+        </div>
       </div>`;
     }
 
@@ -757,7 +762,9 @@ const ScansPage = {
     if (total === 0) {
       return `<div class="card">
         <div class="card-label">Changes</div>
-        <p class="text-muted" style="margin-top:8px">No changes since last scan.</p>
+        <div class="detail-grid detail-grid-message" style="margin-top:8px">
+          <span class="text-muted">No changes since last scan.</span>
+        </div>
       </div>`;
     }
 
@@ -901,14 +908,34 @@ const ScansPage = {
     // the same info in three places (Target State + Changes card + Asset
     // Changes table). Non-baseline scans render the table as before.
     const isBaseline = !!(s.delta && s.delta.is_baseline);
-    const changeRows = data.changes.map(c => `
+    const changeRows = data.changes.map(c => {
+      const valueCell = c.asset_id
+        ? `<a href="#/assets/${c.asset_id}">${escapeHtml(c.asset_value)}</a>`
+        : escapeHtml(c.asset_value);
+      return `
       <tr>
         <td><span class="change-${c.change_type}">${c.change_type}</span></td>
         <td>${escapeHtml(this.titleCase(c.asset_type || ''))}</td>
-        <td class="mono">${escapeHtml(c.asset_value)}</td>
+        <td class="mono">${valueCell}</td>
         <td>${escapeHtml(c.summary || '-')}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
+
+    const targetLink = s.target_id
+      ? `<a href="#/targets/${s.target_id}" class="mono scan-detail-target-link">${escapeHtml(data.target)}</a>`
+      : `<span class="text-muted mono">${escapeHtml(data.target)}</span>`;
+
+    const metaParts = [
+      targetLink,
+      `<span class="text-muted">${dur}</span>`,
+    ];
+    if (s.finished_at) {
+      metaParts.push(`<span class="text-muted">finished ${Components.timeAgo(s.finished_at)}</span>`);
+    } else if (isRunning && s.started_at) {
+      metaParts.push(`<span class="text-muted">started ${Components.timeAgo(s.started_at)}</span>`);
+    }
+    const metaRow = `<div class="detail-meta">${metaParts.join(' <span class="detail-meta-sep">\u00B7</span> ')}</div>`;
 
     app.innerHTML = `
       ${Components.backLink('#/scans', 'Back to scans')}
@@ -918,10 +945,9 @@ const ScansPage = {
             ${Components.statusBadge(s.status)}
             <h2>Scan ${Components.truncateID(s.id)}</h2>
             ${typeBadge}
-            <span class="text-muted mono" style="font-size:12px;margin-left:8px">${escapeHtml(data.target)}</span>
-            <span class="text-muted" style="font-size:12px;margin-left:4px">${dur}</span>
             <div style="margin-left:auto">${cancelBtn}</div>
           </div>
+          ${metaRow}
           ${timestamps.length > 0 ? `<div class="text-muted" style="font-size:11px;margin-top:4px">${timestamps.join(' \u00B7 ')}</div>` : ''}
 
           ${this.renderPhaseIndicator(s, data.tool_runs)}
