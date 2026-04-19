@@ -219,6 +219,89 @@ func TestIntegration_UIScaffold_ShellAndEmbed(t *testing.T) {
 	assert.Error(t, err, "embed.FS still bundles the deleted settings_schedule.js")
 }
 
+// TestIntegration_UIWriteFlows asserts the 1.4b additions are in the
+// embedded SPA bundle and the shell wires the ad-hoc nav button. Every
+// assertion is a string-match on the embedded file contents or on the
+// served index.html — cheap and stable. Behavior verification lives in
+// the operator smoke TODO in the PR body; no JS test runner is added.
+func TestIntegration_UIWriteFlows(t *testing.T) {
+	_, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	code, body := getBody(t, base+"/")
+	require.Equal(t, http.StatusOK, code)
+	html := string(body)
+
+	// (1) Ad-hoc page module is embedded and wired into the shell.
+	_, err := fs.Stat(staticFS, "static/js/pages/adhoc.js")
+	assert.NoError(t, err, "embed.FS missing static/js/pages/adhoc.js")
+	assert.Contains(t, html, `/js/pages/adhoc.js`, "shell missing adhoc.js <script> tag")
+
+	// (2) "Run scan now" nav button in the sidebar.
+	assert.Contains(t, html, `id="nav-adhoc-btn"`, "shell missing Run scan now nav button")
+	assert.Contains(t, html, `Run scan now`, "shell missing Run scan now label")
+
+	// (3) components.js carries every 1.4b helper name.
+	components := readEmbedded(t, "static/js/components.js")
+	for _, name := range []string{
+		"formInput", "formSelect", "formTextarea", "formDatetime",
+		"rruleField", "rruleAttachBlurCheck",
+		"modal", "confirmDialog", "applyFieldErrors", "bulkActionsBar",
+	} {
+		assert.Contains(t, components, name, "components.js missing %s", name)
+	}
+
+	// (4) api.js exposes every 1.4b write method.
+	apijs := readEmbedded(t, "static/js/api.js")
+	for _, name := range []string{
+		"createSchedule", "updateSchedule", "deleteSchedule",
+		"pauseSchedule", "resumeSchedule", "bulkSchedules",
+		"createTemplate", "updateTemplate", "deleteTemplate",
+		"createBlackout", "updateBlackout", "deleteBlackout",
+		"updateDefaults", "createAdHocScan",
+		// Typed-error mapping for the dispatcher modal.
+		"DISPATCHER_UNREACHABLE", "TARGET_BUSY", "IN_BLACKOUT",
+	} {
+		assert.Contains(t, apijs, name, "api.js missing %s", name)
+	}
+
+	// (5) pages/*.js each carry their write-flow entry points.
+	schedulesJS := readEmbedded(t, "static/js/pages/schedules.js")
+	for _, name := range []string{
+		"openCreateForm", "openEditForm",
+		"setPauseState", "confirmDelete",
+		"runBulk", "confirmBulkDelete",
+	} {
+		assert.Contains(t, schedulesJS, name, "schedules.js missing %s", name)
+	}
+	templatesJS := readEmbedded(t, "static/js/pages/templates.js")
+	for _, name := range []string{"openCreateForm", "openEditForm", "confirmDelete"} {
+		assert.Contains(t, templatesJS, name, "templates.js missing %s", name)
+	}
+	blackoutsJS := readEmbedded(t, "static/js/pages/blackouts.js")
+	for _, name := range []string{"openCreateForm", "openEditForm", "confirmDelete"} {
+		assert.Contains(t, blackoutsJS, name, "blackouts.js missing %s", name)
+	}
+	defaultsJS := readEmbedded(t, "static/js/pages/settings_defaults.js")
+	for _, name := range []string{"editTemplate", "bindEditActions", "save"} {
+		assert.Contains(t, defaultsJS, name, "settings_defaults.js missing %s", name)
+	}
+	adhocJS := readEmbedded(t, "static/js/pages/adhoc.js")
+	for _, name := range []string{"AdHocPage", "readAdHocForm", "swapToSuccessView"} {
+		assert.Contains(t, adhocJS, name, "adhoc.js missing %s", name)
+	}
+}
+
+func readEmbedded(t *testing.T, path string) string {
+	t.Helper()
+	f, err := staticFS.Open(path)
+	require.NoError(t, err, "open embedded %s", path)
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(f)
+	require.NoError(t, err)
+	return string(b)
+}
+
 // TestIntegration_UIScaffold_RemovedEndpoints proves R9 and R10 removal
 // at the HTTP surface. Without the handler, the SPA fallback catches
 // `GET /settings/schedule` and serves the shell (200); `POST
