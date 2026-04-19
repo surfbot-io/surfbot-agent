@@ -613,6 +613,130 @@ func TestScheduler_InflightCleanup(t *testing.T) {
 	assert.Equal(t, 0, count, "inflight map must be empty after job completion")
 }
 
+// recordingAdHocStore captures every UpdateStatus / AttachScan call so
+// the ad-hoc dispatch tests can assert ad_hoc_scan_runs row transitions.
+type recordingAdHocStore struct {
+	mu       sync.Mutex
+	statuses []model.AdHocRunStatus
+	scanIDs  []string
+}
+
+func (f *recordingAdHocStore) Create(context.Context, *model.AdHocScanRun) error { return nil }
+func (f *recordingAdHocStore) Get(context.Context, string) (*model.AdHocScanRun, error) {
+	return nil, nil
+}
+func (f *recordingAdHocStore) ListByTarget(context.Context, string, int) ([]model.AdHocScanRun, error) {
+	return nil, nil
+}
+func (f *recordingAdHocStore) ListByStatus(context.Context, model.AdHocRunStatus) ([]model.AdHocScanRun, error) {
+	return nil, nil
+}
+func (f *recordingAdHocStore) UpdateStatus(_ context.Context, _ string, status model.AdHocRunStatus, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses = append(f.statuses, status)
+	return nil
+}
+func (f *recordingAdHocStore) AttachScan(_ context.Context, _, scanID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scanIDs = append(f.scanIDs, scanID)
+	return nil
+}
+func (f *recordingAdHocStore) Delete(context.Context, string) error { return nil }
+
+func (f *recordingAdHocStore) snapshot() ([]model.AdHocRunStatus, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := make([]model.AdHocRunStatus, len(f.statuses))
+	copy(st, f.statuses)
+	ids := make([]string, len(f.scanIDs))
+	copy(ids, f.scanIDs)
+	return st, ids
+}
+
+func TestScheduler_DispatchAdHoc_Success(t *testing.T) {
+	adhoc := &recordingAdHocStore{}
+	runner := &fakeRunner{scanID: "s_adhoc"}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    newTickerScheduleStore(),
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    adhoc,
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	scanID, err := s.DispatchAdHoc(context.Background(), model.AdHocScanRun{
+		ID:       "ar_1",
+		TargetID: "t1",
+		Status:   model.AdHocPending,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "s_adhoc", scanID)
+
+	statuses, scanIDs := adhoc.snapshot()
+	assert.Contains(t, statuses, model.AdHocRunning, "ad-hoc row must transition to Running")
+	assert.Contains(t, statuses, model.AdHocCompleted, "ad-hoc row must transition to Completed")
+	assert.Contains(t, scanIDs, "s_adhoc", "ad-hoc row must attach the scan ID")
+}
+
+func TestScheduler_DispatchAdHoc_TargetBusy(t *testing.T) {
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    newTickerScheduleStore(),
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    &recordingAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	// Pre-acquire the lock so DispatchAdHoc fails to TryAcquire.
+	require.True(t, s.locks.TryAcquire("t1"))
+	defer s.locks.Release("t1")
+
+	_, err := s.DispatchAdHoc(context.Background(), model.AdHocScanRun{ID: "ar_2", TargetID: "t1"})
+	assert.ErrorIs(t, err, ErrTargetBusy)
+}
+
+func TestScheduler_DispatchAdHoc_Blackout(t *testing.T) {
+	now := time.Now().UTC()
+	bo := &tickerBlackoutStore{windows: []model.BlackoutWindow{{
+		ID: "b1", Scope: model.BlackoutScopeGlobal, Name: "covers-now",
+		// Window starts 30m ago and lasts 1h, so "now" is solidly inside.
+		RRule: "FREQ=DAILY;COUNT=1", DurationSec: 3600, Timezone: "UTC",
+		Enabled: true, CreatedAt: now.Add(-30 * time.Minute),
+	}}}
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    newTickerScheduleStore(),
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: bo,
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    &recordingAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	_, err := s.DispatchAdHoc(context.Background(), model.AdHocScanRun{ID: "ar_3", TargetID: "t1"})
+	assert.ErrorIs(t, err, ErrInBlackout)
+	// Lock must not leak when refused.
+	assert.False(t, s.locks.IsHeld("t1"), "lock must be released when refusing for blackout")
+}
+
 func TestNew_RejectsMissingDeps(t *testing.T) {
 	cases := []struct {
 		name string
