@@ -46,12 +46,17 @@ const BlackoutsPage = {
       </form>
     `;
 
+    const headerActions = '<div style="margin-left:auto"><button type="button" class="btn btn-primary" id="blackouts-new">New blackout</button></div>';
+
     if (items.length === 0) {
       const hint = f.activeOnly
         ? 'No blackouts are active right now.'
-        : 'No blackout windows defined. Create one via CLI: <code class="mono">surfbot blackout create --name \'...\' --rrule \'...\' --duration 3600</code>';
+        : 'No blackout windows defined. Click <strong>New blackout</strong> above or use <code class="mono">surfbot blackout create</code>.';
       return `
-        <div class="page-header"><h2>Blackout windows</h2></div>
+        <div class="page-header">
+          <h2>Blackout windows</h2>
+          ${headerActions}
+        </div>
         ${filterBar}
         ${Components.emptyState('No blackouts', hint)}
       `;
@@ -84,6 +89,7 @@ const BlackoutsPage = {
       <div class="page-header">
         <h2>Blackout windows</h2>
         <p>${total} window${total === 1 ? '' : 's'}${f.activeOnly ? ' active at ' + escapeHtml(nowIso) : ''}</p>
+        ${headerActions}
       </div>
       ${filterBar}
       ${Components.table(
@@ -115,12 +121,15 @@ const BlackoutsPage = {
 
   bindEvents() {
     const form = document.getElementById('blackouts-filters');
-    if (!form) return;
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const activeOnly = document.getElementById('filter-active-only').checked;
-      location.hash = activeOnly ? '#/blackouts?active_only=1' : '#/blackouts';
-    });
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const activeOnly = document.getElementById('filter-active-only').checked;
+        location.hash = activeOnly ? '#/blackouts?active_only=1' : '#/blackouts';
+      });
+    }
+    const newBtn = document.getElementById('blackouts-new');
+    if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm());
   },
 
   // --- Blackout detail ---
@@ -133,12 +142,21 @@ const BlackoutsPage = {
     try {
       const b = await API.getBlackout(id);
       app.innerHTML = this.detailTemplate(b);
+      this.bindDetailActions(app, b);
     } catch (err) {
       app.innerHTML = `
         ${Components.backLink('#/blackouts', 'Back to blackouts')}
         ${Components.errorBanner(err)}
       `;
     }
+  },
+
+  bindDetailActions(app, b) {
+    const editBtn = document.getElementById('blackout-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', () => this.openEditForm(app, b));
+
+    const delBtn = document.getElementById('blackout-delete-btn');
+    if (delBtn) delBtn.addEventListener('click', () => this.confirmDelete(app, b));
   },
 
   detailTemplate(b) {
@@ -154,7 +172,12 @@ const BlackoutsPage = {
             <h2>${escapeHtml(b.name || b.id)}</h2>
             <span class="badge badge-muted">${escapeHtml(b.scope || '-')}</span>
             ${b.enabled ? '<span style="color:var(--success);margin-left:8px">enabled</span>' : '<span class="text-muted" style="margin-left:8px">disabled</span>'}
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <button type="button" class="btn btn-ghost" id="blackout-edit-btn">Edit</button>
+              <button type="button" class="btn btn-danger" id="blackout-delete-btn">Delete</button>
+            </div>
           </div>
+          <div id="blackout-action-error" style="margin-top:8px"></div>
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(b.id)}</span>
             <span class="detail-label">Scope</span><span class="detail-value mono">${escapeHtml(b.scope || '-')}</span>
@@ -178,4 +201,163 @@ const BlackoutsPage = {
       </div>
     `;
   },
+
+  // --- SPEC-SCHED1.4b: blackout create / edit / delete ---
+  //
+  // The 1.3a API (OQ3) carries a `scope` ("global"|"target") plus a
+  // single optional `target_id` — NOT a `target_ids` array as the 1.4b
+  // spec draft implied. To target multiple IDs the operator creates
+  // multiple blackouts. Duration is rendered as hours + minutes +
+  // seconds inputs and serialized to a single `duration_seconds`.
+
+  openCreateForm() {
+    this.openForm({
+      mode: 'create',
+      onSaved: () => BlackoutsPage.render(document.getElementById('app'), {}),
+    });
+  },
+
+  openEditForm(app, b) {
+    this.openForm({
+      mode: 'edit',
+      blackout: b,
+      onSaved: () => BlackoutsPage.renderDetail(app, b.id),
+    });
+  },
+
+  openForm({ mode, blackout, onSaved }) {
+    const b = blackout || {};
+    const secs = Math.max(0, b.duration_seconds || 0);
+    const hours = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    const remSecs = secs % 60;
+
+    const body = `
+      <form id="blackout-form" novalidate>
+        <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
+        ${Components.formInput({ label: 'Name', name: 'name', value: b.name, required: true })}
+        ${Components.formSelect({
+          label: 'Scope', name: 'scope',
+          options: [{ value: 'global', label: 'Global (all targets)' }, { value: 'target', label: 'Single target' }],
+          value: b.scope || 'global',
+          required: true,
+        })}
+        ${Components.formInput({
+          label: 'Target ID', name: 'target_id', value: b.target_id || '',
+          help: 'Required when scope is "Single target"; ignored when scope is "Global".',
+        })}
+        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: b.rrule })}
+        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: b.timezone || 'UTC' })}
+        <div class="form-field" data-field="duration_seconds">
+          <label class="form-label">Duration <span class="form-required">*</span></label>
+          <div style="display:flex;gap:8px">
+            <input class="form-input" name="dur_h" type="number" min="0" value="${hours}" placeholder="h" style="flex:1">
+            <input class="form-input" name="dur_m" type="number" min="0" max="59" value="${mins}" placeholder="m" style="flex:1">
+            <input class="form-input" name="dur_s" type="number" min="0" max="59" value="${remSecs}" placeholder="s" style="flex:1">
+          </div>
+          <div class="form-help">Hours / minutes / seconds — serialized as a single <code>duration_seconds</code> value. Max 7 days.</div>
+          <div class="field-error" data-field-error="duration_seconds" style="display:none"></div>
+        </div>
+        ${mode === 'edit' ? Components.formSelect({
+          label: 'Enabled', name: 'enabled',
+          options: [{ value: 'true', label: 'Enabled' }, { value: 'false', label: 'Disabled' }],
+          value: b.enabled === false ? 'false' : 'true',
+        }) : ''}
+      </form>
+    `;
+
+    const m = Components.modal({
+      title: mode === 'create' ? 'New blackout' : 'Edit blackout',
+      body,
+      size: 'md',
+      primaryAction: {
+        label: mode === 'create' ? 'Create' : 'Save',
+        onClick: async ({ close }) => {
+          const form = document.getElementById('blackout-form');
+          const data = readBlackoutForm(form, mode);
+          if (!data) return;
+          try {
+            if (mode === 'create') await API.createBlackout(data);
+            else await API.updateBlackout(b.id, data);
+            if (onSaved) onSaved();
+            close('saved');
+          } catch (err) {
+            showBlackoutFormError(form, err);
+          }
+        },
+      },
+      secondaryAction: { label: 'Cancel' },
+    });
+    Components.rruleAttachBlurCheck(m.root.querySelector('#blackout-form'), 'rrule');
+  },
+
+  async confirmDelete(app, b) {
+    const ok = await Components.confirmDialog({
+      title: 'Delete blackout?',
+      message: `Delete blackout "${b.name || b.id}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await API.deleteBlackout(b.id);
+      location.hash = '#/blackouts';
+      BlackoutsPage.render(app, {});
+    } catch (err) {
+      const box = document.getElementById('blackout-action-error');
+      if (box) box.innerHTML = Components.errorBanner(err);
+    }
+  },
 };
+
+function readBlackoutForm(form, mode) {
+  if (!form) return null;
+  const fd = new FormData(form);
+  const scope = (fd.get('scope') || 'global').toString();
+  const targetId = (fd.get('target_id') || '').toString().trim();
+  const out = {
+    scope,
+    name: (fd.get('name') || '').toString().trim(),
+    rrule: (fd.get('rrule') || '').toString().trim(),
+    timezone: (fd.get('timezone') || '').toString().trim() || 'UTC',
+  };
+  if (scope === 'target') {
+    if (!targetId) {
+      Components.applyFieldErrors(form, [{ field: 'target_id', message: 'required when scope is "target"' }]);
+      return null;
+    }
+    out.target_id = targetId;
+  } else if (mode === 'edit' && !targetId) {
+    // Switching back from target → global: ask the API to clear the fk.
+    out.clear_target = true;
+  }
+  const h = parseInt((fd.get('dur_h') || '0').toString(), 10) || 0;
+  const m = parseInt((fd.get('dur_m') || '0').toString(), 10) || 0;
+  const s = parseInt((fd.get('dur_s') || '0').toString(), 10) || 0;
+  const seconds = h * 3600 + m * 60 + s;
+  if (seconds <= 0) {
+    Components.applyFieldErrors(form, [{ field: 'duration_seconds', message: 'must be greater than zero' }]);
+    return null;
+  }
+  out.duration_seconds = seconds;
+  if (mode === 'edit') {
+    const en = (fd.get('enabled') || 'true').toString();
+    out.enabled = en === 'true';
+  }
+  return out;
+}
+
+function showBlackoutFormError(form, err) {
+  if (!form) return;
+  if (err && err.fieldErrors && err.fieldErrors.length) {
+    Components.applyFieldErrors(form, err.fieldErrors);
+    return;
+  }
+  const general = form.querySelector('[data-field-error="__general__"]');
+  if (general) {
+    const title = (err && err.problem && err.problem.title) || (err && err.message) || 'Request failed';
+    const detail = err && err.problem && err.problem.detail ? ' — ' + err.problem.detail : '';
+    general.textContent = title + detail;
+    general.style.display = 'block';
+  }
+}
