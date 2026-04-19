@@ -13,8 +13,8 @@ import (
 // frozenClock implements the package's Clock interface with a frozen now.
 type frozenClock struct{ now time.Time }
 
-func (f frozenClock) Now() time.Time                   { return f.now }
-func (f frozenClock) NewTimer(d time.Duration) Timer   { return &frozenTimer{} }
+func (f frozenClock) Now() time.Time                 { return f.now }
+func (f frozenClock) NewTimer(d time.Duration) Timer { return &frozenTimer{} }
 
 type frozenTimer struct{}
 
@@ -225,4 +225,3 @@ func TestRRuleExpander_BlackoutSaturated(t *testing.T) {
 		t.Fatalf("expected ErrBlackoutSaturated, got %v", err)
 	}
 }
-

@@ -24,7 +24,7 @@ type JobRunner interface {
 // WorkerPool is a bounded goroutine pool with a non-blocking dispatch
 // queue. Resize grows immediately and shrinks by letting excess workers
 // exit after their current job completes — in-flight jobs are never
-// cancelled by a resize.
+// canceled by a resize.
 //
 // The job queue buffer is set at construction to the initial size and
 // never shrinks. Resize changes the number of worker goroutines only;
@@ -165,7 +165,7 @@ func (p *WorkerPool) Dispatch(job Job) bool {
 
 // Resize changes the number of workers. Grow spawns new goroutines
 // immediately. Shrink queues excess-exit tokens; excess workers exit
-// after their current job completes. In-flight jobs are never cancelled.
+// after their current job completes. In-flight jobs are never canceled.
 func (p *WorkerPool) Resize(newSize int) {
 	if newSize <= 0 {
 		newSize = 1

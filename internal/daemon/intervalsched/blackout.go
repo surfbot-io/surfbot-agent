@@ -35,12 +35,12 @@ const blackoutHorizonPast = 7 * 24 * time.Hour
 type BlackoutEvaluator struct {
 	store storage.BlackoutStore
 
-	mu           sync.Mutex
-	global       []cachedWindow
-	perTarget    map[string][]cachedWindow
-	lastRefresh  time.Time
-	refreshErr   error
-	populatedOK  bool
+	mu          sync.Mutex
+	global      []cachedWindow
+	perTarget   map[string][]cachedWindow
+	lastRefresh time.Time
+	refreshErr  error
+	populatedOK bool
 }
 
 type cachedWindow struct {
