@@ -81,7 +81,6 @@ type overviewResponse struct {
 	Agent              agentInfo               `json:"agent"`
 }
 
-
 // scanSummary mirrors the three-concept Scan model (agent-spec 2.0) so the
 // dashboard can render target_state / delta / work sections without a
 // second round-trip. FindingsCount is kept as a flat convenience for the
@@ -104,11 +103,11 @@ type scanSummary struct {
 // asset types and severities so the small card stays readable. The richer
 // per-type breakdown lives in last_scan.delta for clients that want it.
 type changeSummary struct {
-	NewAssets         int `json:"new_assets"`
-	DisappearedAssets int `json:"disappeared_assets"`
-	ModifiedAssets    int `json:"modified_assets"`
-	NewFindings       int `json:"new_findings"`
-	ResolvedFindings  int `json:"resolved_findings"`
+	NewAssets         int  `json:"new_assets"`
+	DisappearedAssets int  `json:"disappeared_assets"`
+	ModifiedAssets    int  `json:"modified_assets"`
+	NewFindings       int  `json:"new_findings"`
+	ResolvedFindings  int  `json:"resolved_findings"`
 	IsBaseline        bool `json:"is_baseline"`
 }
 
@@ -399,9 +398,9 @@ func (h *handler) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 
 type groupedFindingsResponse struct {
 	Groups []storage.GroupedFinding `json:"groups"`
-	Total  int                     `json:"total"`
-	Page   int                     `json:"page"`
-	Limit  int                     `json:"limit"`
+	Total  int                      `json:"total"`
+	Page   int                      `json:"page"`
+	Limit  int                      `json:"limit"`
 }
 
 func (h *handler) handleFindingsGrouped(w http.ResponseWriter, r *http.Request) {
@@ -833,12 +832,12 @@ func (h *handler) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	enriched := h.enrichFindings(r.Context(), findings)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"target":         t,
-		"finding_count":  findingCount,
-		"asset_count":    assetCount,
-		"scan_count":     scanCount,
-		"latest_scan":    latest,
-		"recent_scans":   scans,
+		"target":          t,
+		"finding_count":   findingCount,
+		"asset_count":     assetCount,
+		"scan_count":      scanCount,
+		"latest_scan":     latest,
+		"recent_scans":    scans,
 		"recent_findings": enriched,
 	})
 }
