@@ -256,6 +256,49 @@ const SchedulesPage = {
   bindDetailActions(app, s) {
     const editBtn = document.getElementById('schedule-edit-btn');
     if (editBtn) editBtn.addEventListener('click', () => this.openEditForm(app, s));
+
+    const pauseBtn = document.getElementById('schedule-pause-btn');
+    if (pauseBtn) pauseBtn.addEventListener('click', () => this.setPauseState(app, s, false));
+
+    const resumeBtn = document.getElementById('schedule-resume-btn');
+    if (resumeBtn) resumeBtn.addEventListener('click', () => this.setPauseState(app, s, true));
+
+    const delBtn = document.getElementById('schedule-delete-btn');
+    if (delBtn) delBtn.addEventListener('click', () => this.confirmDelete(app, s));
+  },
+
+  async setPauseState(app, s, toActive) {
+    const btnId = toActive ? 'schedule-resume-btn' : 'schedule-pause-btn';
+    const btn = document.getElementById(btnId);
+    const origLabel = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      if (toActive) await API.resumeSchedule(s.id);
+      else await API.pauseSchedule(s.id);
+      SchedulesPage.renderDetail(app, s.id);
+    } catch (err) {
+      const box = document.getElementById('schedule-action-error');
+      if (box) box.innerHTML = Components.errorBanner(err);
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    }
+  },
+
+  async confirmDelete(app, s) {
+    const ok = await Components.confirmDialog({
+      title: 'Delete schedule?',
+      message: `Delete schedule "${s.name || s.id}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await API.deleteSchedule(s.id);
+      location.hash = '#/schedules';
+      SchedulesPage.render(app, {});
+    } catch (err) {
+      const box = document.getElementById('schedule-action-error');
+      if (box) box.innerHTML = Components.errorBanner(err);
+    }
   },
 
   detailTemplate(s, upcoming) {
@@ -284,7 +327,12 @@ const SchedulesPage = {
             ${Components.scheduleStatusBadge(s.status)}
             <div style="margin-left:auto;display:flex;gap:8px" id="schedule-detail-actions">
               <button type="button" class="btn btn-ghost" id="schedule-edit-btn">Edit</button>
+              ${s.status === 'active'
+                ? '<button type="button" class="btn btn-ghost" id="schedule-pause-btn">Pause</button>'
+                : '<button type="button" class="btn btn-ghost" id="schedule-resume-btn">Resume</button>'}
+              <button type="button" class="btn btn-danger" id="schedule-delete-btn">Delete</button>
             </div>
+            <div id="schedule-action-error" style="margin-top:8px"></div>
           </div>
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(s.id)}</span>
