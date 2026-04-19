@@ -442,6 +442,112 @@ const Components = {
   // bulkActionsBar renders a sticky bottom bar with a selection count
   // and action buttons. The caller mounts it once and toggles visibility
   // via .hidden based on selection state.
+  // --- SPEC-SCHED1.4c: timeline helpers ---
+  //
+  // The timeline is a day-grouped vertical list, not a calendar grid —
+  // no date library, only native Date arithmetic. Grouping uses the
+  // browser's local timezone so "Today" on the header matches what the
+  // operator reads on their wall clock.
+
+  groupByDay(firings) {
+    const map = new Map();
+    (firings || []).forEach(f => {
+      const d = new Date(f.fires_at);
+      if (isNaN(d.getTime())) return;
+      const key = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(f);
+    });
+    const keys = Array.from(map.keys()).sort();
+    return keys.map(key => ({
+      date: key,
+      dayLabel: relativeDayLabel(key),
+      items: map.get(key).sort((a, b) => new Date(a.fires_at) - new Date(b.fires_at)),
+    }));
+  },
+
+  timelineRow({ firing, onClick }) {
+    const time = new Date(firing.fires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const tmpl = firing.template_id
+      ? `<span class="mono" title="${escapeHtml(firing.template_id)}">${Components.truncateID(firing.template_id)}</span>`
+      : '<span class="text-muted">—</span>';
+    const row = document.createElement('div');
+    row.className = 'timeline-row';
+    row.innerHTML = `
+      <span class="timeline-time mono">${escapeHtml(time)}</span>
+      <span class="timeline-target mono" title="${escapeHtml(firing.target_id)}">${Components.truncateID(firing.target_id)}</span>
+      <span class="timeline-template">${tmpl}</span>
+      <span class="timeline-schedule mono" title="${escapeHtml(firing.schedule_id)}">${Components.truncateID(firing.schedule_id)}</span>
+    `;
+    if (typeof onClick === 'function') {
+      row.classList.add('clickable');
+      row.addEventListener('click', () => onClick(firing));
+    }
+    return row;
+  },
+
+  // timelineEmptySlot renders a clickable empty-state rectangle for a
+  // day with no firings. Defaults to local 09:00 per OQ2 — the most
+  // common "start of business day" anchor operators reach for.
+  timelineEmptySlot({ date, onClickCreate }) {
+    const slot = document.createElement('div');
+    slot.className = 'timeline-empty-slot';
+    slot.textContent = 'Click to create a schedule for this day (09:00 local)';
+    if (typeof onClickCreate === 'function') {
+      slot.classList.add('clickable');
+      slot.addEventListener('click', () => {
+        const [y, m, d] = date.split('-').map(n => parseInt(n, 10));
+        const local = new Date(y, m - 1, d, 9, 0, 0);
+        onClickCreate(local.toISOString(), date);
+      });
+    }
+    return slot;
+  },
+
+  // horizonSelector wraps a <select>. Default is 24h. onChange fires
+  // with the Go-duration string ("1h", "24h", "7d", etc.) the server's
+  // upcoming handler accepts.
+  horizonSelector({ current, onChange }) {
+    const opts = [
+      { v: '1h', l: '1 hour' },
+      { v: '6h', l: '6 hours' },
+      { v: '24h', l: '24 hours' },
+      { v: '72h', l: '3 days' },
+      { v: '168h', l: '7 days' },
+      { v: '720h', l: '30 days' },
+    ];
+    const sel = document.createElement('select');
+    sel.className = 'filter-select';
+    sel.innerHTML = opts.map(o =>
+      `<option value="${o.v}"${o.v === (current || '24h') ? ' selected' : ''}>${o.l}</option>`
+    ).join('');
+    if (typeof onChange === 'function') {
+      sel.addEventListener('change', () => onChange(sel.value));
+    }
+    return sel;
+  },
+
+  // targetFilterSelector renders a datalist-backed text input so the
+  // operator can type any target ID without coupling to a /targets
+  // fetch. Existing target IDs (optional) populate the autocomplete.
+  targetFilterSelector({ targets, current, onChange }) {
+    const wrap = document.createElement('span');
+    const listID = 'target-filter-dl';
+    const datalistHTML = (targets || []).map(t =>
+      `<option value="${escapeHtml(t.id || t)}">${escapeHtml(t.value || t.id || t)}</option>`
+    ).join('');
+    wrap.innerHTML = `
+      <input class="form-input" list="${listID}" placeholder="All targets"
+             value="${escapeHtml(current || '')}" style="width:240px">
+      <datalist id="${listID}">${datalistHTML}</datalist>
+    `;
+    const input = wrap.querySelector('input');
+    if (typeof onChange === 'function') {
+      input.addEventListener('change', () => onChange(input.value.trim()));
+    }
+    return wrap;
+  },
+
   bulkActionsBar({ selectedCount, actions }) {
     const hidden = selectedCount > 0 ? '' : ' hidden';
     const btns = (actions || []).map((a, i) => {
@@ -454,6 +560,22 @@ const Components = {
     </div>`;
   },
 };
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+// relativeDayLabel renders a day-key ("YYYY-MM-DD") as "Today", "Tomorrow",
+// "Yesterday", or "Weekday, Mon D" relative to the browser's local date.
+function relativeDayLabel(key) {
+  const [y, m, d] = key.split('-').map(n => parseInt(n, 10));
+  const date = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const deltaDays = Math.round((date - today) / 86400000);
+  if (deltaDays === 0) return 'Today';
+  if (deltaDays === 1) return 'Tomorrow';
+  if (deltaDays === -1) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
 
 // toDatetimeLocal converts an ISO-8601 / Date value to the native
 // datetime-local format ("YYYY-MM-DDTHH:MM") the input expects. Returns
