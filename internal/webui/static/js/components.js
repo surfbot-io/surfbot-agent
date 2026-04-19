@@ -197,7 +197,309 @@ const Components = {
     const cls = status === 'active' ? 'badge-info' : 'badge-muted';
     return `<span class="badge ${cls}">${escapeHtml(status || '-')}</span>`;
   },
+
+  // --- SPEC-SCHED1.4b: form, modal, confirm, bulk helpers ---
+  //
+  // Field renderers return HTML strings to match the existing Components
+  // convention. modal() and confirmDialog() own DOM because they mount
+  // outside the #app container and need lifecycle control.
+  //
+  // Form fields carry a dedicated .field-error sibling selected by name=
+  // so applyFieldErrors can populate per-field messages from a 1.3a
+  // ProblemResponse without the caller threading them through render.
+
+  formInput({ label, name, type, value, error, required, placeholder, help }) {
+    const reqMark = required ? ' <span class="form-required">*</span>' : '';
+    const v = value == null ? '' : String(value);
+    const helpHtml = help ? `<div class="form-help">${escapeHtml(help)}</div>` : '';
+    return `<div class="form-field" data-field="${escapeHtml(name)}">
+      <label class="form-label" for="f-${escapeHtml(name)}">${escapeHtml(label)}${reqMark}</label>
+      <input class="form-input" id="f-${escapeHtml(name)}" name="${escapeHtml(name)}"
+        type="${escapeHtml(type || 'text')}"
+        ${required ? 'required' : ''}
+        ${placeholder ? `placeholder="${escapeHtml(placeholder)}"` : ''}
+        value="${escapeHtml(v)}">
+      ${helpHtml}
+      <div class="field-error" data-field-error="${escapeHtml(name)}" style="display:${error ? 'block' : 'none'}">${escapeHtml(error || '')}</div>
+    </div>`;
+  },
+
+  formSelect({ label, name, options, value, error, required }) {
+    const reqMark = required ? ' <span class="form-required">*</span>' : '';
+    const opts = (options || []).map(o => {
+      const val = typeof o === 'string' ? o : o.value;
+      const lab = typeof o === 'string' ? o : (o.label || o.value);
+      const sel = String(val) === String(value || '') ? ' selected' : '';
+      return `<option value="${escapeHtml(val)}"${sel}>${escapeHtml(lab)}</option>`;
+    }).join('');
+    return `<div class="form-field" data-field="${escapeHtml(name)}">
+      <label class="form-label" for="f-${escapeHtml(name)}">${escapeHtml(label)}${reqMark}</label>
+      <select class="filter-select" id="f-${escapeHtml(name)}" name="${escapeHtml(name)}" ${required ? 'required' : ''}>
+        ${opts}
+      </select>
+      <div class="field-error" data-field-error="${escapeHtml(name)}" style="display:${error ? 'block' : 'none'}">${escapeHtml(error || '')}</div>
+    </div>`;
+  },
+
+  formTextarea({ label, name, value, rows, error, monospace, help, placeholder }) {
+    const cls = 'form-input' + (monospace ? ' form-input-mono' : '');
+    const helpHtml = help ? `<div class="form-help">${escapeHtml(help)}</div>` : '';
+    return `<div class="form-field" data-field="${escapeHtml(name)}">
+      <label class="form-label" for="f-${escapeHtml(name)}">${escapeHtml(label)}</label>
+      <textarea class="${cls}" id="f-${escapeHtml(name)}" name="${escapeHtml(name)}"
+        rows="${rows || 4}"
+        ${placeholder ? `placeholder="${escapeHtml(placeholder)}"` : ''}
+      >${escapeHtml(value == null ? '' : String(value))}</textarea>
+      ${helpHtml}
+      <div class="field-error" data-field-error="${escapeHtml(name)}" style="display:${error ? 'block' : 'none'}">${escapeHtml(error || '')}</div>
+    </div>`;
+  },
+
+  // formDatetime accepts a value in either ISO-8601 (API shape) or the
+  // native datetime-local format ("YYYY-MM-DDTHH:MM"). On submit callers
+  // convert the field's value to ISO via `new Date(val).toISOString()`.
+  formDatetime({ label, name, value, error, required }) {
+    const local = toDatetimeLocal(value);
+    return Components.formInput({
+      label, name,
+      type: 'datetime-local',
+      value: local,
+      error, required,
+    });
+  },
+
+  // rruleField wraps formInput with a non-blocking client-side syntax
+  // check. The server's 422 is the source of truth; the warning just
+  // catches obvious typos before the round-trip.
+  rruleField({ label, name, value, error }) {
+    const html = Components.formInput({
+      label, name, type: 'text', value, error,
+      required: true,
+      placeholder: 'FREQ=DAILY;BYHOUR=2',
+    });
+    // The inline warning span is revealed by rruleAttachBlurCheck when
+    // the form is mounted. Named by convention (rrule-warning-<name>).
+    return html + `<div class="rrule-warning" data-rrule-warning-for="${escapeHtml(name)}" style="display:none;font-size:12px;color:var(--sev-medium);margin-top:4px">RRULE syntax looks off — server will validate.</div>`;
+  },
+
+  // rruleAttachBlurCheck wires the client-side check after the form is
+  // in the DOM. Call once per form in the modal onOpen callback.
+  rruleAttachBlurCheck(formEl, fieldName) {
+    if (!formEl) return;
+    const input = formEl.querySelector(`input[name="${fieldName}"]`);
+    const warn = formEl.querySelector(`[data-rrule-warning-for="${fieldName}"]`);
+    if (!input || !warn) return;
+    input.addEventListener('blur', () => {
+      const v = input.value.trim();
+      if (!v) { warn.style.display = 'none'; return; }
+      const ok = /FREQ=(SECONDLY|MINUTELY|HOURLY|DAILY|WEEKLY|MONTHLY|YEARLY)\b/.test(v);
+      warn.style.display = ok ? 'none' : 'block';
+    });
+  },
+
+  // modal mounts a dialog as a direct child of <body> with a backdrop.
+  // Returns { close } so the caller can dismiss programmatically on
+  // successful submit. primaryAction / secondaryAction accept
+  // { label, onClick, danger }; onClick may return a Promise for a
+  // loading spinner. Esc key and backdrop click dismiss the modal and
+  // invoke onClose with reason='dismiss'.
+  modal({ title, body, primaryAction, secondaryAction, onClose, size }) {
+    const root = document.createElement('div');
+    root.className = 'modal-backdrop';
+    root.tabIndex = -1;
+    root.innerHTML = `
+      <div class="modal modal-${size || 'md'}" role="dialog" aria-modal="true" aria-label="${escapeHtml(title || '')}">
+        <div class="modal-header">
+          <h3>${escapeHtml(title || '')}</h3>
+          <button type="button" class="modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">${body || ''}</div>
+        <div class="modal-footer">
+          ${secondaryAction ? `<button type="button" class="btn btn-ghost" data-modal-secondary>${escapeHtml(secondaryAction.label)}</button>` : ''}
+          ${primaryAction ? `<button type="button" class="btn ${primaryAction.danger ? 'btn-danger' : 'btn-primary'}" data-modal-primary>${escapeHtml(primaryAction.label)}</button>` : ''}
+        </div>
+      </div>
+    `;
+    document.body.appendChild(root);
+    document.body.classList.add('modal-open');
+
+    let closed = false;
+    function close(reason) {
+      if (closed) return;
+      closed = true;
+      document.body.classList.remove('modal-open');
+      document.removeEventListener('keydown', onKey);
+      root.remove();
+      if (typeof onClose === 'function') onClose(reason || 'close');
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close('dismiss');
+    }
+    document.addEventListener('keydown', onKey);
+
+    root.addEventListener('click', (e) => {
+      if (e.target === root) close('dismiss');
+    });
+    root.querySelector('.modal-close').addEventListener('click', () => close('dismiss'));
+
+    const secBtn = root.querySelector('[data-modal-secondary]');
+    if (secBtn && secondaryAction) {
+      secBtn.addEventListener('click', async () => {
+        try {
+          const r = secondaryAction.onClick ? secondaryAction.onClick({ close, root }) : undefined;
+          if (r && typeof r.then === 'function') await r;
+        } finally {
+          // Secondary defaults to "just close" unless onClick kept it
+          // open explicitly by not calling close.
+          if (!secondaryAction.keepOpen) close('secondary');
+        }
+      });
+    }
+
+    const primBtn = root.querySelector('[data-modal-primary]');
+    if (primBtn && primaryAction) {
+      primBtn.addEventListener('click', async () => {
+        primBtn.disabled = true;
+        const origLabel = primBtn.textContent;
+        primBtn.textContent = '…';
+        try {
+          const r = primaryAction.onClick ? primaryAction.onClick({ close, root }) : undefined;
+          if (r && typeof r.then === 'function') await r;
+        } catch (_) {
+          // onClick is responsible for showing errors in the body.
+        } finally {
+          primBtn.disabled = false;
+          primBtn.textContent = origLabel;
+        }
+      });
+    }
+
+    // Autofocus the first input in the body, if any.
+    setTimeout(() => {
+      const first = root.querySelector('input,select,textarea,button[data-modal-primary]');
+      if (first) first.focus();
+    }, 0);
+
+    return { close, root };
+  },
+
+  // confirmDialog wraps modal for destructive yes/no prompts. Resolves
+  // true when primary is clicked, false on dismiss / secondary.
+  confirmDialog({ title, message, confirmLabel, danger }) {
+    return new Promise((resolve) => {
+      let decided = false;
+      const m = Components.modal({
+        title: title || 'Confirm',
+        body: `<p>${escapeHtml(message || '')}</p>`,
+        primaryAction: {
+          label: confirmLabel || 'Confirm',
+          danger: !!danger,
+          onClick: ({ close }) => {
+            decided = true;
+            resolve(true);
+            close('confirm');
+          },
+        },
+        secondaryAction: { label: 'Cancel' },
+        onClose: (reason) => {
+          if (!decided) resolve(false);
+        },
+      });
+      void m;
+    });
+  },
+
+  // applyFieldErrors clears every .field-error inside the form, then
+  // writes each problem.field_errors entry into the matching name=
+  // field's error span. Unknown field names surface in a generic
+  // banner at the top of the form (data-field-error="__general__").
+  applyFieldErrors(formEl, fieldErrors) {
+    if (!formEl) return;
+    formEl.querySelectorAll('.field-error').forEach(el => {
+      el.textContent = '';
+      el.style.display = 'none';
+    });
+    if (!fieldErrors || !fieldErrors.length) return;
+    const general = [];
+    fieldErrors.forEach(fe => {
+      const span = formEl.querySelector(`[data-field-error="${cssEscape(fe.field)}"]`);
+      if (span) {
+        span.textContent = fe.message;
+        span.style.display = 'block';
+      } else {
+        general.push(`${fe.field}: ${fe.message}`);
+      }
+    });
+    if (general.length) {
+      const gen = formEl.querySelector('[data-field-error="__general__"]');
+      if (gen) {
+        gen.textContent = general.join('; ');
+        gen.style.display = 'block';
+      }
+    }
+  },
+
+  // bulkActionsBar renders a sticky bottom bar with a selection count
+  // and action buttons. The caller mounts it once and toggles visibility
+  // via .hidden based on selection state.
+  bulkActionsBar({ selectedCount, actions }) {
+    const hidden = selectedCount > 0 ? '' : ' hidden';
+    const btns = (actions || []).map((a, i) => {
+      const cls = a.danger ? 'btn btn-danger' : 'btn btn-ghost';
+      return `<button type="button" class="${cls}" data-bulk-action="${i}">${escapeHtml(a.label)}</button>`;
+    }).join(' ');
+    return `<div class="bulk-actions-bar${hidden}">
+      <span class="bulk-actions-count"><strong>${selectedCount}</strong> selected</span>
+      <span class="bulk-actions-buttons">${btns}</span>
+    </div>`;
+  },
 };
+
+// toDatetimeLocal converts an ISO-8601 / Date value to the native
+// datetime-local format ("YYYY-MM-DDTHH:MM") the input expects. Returns
+// an empty string if `v` is nullish or unparseable.
+function toDatetimeLocal(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return typeof v === 'string' ? v : '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+// cssEscape quotes a string for use in a CSS attribute selector. Light
+// polyfill for CSS.escape; sufficient for dotted tool_config.* paths.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+  return String(s).replace(/(["\\])/g, '\\$1');
+}
+
+// Demo — invocation shapes for the 1.4b helpers. Not executed; kept as
+// a human-readable quick reference so the next maintainer doesn't have
+// to chase call sites.
+//
+//   Components.formInput({label:'Name', name:'name', required:true})
+//   Components.formSelect({label:'Status', name:'status',
+//     options:[{value:'active',label:'Active'},{value:'paused',label:'Paused'}],
+//     value:'active'})
+//   Components.formTextarea({label:'Tool config', name:'tool_config',
+//     monospace:true, rows:8})
+//   Components.formDatetime({label:'Starts at', name:'dtstart', required:true})
+//   Components.rruleField({label:'RRULE', name:'rrule', value:'FREQ=DAILY'})
+//   const m = Components.modal({
+//     title:'New schedule',
+//     body:'<form id="f">...</form>',
+//     primaryAction:{label:'Create', onClick: async ({close}) => {
+//       try { await API.createSchedule(body); close(); }
+//       catch (err) { Components.applyFieldErrors(document.getElementById('f'), err.fieldErrors); }
+//     }},
+//     secondaryAction:{label:'Cancel'},
+//   })
+//   const ok = await Components.confirmDialog({
+//     title:'Delete schedule?', message:'Cannot be undone.', danger:true})
+//   Components.bulkActionsBar({selectedCount:2, actions:[
+//     {label:'Pause', onClick: ...},
+//     {label:'Delete', danger:true, onClick: ...}]})
 
 function toggleTreeNode(el) {
   const children = el.nextElementSibling;
