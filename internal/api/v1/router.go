@@ -44,6 +44,10 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	// Schedules CRUD + pause/resume.
 	mux.HandleFunc("/api/v1/schedules", h.routeSchedules)
 	mux.HandleFunc("/api/v1/schedules/", h.routeSchedulesSubtree)
+
+	// Templates CRUD.
+	mux.HandleFunc("/api/v1/templates", h.routeTemplates)
+	mux.HandleFunc("/api/v1/templates/", h.routeTemplateByID)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
