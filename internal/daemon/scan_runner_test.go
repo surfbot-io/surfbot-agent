@@ -60,7 +60,7 @@ func silentLog() *slog.Logger {
 
 func TestLegacyScanRunner_IgnoresToolConfig(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_42"}
-	r := &legacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
 
 	tc := model.ToolConfig{}
 	require.NoError(t, model.SetTool(tc, "nuclei", map[string]string{"severity": "critical"}))
@@ -85,7 +85,7 @@ func TestLegacyScanRunner_IgnoresToolConfig(t *testing.T) {
 
 func TestLegacyScanRunner_PropagatesCtx(t *testing.T) {
 	orch := &fakeOrchestrator{blockCh: make(chan struct{})}
-	r := &legacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -104,7 +104,7 @@ func TestLegacyScanRunner_PropagatesCtx(t *testing.T) {
 
 func TestLegacyScanRunner_ReturnsScanID(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_123"}
-	r := &legacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
 
 	scanID, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{})
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestLegacyScanRunner_ReturnsScanID(t *testing.T) {
 
 func TestLegacyScanRunner_PropagatesError(t *testing.T) {
 	orch := &fakeOrchestrator{scanID: "s_partial", runErr: errors.New("boom")}
-	r := &legacyScanRunner{orchestrator: orch, log: silentLog()}
+	r := &LegacyScanRunner{orchestrator: orch, log: silentLog()}
 
 	scanID, err := r.Run(context.Background(), "sched_1", "tgt_1", model.EffectiveConfig{})
 	require.Error(t, err)

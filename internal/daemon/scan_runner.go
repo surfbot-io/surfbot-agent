@@ -1,6 +1,6 @@
 package daemon
 
-// legacyScanRunner is the SCHED1.2b bridge between the new master ticker
+// LegacyScanRunner is the SCHED1.2b bridge between the new master ticker
 // (which dispatches per-schedule jobs with a resolved EffectiveConfig) and
 // the existing detection pipeline (which runs all enabled tools against a
 // target with a single full-scan profile).
@@ -21,30 +21,30 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
 
-// scanOrchestrator is the narrow surface legacyScanRunner needs from the
+// scanOrchestrator is the narrow surface LegacyScanRunner needs from the
 // pipeline package. Real callers pass *pipeline.Pipeline; tests inject a
 // fake to assert ctx propagation and that EffectiveConfig is ignored.
 type scanOrchestrator interface {
 	Run(ctx context.Context, targetID string, opts pipeline.PipelineOptions) (*pipeline.PipelineResult, error)
 }
 
-// legacyScanRunner satisfies the master ticker's ScanRunner interface
+// LegacyScanRunner satisfies the master ticker's ScanRunner interface
 // (defined in internal/daemon/intervalsched). Its Run method's signature
 // matches that interface structurally, so no explicit interface wiring is
 // needed in this commit — Go's structural subtyping does the work once
 // scheduler.go declares the interface in commit 2.
-type legacyScanRunner struct {
+type LegacyScanRunner struct {
 	orchestrator scanOrchestrator
 	log          *slog.Logger
 }
 
-// newLegacyScanRunner wires a runner around the production pipeline. The
+// NewLegacyScanRunner wires a runner around the production pipeline. The
 // store and registry are the same ones the rest of the daemon uses.
-func newLegacyScanRunner(store storage.Store, registry *detection.Registry, log *slog.Logger) *legacyScanRunner {
+func NewLegacyScanRunner(store storage.Store, registry *detection.Registry, log *slog.Logger) *LegacyScanRunner {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &legacyScanRunner{
+	return &LegacyScanRunner{
 		orchestrator: pipeline.New(store, registry),
 		log:          log,
 	}
@@ -52,7 +52,7 @@ func newLegacyScanRunner(store storage.Store, registry *detection.Registry, log 
 
 // Run executes a full scan for the target. The EffectiveConfig.ToolConfig
 // is intentionally discarded — SCHED1.2c will start consuming it.
-func (r *legacyScanRunner) Run(ctx context.Context, scheduleID, targetID string, _ model.EffectiveConfig) (string, error) {
+func (r *LegacyScanRunner) Run(ctx context.Context, scheduleID, targetID string, _ model.EffectiveConfig) (string, error) {
 	if r.orchestrator == nil {
 		return "", fmt.Errorf("legacy scan runner: orchestrator is nil")
 	}

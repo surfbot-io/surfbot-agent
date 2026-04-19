@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -159,16 +158,9 @@ func runScheduleSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown key: %s", key)
 	}
 
-	// Validate the whole config before saving.
-	_, fieldErrors := intervalsched.ParseScheduleConfig(sc)
-	if len(fieldErrors) > 0 {
-		cmd.SilenceUsage = true
-		for field, msg := range fieldErrors {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", field, msg)
-		}
-		return fmt.Errorf("invalid schedule config")
-	}
-
+	// Validation removed in SCHED1.2b — parsing helpers retired alongside
+	// the legacy schedule runtime. Until SCHED1.3 lands the new CLI, save
+	// raw JSON unchecked.
 	store := resolveScheduleConfigStore()
 	if err := store.Save(sc); err != nil {
 		return fmt.Errorf("saving schedule config: %w", err)

@@ -61,13 +61,6 @@ func (h *handler) handlePutSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate by parsing into an intervalsched.Config.
-	icfg, fieldErrors := intervalsched.ParseScheduleConfig(req)
-	if len(fieldErrors) > 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"errors": fieldErrors})
-		return
-	}
-
 	// Validate tools against registry.
 	if h.registry != nil && len(req.QuickCheckTools) > 0 {
 		for _, name := range req.QuickCheckTools {
@@ -97,11 +90,6 @@ func (h *handler) handlePutSchedule(w http.ResponseWriter, r *http.Request) {
 		h.daemon.Window = w2
 	}
 
-	// Hot-reload the live scheduler if available.
-	if h.daemon.Scheduler != nil {
-		h.daemon.Scheduler.Reload(icfg)
-	}
-
 	writeJSON(w, http.StatusOK, req)
 }
 
@@ -121,16 +109,6 @@ func (h *handler) buildScheduleConfigFromView() intervalsched.ScheduleConfig {
 		},
 	}
 
-	// If we have a live scheduler, read actual config from it.
-	if h.daemon.Scheduler != nil {
-		cfg := h.daemon.Scheduler.Config()
-		sc.Enabled = true // scheduler exists means enabled
-		sc.FullScanInterval = cfg.FullInterval.String()
-		sc.QuickCheckInterval = cfg.QuickInterval.String()
-		sc.Jitter = cfg.Jitter.String()
-		sc.RunOnStart = cfg.RunOnStart
-		sc.QuickCheckTools = cfg.QuickTools
-	}
 	return sc
 }
 

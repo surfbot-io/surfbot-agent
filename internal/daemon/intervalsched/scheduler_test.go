@@ -3,138 +3,254 @@ package intervalsched
 import (
 	"context"
 	"errors"
-	"path/filepath"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
 
-// fakeClock is a deterministic Clock for scheduler tests. NewTimer hands
-// the test a channel it controls via Fire(); Now() returns the current
-// virtual time which Advance() moves forward.
-type fakeClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []*fakeTimer
+// --- Test fakes -----------------------------------------------------
+
+type tickerScheduleStore struct {
+	mu        sync.Mutex
+	due       []model.Schedule
+	listErr   error
+	recorded  []recordedRun
+	nextRunAt map[string]*time.Time
 }
 
-func newFakeClock(start time.Time) *fakeClock { return &fakeClock{now: start} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
+type recordedRun struct {
+	ScheduleID string
+	Status     model.ScheduleRunStatus
+	ScanID     *string
+	At         time.Time
 }
 
-func (c *fakeClock) NewTimer(d time.Duration) Timer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	t := &fakeTimer{ch: make(chan time.Time, 1), fireAt: c.now.Add(d)}
-	c.timers = append(c.timers, t)
-	return t
+func newTickerScheduleStore() *tickerScheduleStore {
+	return &tickerScheduleStore{nextRunAt: map[string]*time.Time{}}
 }
 
-// advanceAndFire jumps virtual time forward by d and fires the most
-// recently created pending timer. If no timer exists yet (the scheduler
-// goroutine hasn't reached its select), it polls briefly.
-func (c *fakeClock) advanceAndFire(d time.Duration) {
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		c.mu.Lock()
-		var t *fakeTimer
-		for i := len(c.timers) - 1; i >= 0; i-- {
-			if !c.timers[i].stopped && !c.timers[i].fired {
-				t = c.timers[i]
-				break
-			}
-		}
-		if t != nil {
-			c.now = c.now.Add(d)
-			now := c.now
-			c.mu.Unlock()
-			t.fire(now)
-			return
-		}
-		c.mu.Unlock()
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(time.Millisecond)
+func (f *tickerScheduleStore) ListDue(_ context.Context, _ time.Time, _ int) ([]model.Schedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
 	}
+	out := make([]model.Schedule, len(f.due))
+	copy(out, f.due)
+	// drain so subsequent ticks don't redispatch the same items
+	f.due = nil
+	return out, nil
 }
 
-type fakeTimer struct {
-	mu      sync.Mutex
-	ch      chan time.Time
-	fireAt  time.Time
-	fired   bool
-	stopped bool
+func (f *tickerScheduleStore) RecordRun(_ context.Context, id string, status model.ScheduleRunStatus, scanID *string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recorded = append(f.recorded, recordedRun{ScheduleID: id, Status: status, ScanID: scanID, At: at})
+	return nil
 }
 
-func (t *fakeTimer) C() <-chan time.Time { return t.ch }
-func (t *fakeTimer) Stop() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	was := !t.fired && !t.stopped
-	t.stopped = true
-	return was
+func (f *tickerScheduleStore) SetNextRunAt(_ context.Context, id string, next *time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextRunAt[id] = next
+	return nil
 }
-func (t *fakeTimer) fire(now time.Time) {
-	t.mu.Lock()
-	if t.fired || t.stopped {
-		t.mu.Unlock()
-		return
+
+func (f *tickerScheduleStore) snapshotRecorded() []recordedRun {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]recordedRun, len(f.recorded))
+	copy(out, f.recorded)
+	return out
+}
+
+// Unused interface methods (kept simple for the master-ticker tests).
+func (f *tickerScheduleStore) Create(context.Context, *model.Schedule) error { return nil }
+func (f *tickerScheduleStore) Get(context.Context, string) (*model.Schedule, error) {
+	return nil, nil
+}
+func (f *tickerScheduleStore) GetByTargetAndName(context.Context, string, string) (*model.Schedule, error) {
+	return nil, nil
+}
+func (f *tickerScheduleStore) ListByTarget(context.Context, string) ([]model.Schedule, error) {
+	return nil, nil
+}
+func (f *tickerScheduleStore) ListAll(context.Context) ([]model.Schedule, error) {
+	return nil, nil
+}
+func (f *tickerScheduleStore) ListByTemplate(context.Context, string) ([]model.Schedule, error) {
+	return nil, nil
+}
+func (f *tickerScheduleStore) Update(context.Context, *model.Schedule) error              { return nil }
+func (f *tickerScheduleStore) Delete(context.Context, string) error                       { return nil }
+func (f *tickerScheduleStore) CountByTarget(context.Context, string) (int, error)         { return 0, nil }
+
+type tickerTemplateStore struct{}
+
+func (tickerTemplateStore) Create(context.Context, *model.Template) error          { return nil }
+func (tickerTemplateStore) Get(context.Context, string) (*model.Template, error)   { return nil, nil }
+func (tickerTemplateStore) GetByName(context.Context, string) (*model.Template, error) {
+	return nil, nil
+}
+func (tickerTemplateStore) List(context.Context) ([]model.Template, error) { return nil, nil }
+func (tickerTemplateStore) Update(context.Context, *model.Template) error  { return nil }
+func (tickerTemplateStore) Delete(context.Context, string) error           { return nil }
+
+type tickerBlackoutStore struct {
+	windows []model.BlackoutWindow
+}
+
+func (f *tickerBlackoutStore) Create(context.Context, *model.BlackoutWindow) error { return nil }
+func (f *tickerBlackoutStore) Get(_ context.Context, id string) (*model.BlackoutWindow, error) {
+	for i := range f.windows {
+		if f.windows[i].ID == id {
+			w := f.windows[i]
+			return &w, nil
+		}
 	}
-	t.fired = true
-	t.mu.Unlock()
-	t.ch <- now
+	return nil, nil
+}
+func (f *tickerBlackoutStore) List(context.Context) ([]model.BlackoutWindow, error) {
+	out := make([]model.BlackoutWindow, len(f.windows))
+	copy(out, f.windows)
+	return out, nil
+}
+func (f *tickerBlackoutStore) ListByScope(_ context.Context, scope model.BlackoutScope) ([]model.BlackoutWindow, error) {
+	out := []model.BlackoutWindow{}
+	for _, w := range f.windows {
+		if w.Scope == scope {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+func (f *tickerBlackoutStore) ListByTarget(_ context.Context, targetID string) ([]model.BlackoutWindow, error) {
+	out := []model.BlackoutWindow{}
+	for _, w := range f.windows {
+		if w.TargetID != nil && *w.TargetID == targetID {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+func (f *tickerBlackoutStore) ListActive(context.Context, string) ([]model.BlackoutWindow, error) {
+	return nil, nil
+}
+func (f *tickerBlackoutStore) Update(context.Context, *model.BlackoutWindow) error { return nil }
+func (f *tickerBlackoutStore) Delete(context.Context, string) error                { return nil }
+
+type fakeDefaultsStore struct {
+	defaults model.ScheduleDefaults
 }
 
-// recordingScanner is a ScanRunner that records every Run call. Optional
-// runErr lets a test simulate failures.
-type recordingScanner struct {
-	mu      sync.Mutex
-	calls   []Profile
-	runErr  error
-	delay   time.Duration
-	blockCh chan struct{}
+func (f *fakeDefaultsStore) Get(context.Context) (*model.ScheduleDefaults, error) {
+	d := f.defaults
+	return &d, nil
+}
+func (f *fakeDefaultsStore) Update(context.Context, *model.ScheduleDefaults) error { return nil }
+
+type fakeAdHocStore struct{}
+
+func (fakeAdHocStore) Create(context.Context, *model.AdHocScanRun) error        { return nil }
+func (fakeAdHocStore) Get(context.Context, string) (*model.AdHocScanRun, error) { return nil, nil }
+func (fakeAdHocStore) ListByTarget(context.Context, string, int) ([]model.AdHocScanRun, error) {
+	return nil, nil
+}
+func (fakeAdHocStore) ListByStatus(context.Context, model.AdHocRunStatus) ([]model.AdHocScanRun, error) {
+	return nil, nil
+}
+func (fakeAdHocStore) UpdateStatus(context.Context, string, model.AdHocRunStatus, time.Time) error {
+	return nil
+}
+func (fakeAdHocStore) AttachScan(context.Context, string, string) error { return nil }
+func (fakeAdHocStore) Delete(context.Context, string) error             { return nil }
+
+type fakeRunner struct {
+	mu        sync.Mutex
+	calls     []runnerCall
+	delay     time.Duration
+	scanID    string
+	runErr    error
+	blockCh   chan struct{}
+	observed  bool
 }
 
-func (r *recordingScanner) Run(ctx context.Context, p Profile) error {
+type runnerCall struct {
+	ScheduleID string
+	TargetID   string
+}
+
+func (r *fakeRunner) Run(ctx context.Context, scheduleID, targetID string, _ model.EffectiveConfig) (string, error) {
 	r.mu.Lock()
-	r.calls = append(r.calls, p)
+	r.calls = append(r.calls, runnerCall{ScheduleID: scheduleID, TargetID: targetID})
 	delay := r.delay
 	block := r.blockCh
+	scanID := r.scanID
 	err := r.runErr
 	r.mu.Unlock()
 	if block != nil {
 		select {
 		case <-block:
 		case <-ctx.Done():
-			return ctx.Err()
+			r.mu.Lock()
+			r.observed = true
+			r.mu.Unlock()
+			return "", ctx.Err()
 		}
 	}
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		}
 	}
-	return err
+	if scanID == "" {
+		scanID = "s_default"
+	}
+	return scanID, err
 }
 
-func (r *recordingScanner) snapshot() []Profile {
+func (r *fakeRunner) snapshot() []runnerCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Profile, len(r.calls))
+	out := make([]runnerCall, len(r.calls))
 	copy(out, r.calls)
 	return out
 }
 
-// waitFor polls fn until it returns true or the deadline elapses.
+func tickerSilentLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func newSchedulerForTest(t *testing.T, deps Dependencies) *Scheduler {
+	t.Helper()
+	if deps.Log == nil {
+		deps.Log = tickerSilentLogger()
+	}
+	if deps.TickInterval == 0 {
+		deps.TickInterval = 10 * time.Millisecond
+	}
+	s, err := New(deps)
+	require.NoError(t, err)
+	return s
+}
+
+func newDefaults() model.ScheduleDefaults {
+	return model.ScheduleDefaults{
+		DefaultRRule:       "FREQ=DAILY",
+		DefaultTimezone:    "UTC",
+		MaxConcurrentScans: 4,
+	}
+}
+
 func waitFor(t *testing.T, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -147,172 +263,219 @@ func waitFor(t *testing.T, fn func() bool) {
 	t.Fatal("waitFor: condition never met")
 }
 
-func TestScheduler_FullOnly_Ticks(t *testing.T) {
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{}
-	s := New(Config{FullInterval: time.Hour}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
+// --- Tests ----------------------------------------------------------
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	for i := 0; i < 3; i++ {
-		clk.advanceAndFire(time.Hour)
-		expect := i + 1
-		waitFor(t, func() bool { return len(scanner.snapshot()) >= expect })
+func TestScheduler_TickDispatchesDue(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+		{ID: "s2", TargetID: "t2", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+		{ID: "s3", TargetID: "t3", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
 	}
-	cancel()
-	<-done
-
-	calls := scanner.snapshot()
-	require.GreaterOrEqual(t, len(calls), 3)
-	for _, p := range calls {
-		require.Equal(t, ProfileFull, p)
-	}
-}
-
-func TestScheduler_QuickOnly_Ticks(t *testing.T) {
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{}
-	s := New(Config{FullInterval: 24 * time.Hour, QuickInterval: time.Hour}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	clk.advanceAndFire(time.Hour)
-	waitFor(t, func() bool { return len(scanner.snapshot()) >= 1 })
-	cancel()
-	<-done
-
-	require.Equal(t, ProfileQuick, scanner.snapshot()[0])
-}
-
-func TestScheduler_Interleaved(t *testing.T) {
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{}
-	s := New(Config{FullInterval: 4 * time.Hour, QuickInterval: time.Hour, RunOnStart: true}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	// Drive the scheduler for ~24h: 24 quick ticks expected (and 6 full,
-	// but coalesced when both fall on the same step).
-	for i := 0; i < 24; i++ {
-		clk.advanceAndFire(time.Hour)
-		expect := i + 1
-		waitFor(t, func() bool { return len(scanner.snapshot()) >= expect })
-	}
-	cancel()
-	<-done
-
-	calls := scanner.snapshot()
-	var fulls, quicks int
-	for _, p := range calls {
-		switch p {
-		case ProfileFull:
-			fulls++
-		case ProfileQuick:
-			quicks++
-		}
-	}
-	require.Greater(t, fulls, 0, "expected at least one full scan")
-	require.Greater(t, quicks, fulls, "expected more quick than full scans")
-}
-
-func TestScheduler_RunOnStart_OutsideWindow(t *testing.T) {
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{}
-	s := New(Config{FullInterval: time.Hour, RunOnStart: true}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	waitFor(t, func() bool { return len(scanner.snapshot()) >= 1 })
-	cancel()
-	<-done
-	require.Equal(t, ProfileFull, scanner.snapshot()[0])
-}
-
-func TestScheduler_RunOnStart_InsideWindowSkipped(t *testing.T) {
-	loc := time.UTC
-	clk := newFakeClock(time.Date(2026, 1, 1, 2, 30, 0, 0, loc))
-	scanner := &recordingScanner{}
-	s := New(Config{
-		FullInterval: time.Hour,
-		RunOnStart:   true,
-		Window:       MaintenanceWindow{Enabled: true, Start: TimeOfDay{2, 0}, End: TimeOfDay{4, 0}, Loc: loc},
-	}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	// Give the goroutine a moment; run-on-start must NOT have fired.
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	<-done
-	require.Empty(t, scanner.snapshot())
-}
-
-func TestScheduler_FailedScanAdvancesCursor(t *testing.T) {
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{runErr: errors.New("boom")}
-	s := New(Config{FullInterval: time.Hour}, Options{Clock: clk, Scanner: scanner, RandSeed: 1})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-
-	clk.advanceAndFire(time.Hour)
-	waitFor(t, func() bool { return len(scanner.snapshot()) >= 1 })
-	// Cursor must have advanced even though the scan failed; status reflects failure.
-	waitFor(t, func() bool {
-		st := s.State()
-		return !st.LastFullAt.IsZero() && st.LastFullStatus == "failed"
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
 	})
 
-	clk.advanceAndFire(time.Hour)
-	waitFor(t, func() bool { return len(scanner.snapshot()) >= 2 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	waitFor(t, func() bool { return len(runner.snapshot()) >= 3 })
+
 	cancel()
-	<-done
+	require.NoError(t, s.Stop(context.Background()))
+
+	calls := runner.snapshot()
+	require.Len(t, calls, 3)
+	seen := map[string]bool{}
+	for _, c := range calls {
+		seen[c.ScheduleID] = true
+	}
+	assert.True(t, seen["s1"])
+	assert.True(t, seen["s2"])
+	assert.True(t, seen["s3"])
 }
 
-func TestScheduler_PersistsCursorsAcrossRestart(t *testing.T) {
-	dir := t.TempDir()
-	store := NewScheduleStateStore(filepath.Join(dir, "schedule.state.json"))
-
-	clk := newFakeClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
-	scanner := &recordingScanner{}
-	s := New(Config{FullInterval: time.Hour},
-		Options{Clock: clk, Scanner: scanner, StateStore: store, RandSeed: 1})
+func TestScheduler_BlackoutSkipRecorded(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	now := time.Now().UTC()
+	bo := &tickerBlackoutStore{windows: []model.BlackoutWindow{{
+		ID:          "b1",
+		Scope:       model.BlackoutScopeGlobal,
+		Name:        "always",
+		RRule:       "FREQ=MINUTELY",
+		DurationSec: 3600,
+		Timezone:    "UTC",
+		Enabled:     true,
+		CreatedAt:   now.Add(-time.Hour),
+	}}}
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: bo,
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Run(ctx); close(done) }()
-	clk.advanceAndFire(time.Hour)
-	waitFor(t, func() bool { return len(scanner.snapshot()) >= 1 })
-	waitFor(t, func() bool { return !s.State().LastFullAt.IsZero() })
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	waitFor(t, func() bool { return len(store.snapshotRecorded()) >= 1 })
 	cancel()
-	<-done
+	require.NoError(t, s.Stop(context.Background()))
 
-	persisted, err := store.Load()
-	require.NoError(t, err)
-	require.False(t, persisted.LastFullAt.IsZero())
+	recorded := store.snapshotRecorded()
+	require.GreaterOrEqual(t, len(recorded), 1)
+	assert.Equal(t, model.ScheduleRunSkippedBlackout, recorded[0].Status)
+	assert.Empty(t, runner.snapshot(), "runner must not be invoked during blackout")
+}
 
-	// Second instance must hydrate from disk.
-	scanner2 := &recordingScanner{}
-	s2 := New(Config{FullInterval: time.Hour},
-		Options{Clock: newFakeClock(time.Date(2026, 1, 1, 14, 0, 0, 0, time.UTC)),
-			Scanner: scanner2, StateStore: store, RandSeed: 1})
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	done2 := make(chan struct{})
-	go func() { _ = s2.Run(ctx2); close(done2) }()
-	waitFor(t, func() bool {
-		return s2.State().LastFullAt.Equal(persisted.LastFullAt)
+func TestScheduler_SameTargetSerialized(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "shared", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+		{ID: "s2", TargetID: "shared", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	runner := &fakeRunner{blockCh: make(chan struct{})}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
 	})
-	cancel2()
-	<-done2
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	// Wait until at least one job is in flight (lock held).
+	waitFor(t, func() bool { return len(runner.snapshot()) >= 1 })
+	// Give the loop a chance to attempt the second one (it should fail to
+	// acquire the lock).
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, len(runner.snapshot()), "second schedule for same target must be skipped while first is in flight")
+
+	close(runner.blockCh)
+	cancel()
+	require.NoError(t, s.Stop(context.Background()))
+}
+
+func TestScheduler_StopDrains(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	runner := &fakeRunner{delay: 200 * time.Millisecond}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, s.Start(ctx))
+	waitFor(t, func() bool { return len(runner.snapshot()) >= 1 })
+
+	cancel()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, s.Stop(stopCtx))
+}
+
+func TestScheduler_ContextCancelsTick(t *testing.T) {
+	store := newTickerScheduleStore()
+	runner := &fakeRunner{}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, s.Start(ctx))
+	cancel()
+	require.NoError(t, s.Stop(context.Background()))
+}
+
+func TestScheduler_RunnerErrorRecordedAsFailed(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	runner := &fakeRunner{runErr: errors.New("boom")}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: &tickerBlackoutStore{},
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	waitFor(t, func() bool { return len(store.snapshotRecorded()) >= 1 })
+	cancel()
+	require.NoError(t, s.Stop(context.Background()))
+
+	rec := store.snapshotRecorded()
+	require.Len(t, rec, 1)
+	assert.Equal(t, model.ScheduleRunFailed, rec[0].Status)
+}
+
+func TestNew_RejectsMissingDeps(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Dependencies)
+	}{
+		{"no SchedStore", func(d *Dependencies) { d.SchedStore = nil }},
+		{"no TmplStore", func(d *Dependencies) { d.TmplStore = nil }},
+		{"no BlackoutStore", func(d *Dependencies) { d.BlackoutStore = nil }},
+		{"no DefaultsStore", func(d *Dependencies) { d.DefaultsStore = nil }},
+		{"no Runner", func(d *Dependencies) { d.Runner = nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deps := Dependencies{
+				SchedStore:    newTickerScheduleStore(),
+				TmplStore:     tickerTemplateStore{},
+				BlackoutStore: &tickerBlackoutStore{},
+				DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+				AdHocStore:    fakeAdHocStore{},
+				Runner:        &fakeRunner{},
+				Log:           tickerSilentLogger(),
+			}
+			c.mut(&deps)
+			_, err := New(deps)
+			require.Error(t, err)
+		})
+	}
 }
