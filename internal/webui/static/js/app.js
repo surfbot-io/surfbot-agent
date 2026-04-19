@@ -79,4 +79,12 @@ window.addEventListener('hashchange', () => Router.navigate());
 document.addEventListener('DOMContentLoaded', () => {
   Router.navigate();
   loadSidebarBadge();
+
+  // SPEC-SCHED1.4b R9: "Run scan now" opens the ad-hoc dispatcher
+  // modal. The button is in the sidebar footer; wired once at load so
+  // it works across all hash routes without re-binding on navigate.
+  const adhocBtn = document.getElementById('nav-adhoc-btn');
+  if (adhocBtn && typeof AdHocPage !== 'undefined') {
+    adhocBtn.addEventListener('click', () => AdHocPage.open());
+  }
 });
