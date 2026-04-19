@@ -48,10 +48,25 @@ type DetectionTool interface {
 }
 
 // RunOptions configures a tool execution.
+//
+// SCHED1.2c: each detection tool gains a typed *Params pointer. When set
+// by the caller (scanRunner from a resolved EffectiveConfig), the tool
+// reads its typed field and falls back to model.DefaultXxxParams() for
+// unset fields. The legacy RateLimit/Timeout/ExtraArgs surface stays for
+// existing callers (CLI sub-commands, tests) — when a typed *Params is
+// also supplied it wins per-field.
 type RunOptions struct {
 	RateLimit int               // requests per second (0 = default)
 	Timeout   int               // seconds (0 = default)
 	ExtraArgs map[string]string // tool-specific options
+
+	// Typed per-tool params. Each field is read by the matching tool only.
+	// Nil means "no per-tool override; derive from defaults + ExtraArgs".
+	NucleiParams    *model.NucleiParams
+	NaabuParams     *model.NaabuParams
+	HttpxParams     *model.HttpxParams
+	SubfinderParams *model.SubfinderParams
+	DnsxParams      *model.DnsxParams
 }
 
 // RunResult holds the output of a tool execution.
