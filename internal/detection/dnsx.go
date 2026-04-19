@@ -18,6 +18,54 @@ type DNSXTool struct{}
 
 func NewDNSXTool() *DNSXTool { return &DNSXTool{} }
 
+// dnsxResolver is the narrow surface DNSXTool uses from the system
+// resolver. Production calls net.DefaultResolver; tests inject a fake
+// to assert params propagation and ctx cancellation.
+type dnsxResolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
+	LookupCNAME(ctx context.Context, host string) (string, error)
+}
+
+// dnsxResolverOverride lets tests substitute the resolver. Production
+// callers leave it nil and dnsx uses net.DefaultResolver.
+var dnsxResolverOverride dnsxResolver
+
+func resolveDnsxResolver() dnsxResolver {
+	if dnsxResolverOverride != nil {
+		return dnsxResolverOverride
+	}
+	return net.DefaultResolver
+}
+
+// resolveDnsxParams returns the params DNSXTool should run with,
+// preferring opts.DnsxParams when supplied and falling back to
+// model.DefaultDnsxParams() per-field.
+func resolveDnsxParams(opts RunOptions) model.DnsxParams {
+	defaults := model.DefaultDnsxParams()
+	if opts.DnsxParams == nil {
+		return defaults
+	}
+	resolved := *opts.DnsxParams
+	if len(resolved.RecordTypes) == 0 {
+		resolved.RecordTypes = defaults.RecordTypes
+	}
+	if resolved.Retries <= 0 {
+		resolved.Retries = defaults.Retries
+	}
+	return resolved
+}
+
+// wantsRecordType is a case-insensitive membership check used to gate
+// the per-record-type lookups. Honors params.RecordTypes.
+func wantsRecordType(types []string, want string) bool {
+	for _, t := range types {
+		if strings.EqualFold(t, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *DNSXTool) Name() string   { return "dnsx" }
 func (d *DNSXTool) Phase() string  { return "resolution" }
 func (d *DNSXTool) Kind() ToolKind { return ToolKindNative }
@@ -34,6 +82,27 @@ type dnsResult struct {
 	CNAME string
 }
 
+// lookupHostWithRetries calls resolver.LookupHost up to (1 + retries)
+// times, returning the first non-error result. Honors ctx cancellation
+// between attempts.
+func lookupHostWithRetries(ctx context.Context, resolver dnsxResolver, host string, retries int) ([]string, error) {
+	if retries < 0 {
+		retries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		ips, err := resolver.LookupHost(ctx, host)
+		if err == nil {
+			return ips, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	startedAt := time.Now().UTC()
 
@@ -41,6 +110,10 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 	if concurrency <= 0 {
 		concurrency = 50
 	}
+	params := resolveDnsxParams(opts)
+	resolver := resolveDnsxResolver()
+	wantA := wantsRecordType(params.RecordTypes, "A") || wantsRecordType(params.RecordTypes, "AAAA")
+	wantCNAME := wantsRecordType(params.RecordTypes, "CNAME")
 
 	results := make([]dnsResult, 0, len(inputs))
 	// errLog accumulates per-host resolution errors so the tool_run record
@@ -67,18 +140,22 @@ func (d *DNSXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*
 
 			dr := dnsResult{Host: h}
 
-			ips, err := net.DefaultResolver.LookupHost(rctx, h)
-			if err == nil {
-				dr.IPs = ips
-			} else {
-				mu.Lock()
-				fmt.Fprintf(&errLog, "[dnsx] %s: %v\n", h, err)
-				mu.Unlock()
+			if wantA {
+				ips, err := lookupHostWithRetries(rctx, resolver, h, params.Retries)
+				if err == nil {
+					dr.IPs = ips
+				} else {
+					mu.Lock()
+					fmt.Fprintf(&errLog, "[dnsx] %s: %v\n", h, err)
+					mu.Unlock()
+				}
 			}
 
-			cname, err := net.DefaultResolver.LookupCNAME(rctx, h)
-			if err == nil && cname != "" {
-				dr.CNAME = strings.TrimSuffix(cname, ".")
+			if wantCNAME {
+				cname, err := resolver.LookupCNAME(rctx, h)
+				if err == nil && cname != "" {
+					dr.CNAME = strings.TrimSuffix(cname, ".")
+				}
 			}
 
 			mu.Lock()

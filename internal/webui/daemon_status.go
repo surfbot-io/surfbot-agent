@@ -8,13 +8,12 @@ package webui
 // the heartbeat freshness of daemon.state.json (see §3.3 of the spec).
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"sync"
@@ -22,7 +21,15 @@ import (
 
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
 	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
+	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
+
+// AdHocDispatcher is the narrow surface the trigger handler needs from
+// the master ticker. The production type is *intervalsched.Scheduler;
+// tests inject a fake.
+type AdHocDispatcher interface {
+	DispatchAdHoc(ctx context.Context, run model.AdHocScanRun) (string, error)
+}
 
 // DaemonView bundles everything the UI needs to read agent state. It is
 // the boundary between the webui package and the daemon/intervalsched
@@ -49,6 +56,13 @@ type DaemonView struct {
 	WindowStart    string
 	WindowEnd      string
 	WindowTimezone string
+
+	// AdHocDispatcher is the master ticker's ad-hoc dispatch entry
+	// point. When non-nil, /api/daemon/trigger creates an
+	// ad_hoc_scan_runs row and dispatches via this — when nil, the
+	// trigger endpoint returns 503 (the daemon is in a separate
+	// process and not reachable from this UI process).
+	AdHocDispatcher AdHocDispatcher
 
 	// triggerMu serializes write access to the trigger flag file.
 	triggerMu sync.Mutex
@@ -345,104 +359,8 @@ func nextWindowStart(w intervalsched.MaintenanceWindow, after time.Time) time.Ti
 	return time.Time{}
 }
 
-// --- Trigger handler (PR3) ---
-
-type triggerRequest struct {
-	Profile string `json:"profile"`
-}
-
-type triggerResponse struct {
-	Triggered bool   `json:"triggered"`
-	Profile   string `json:"profile"`
-	TriggerID string `json:"trigger_id"`
-}
-
-type triggerFile struct {
-	ID          string    `json:"id"`
-	Profile     string    `json:"profile"`
-	RequestedAt time.Time `json:"requested_at"`
-}
-
-func triggerPath(stateDir string) string {
-	return filepath.Join(stateDir, "trigger.json")
-}
-
-func triggerProcessingPath(stateDir string) string {
-	return filepath.Join(stateDir, "trigger.json.processing")
-}
-
-// handleDaemonTrigger serves POST /api/daemon/trigger. It writes a flag
-// file the daemon's scheduler loop will pick up on its next idle poll.
-// The trigger bypasses the maintenance window (explicit user intent —
-// see spec §8.3).
-func (h *handler) handleDaemonTrigger(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if h.daemon == nil || h.daemon.DaemonStatePath == "" {
-		writeError(w, http.StatusServiceUnavailable, "daemon not installed")
-		return
-	}
-
-	var req triggerRequest
-	_ = readJSON(r, &req) // empty body is fine; default applies below
-	profile := req.Profile
-	if profile == "" {
-		profile = "full"
-	}
-	if profile != "full" && profile != "quick" {
-		writeError(w, http.StatusBadRequest, "profile must be 'full' or 'quick'")
-		return
-	}
-
-	// Check liveness — refuse triggers when the daemon is stale.
-	status := buildDaemonStatus(h.daemon, time.Now())
-	if !status.Running {
-		writeError(w, http.StatusServiceUnavailable, "daemon not running")
-		return
-	}
-
-	stateDir := filepath.Dir(h.daemon.DaemonStatePath)
-	h.daemon.triggerMu.Lock()
-	defer h.daemon.triggerMu.Unlock()
-
-	// 409 if a trigger is already in flight (claimed or queued).
-	if _, err := os.Stat(triggerProcessingPath(stateDir)); err == nil {
-		writeError(w, http.StatusConflict, "a triggered scan is already running")
-		return
-	}
-	if _, err := os.Stat(triggerPath(stateDir)); err == nil {
-		writeError(w, http.StatusConflict, "a trigger is already queued")
-		return
-	}
-
-	id := fmt.Sprintf("tr_%d", time.Now().UnixNano())
-	tf := triggerFile{ID: id, Profile: profile, RequestedAt: time.Now().UTC()}
-	data, err := json.MarshalIndent(tf, "", "  ")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "encoding trigger")
-		return
-	}
-	tmp := triggerPath(stateDir) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("[webui] writing trigger tmp: %v", err)
-		writeError(w, http.StatusInternalServerError, "writing trigger")
-		return
-	}
-	if err := os.Rename(tmp, triggerPath(stateDir)); err != nil {
-		_ = os.Remove(tmp)
-		log.Printf("[webui] renaming trigger file: %v", err)
-		writeError(w, http.StatusInternalServerError, "writing trigger")
-		return
-	}
-
-	writeJSON(w, http.StatusAccepted, triggerResponse{
-		Triggered: true,
-		Profile:   profile,
-		TriggerID: id,
-	})
-}
+// (handleDaemonTrigger lives in handlers_trigger.go — SCHED1.2c
+// reintroduced it on top of ad_hoc_scan_runs and DispatchAdHoc.)
 
 // --- helpers ---
 

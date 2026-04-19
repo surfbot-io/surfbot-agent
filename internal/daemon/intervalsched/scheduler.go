@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
@@ -58,9 +60,51 @@ type Dependencies struct {
 	JitterSeed    int64
 }
 
+// inflightJob tracks one dispatched scan so the master ticker can cancel
+// its ctx mid-flight when the target enters a new blackout window
+// (SCHED1.2c R8). Keyed in Scheduler.inflight by jobKey().
+type inflightJob struct {
+	scheduleID string
+	targetID   string
+	acquiredAt time.Time
+	cancel     context.CancelCauseFunc
+}
+
+// jobKey is the inflight map key. Schedule jobs use the schedule ID;
+// ad-hoc jobs use the "adhoc:" prefix so both kinds coexist in the
+// in-flight table without collision.
+func jobKey(scheduleID string) string { return scheduleID }
+
+func adHocJobKey(adHocID string) string { return "adhoc:" + adHocID }
+
+// ErrTargetBusy is returned by DispatchAdHoc when the target's
+// per-target lock is already held by another in-flight scan.
+var ErrTargetBusy = errors.New("target busy")
+
+// ErrInBlackout is returned by DispatchAdHoc when the target is inside
+// an active blackout window at dispatch time. Ad-hoc dispatches refuse
+// to run during a blackout — operators who insist must wait for the
+// window to close.
+var ErrInBlackout = errors.New("target in blackout")
+
+// adHocPayload wraps an AdHocScanRun with a synchronous result channel
+// so DispatchAdHoc can block until the worker pool finishes the scan.
+// The pool dispatches Jobs with this in Payload; scanJobRunner
+// type-switches on the payload to drive the ad-hoc bookkeeping path
+// (ad_hoc_scan_runs row updates) instead of the schedule path.
+type adHocPayload struct {
+	run    model.AdHocScanRun
+	result chan adHocResult
+}
+
+type adHocResult struct {
+	scanID string
+	err    error
+}
+
 // Scheduler is the master ticker. It owns the worker pool, target lock
-// index, blackout evaluator, and rrule expander. Construct via New, then
-// Start to launch the tick loop in a goroutine.
+// index, blackout evaluator, rrule expander, and the in-flight job
+// table used by pause-in-flight.
 type Scheduler struct {
 	deps      Dependencies
 	defaults  model.ScheduleDefaults
@@ -69,10 +113,11 @@ type Scheduler struct {
 	blackouts *BlackoutEvaluator
 	expander  *RRuleExpander
 
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	inflight sync.Map // map[string]*inflightJob, keyed by jobKey
 }
 
 // New wires the master ticker. It loads schedule_defaults synchronously
@@ -217,6 +262,68 @@ func (s *Scheduler) Next() time.Time {
 	return *due[0].NextRunAt
 }
 
+// DispatchAdHoc dispatches an ad-hoc scan for a target. It honors
+// per-target serialization (waits for the target lock — non-blocking,
+// returns ErrTargetBusy on contention) and refuses to dispatch while a
+// blackout covers the target (returns ErrInBlackout). Ad-hoc runs
+// participate in pause-in-flight: an active mid-scan blackout cancels
+// their ctx the same way scheduled scans are canceled.
+//
+// The method blocks until the underlying scan completes and returns
+// the new scan's ID. Callers that want async semantics (e.g. the HTTP
+// trigger handler) wrap the call in a goroutine.
+//
+// On dispatch the ad_hoc_scan_runs row transitions Pending → Running;
+// on completion it transitions to Completed (with scan_id attached) or
+// Failed.
+func (s *Scheduler) DispatchAdHoc(ctx context.Context, run model.AdHocScanRun) (string, error) {
+	if run.TargetID == "" {
+		return "", fmt.Errorf("DispatchAdHoc: target_id is required")
+	}
+	if !s.locks.TryAcquire(run.TargetID) {
+		return "", ErrTargetBusy
+	}
+	now := s.deps.Clock.Now()
+	active, _ := s.blackouts.IsActive(run.TargetID, now)
+	if active {
+		s.locks.Release(run.TargetID)
+		return "", ErrInBlackout
+	}
+	if run.ID == "" {
+		run.ID = uuid.New().String()
+	}
+	// Mark the row as running. The lock is held; the worker pool runs the
+	// scan on a goroutine and signals completion via adHocPayload.result.
+	if s.deps.AdHocStore != nil {
+		_ = s.deps.AdHocStore.UpdateStatus(ctx, run.ID, model.AdHocRunning, now.UTC())
+	}
+
+	resultCh := make(chan adHocResult, 1)
+	job := Job{
+		ScheduleID: adHocJobKey(run.ID),
+		TargetID:   run.TargetID,
+		Payload:    &adHocPayload{run: run, result: resultCh},
+	}
+	if !s.pool.Dispatch(job) {
+		s.locks.Release(run.TargetID)
+		if s.deps.AdHocStore != nil {
+			_ = s.deps.AdHocStore.UpdateStatus(ctx, run.ID, model.AdHocFailed, time.Now().UTC())
+		}
+		return "", fmt.Errorf("worker pool full; ad-hoc dispatch rejected")
+	}
+
+	select {
+	case res := <-resultCh:
+		return res.scanID, res.err
+	case <-ctx.Done():
+		// Caller canceled; the worker keeps running until the scan
+		// completes on its own. We surface the ctx error to the caller
+		// but the ad_hoc_scan_runs row will still get updated by the
+		// worker.
+		return "", ctx.Err()
+	}
+}
+
 // tickLoop fires every TickInterval and dispatches due schedules.
 func (s *Scheduler) tickLoop() {
 	defer s.wg.Done()
@@ -299,12 +406,40 @@ func (s *Scheduler) handleBlackoutSkip(sched model.Schedule, now time.Time) {
 	}
 }
 
-// evaluateInFlightBlackouts is a no-op in SCHED1.2b. SCHED1.2c will
-// iterate live jobs and cancel ctx for any whose target enters a new
-// blackout window.
-//
-// TODO: SCHED1.2c — implement pause-in-flight ctx cancellation.
-func (s *Scheduler) evaluateInFlightBlackouts(_ time.Time) {}
+// ErrBlackoutPause is attached to in-flight job ctx via
+// context.WithCancelCause when a blackout activates mid-scan.
+// scanJobRunner inspects context.Cause(ctx) to distinguish this cause
+// from a normal shutdown / operator cancel and records the schedule run
+// as ScheduleRunPausedBlackout on completion.
+var ErrBlackoutPause = errors.New("blackout activated")
+
+// evaluateInFlightBlackouts walks the in-flight job table and cancels
+// the ctx of any job whose target has entered a blackout since dispatch.
+// Jobs that were already in a blackout at dispatch time (defensive —
+// the ticker shouldn't have dispatched them) are left alone so the same
+// blackout doesn't double-cancel them.
+func (s *Scheduler) evaluateInFlightBlackouts(now time.Time) {
+	s.inflight.Range(func(_, value any) bool {
+		job := value.(*inflightJob)
+		activeNow, _ := s.blackouts.IsActive(job.targetID, now)
+		if !activeNow {
+			return true
+		}
+		activeThen, _ := s.blackouts.IsActive(job.targetID, job.acquiredAt)
+		if activeThen {
+			// Pre-existing blackout — the ticker shouldn't have
+			// dispatched this. Don't double-cancel; just log so the
+			// regression is observable.
+			s.deps.Log.Warn("blackout active at dispatch time; in-flight check skipped",
+				"schedule_id", job.scheduleID, "target_id", job.targetID)
+			return true
+		}
+		s.deps.Log.Info("scan paused by blackout",
+			"schedule_id", job.scheduleID, "target_id", job.targetID)
+		job.cancel(ErrBlackoutPause)
+		return true
+	})
+}
 
 func (s *Scheduler) loadTemplate(ctx context.Context, id *string) *model.Template {
 	if id == nil || *id == "" {
@@ -326,8 +461,74 @@ type scanJobRunner struct {
 	s *Scheduler
 }
 
+// runAdHoc handles a worker job whose payload is an *adHocPayload.
+// Resolves EffectiveConfig from the AdHocScanRun (template + defaults
+// + inline overrides), runs the scan with pause-in-flight ctx tracking,
+// updates ad_hoc_scan_runs on completion, and signals the originating
+// DispatchAdHoc caller via payload.result.
+func (r *scanJobRunner) runAdHoc(ctx context.Context, job Job, ah *adHocPayload) error {
+	run := ah.run
+	tmpl := r.s.loadTemplate(ctx, run.TemplateID)
+	// Synthesize a Schedule shell so ResolveEffectiveConfig works against
+	// the same cascade rules as scheduled scans.
+	pseudo := model.Schedule{
+		TargetID:   run.TargetID,
+		ToolConfig: run.ToolConfig,
+		TemplateID: run.TemplateID,
+		Timezone:   r.s.defaults.DefaultTimezone,
+		RRule:      r.s.defaults.DefaultRRule,
+	}
+	effective, err := model.ResolveEffectiveConfig(pseudo, tmpl, r.s.defaults)
+	if err != nil {
+		ah.result <- adHocResult{err: fmt.Errorf("resolve effective config: %w", err)}
+		if r.s.deps.AdHocStore != nil {
+			_ = r.s.deps.AdHocStore.UpdateStatus(context.Background(), run.ID, model.AdHocFailed, time.Now().UTC())
+		}
+		return err
+	}
+
+	jobCtx, cancel := context.WithCancelCause(ctx)
+	key := adHocJobKey(run.ID)
+	r.s.inflight.Store(key, &inflightJob{
+		scheduleID: run.ID,
+		targetID:   run.TargetID,
+		acquiredAt: r.s.deps.Clock.Now(),
+		cancel:     cancel,
+	})
+	defer func() {
+		r.s.inflight.Delete(key)
+		cancel(nil)
+	}()
+
+	scanID, runErr := r.s.deps.Runner.Run(jobCtx, job.ScheduleID, run.TargetID, effective)
+	completedAt := time.Now().UTC()
+
+	finalStatus := model.AdHocCompleted
+	if runErr != nil {
+		finalStatus = model.AdHocFailed
+		if errors.Is(runErr, context.Canceled) && errors.Is(context.Cause(jobCtx), ErrBlackoutPause) {
+			r.s.deps.Log.Info("ad-hoc scan paused by blackout",
+				"adhoc_id", run.ID, "target_id", run.TargetID)
+		}
+	}
+
+	if r.s.deps.AdHocStore != nil {
+		if scanID != "" {
+			_ = r.s.deps.AdHocStore.AttachScan(context.Background(), run.ID, scanID)
+		}
+		_ = r.s.deps.AdHocStore.UpdateStatus(context.Background(), run.ID, finalStatus, completedAt)
+	}
+
+	ah.result <- adHocResult{scanID: scanID, err: runErr}
+	return runErr
+}
+
 func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
 	defer r.s.locks.Release(job.TargetID)
+
+	if adhoc, ok := job.Payload.(*adHocPayload); ok {
+		return r.runAdHoc(ctx, job, adhoc)
+	}
 
 	sched, ok := job.Payload.(model.Schedule)
 	if !ok {
@@ -340,17 +541,34 @@ func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
 		return fmt.Errorf("resolve effective config: %w", err)
 	}
 
-	scanID, runErr := r.s.deps.Runner.Run(ctx, sched.ID, sched.TargetID, effective)
+	jobCtx, cancel := context.WithCancelCause(ctx)
+	key := jobKey(sched.ID)
+	r.s.inflight.Store(key, &inflightJob{
+		scheduleID: sched.ID,
+		targetID:   sched.TargetID,
+		acquiredAt: r.s.deps.Clock.Now(),
+		cancel:     cancel,
+	})
+	defer func() {
+		r.s.inflight.Delete(key)
+		cancel(nil)
+	}()
+
+	scanID, runErr := r.s.deps.Runner.Run(jobCtx, sched.ID, sched.TargetID, effective)
 	completedAt := time.Now().UTC()
 
 	status := model.ScheduleRunSuccess
 	if runErr != nil {
-		// SCHED1.2c will distinguish blackout-cancel from operator-cancel
-		// from real failure. For 1.2b every error path lands as failed.
 		status = model.ScheduleRunFailed
 		if errors.Is(runErr, context.Canceled) {
-			r.s.deps.Log.Info("scan canceled",
-				"schedule_id", sched.ID, "target_id", sched.TargetID)
+			if errors.Is(context.Cause(jobCtx), ErrBlackoutPause) {
+				status = model.ScheduleRunPausedBlackout
+				r.s.deps.Log.Info("scan paused by blackout (final)",
+					"schedule_id", sched.ID, "target_id", sched.TargetID)
+			} else {
+				r.s.deps.Log.Info("scan canceled",
+					"schedule_id", sched.ID, "target_id", sched.TargetID)
+			}
 		}
 	}
 

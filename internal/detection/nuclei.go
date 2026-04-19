@@ -20,6 +20,72 @@ type NucleiTool struct{}
 
 func NewNucleiTool() *NucleiTool { return &NucleiTool{} }
 
+// nucleiEngine is the narrow surface NucleiTool needs from the upstream
+// SDK. The production implementation wraps *nuclei.NucleiEngine; tests
+// inject a fake to assert params propagation and ctx cancellation
+// without invoking the real engine.
+type nucleiEngine interface {
+	LoadTargets(targets []string, probeNonHTTP bool)
+	ExecuteWithCallback(callback ...func(*output.ResultEvent)) error
+	Close()
+}
+
+// nucleiEngineFactory builds a nucleiEngine from the SDK option set. It
+// is overridden in tests via nucleiEngineFactoryOverride.
+type nucleiEngineFactory func(ctx context.Context, opts ...nuclei.NucleiSDKOptions) (nucleiEngine, error)
+
+// nucleiEngineFactoryOverride, when non-nil, replaces the production
+// engine constructor. Tests set/restore this with t.Cleanup. The
+// override receives the resolved NucleiParams in the factoryParams
+// channel-less side channel below so tests can assert what was passed.
+var (
+	nucleiEngineFactoryOverride nucleiEngineFactory
+	nucleiLastResolvedParams    model.NucleiParams // observed by tests via getNucleiLastResolvedParams
+)
+
+func defaultNucleiEngineFactory(ctx context.Context, opts ...nuclei.NucleiSDKOptions) (nucleiEngine, error) {
+	return nuclei.NewNucleiEngineCtx(ctx, opts...)
+}
+
+func resolveNucleiEngineFactory() nucleiEngineFactory {
+	if nucleiEngineFactoryOverride != nil {
+		return nucleiEngineFactoryOverride
+	}
+	return defaultNucleiEngineFactory
+}
+
+// resolveNucleiParams returns the params NucleiTool should run with,
+// using the typed RunOptions.NucleiParams when provided and falling
+// back to model.DefaultNucleiParams() otherwise. Per-field zero-values
+// in the typed struct also fall back to defaults so callers may set
+// just one knob without reverting the others.
+func resolveNucleiParams(opts RunOptions) model.NucleiParams {
+	defaults := model.DefaultNucleiParams()
+	if opts.NucleiParams == nil {
+		// Honor the legacy ExtraArgs["severity"] override — preserves
+		// pre-1.2c behavior for callers (CLI, tests) that haven't
+		// migrated to typed params.
+		if s, ok := opts.ExtraArgs["severity"]; ok && s != "" {
+			defaults.Severity = strings.Split(s, ",")
+		}
+		if opts.RateLimit > 0 {
+			defaults.RateLimit = opts.RateLimit
+		}
+		return defaults
+	}
+	resolved := *opts.NucleiParams
+	if len(resolved.Severity) == 0 {
+		resolved.Severity = defaults.Severity
+	}
+	if resolved.RateLimit <= 0 {
+		resolved.RateLimit = defaults.RateLimit
+	}
+	if resolved.Timeout <= 0 {
+		resolved.Timeout = defaults.Timeout
+	}
+	return resolved
+}
+
 func (n *NucleiTool) Name() string   { return "nuclei" }
 func (n *NucleiTool) Phase() string  { return "assessment" }
 func (n *NucleiTool) Kind() ToolKind { return ToolKindLibrary }
@@ -39,23 +105,29 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		return &RunResult{ToolRun: tr}, nil
 	}
 
-	if err := ensureNucleiTemplates(); err != nil {
-		tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
-		attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)
-		return &RunResult{ToolRun: tr}, fmt.Errorf("nuclei templates setup: %w", err)
+	if nucleiEngineFactoryOverride == nil {
+		// Tests inject a fake engine and skip the heavyweight template
+		// install path — only the production factory needs templates on
+		// disk.
+		if err := ensureNucleiTemplates(); err != nil {
+			tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
+			attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)
+			return &RunResult{ToolRun: tr}, fmt.Errorf("nuclei templates setup: %w", err)
+		}
 	}
 
-	severity := "critical,high,medium,low,info"
-	if s, ok := opts.ExtraArgs["severity"]; ok && s != "" {
-		severity = s
-	}
-
-	rateLimit := 150
-	if opts.RateLimit > 0 {
-		rateLimit = opts.RateLimit
-	}
+	params := resolveNucleiParams(opts)
+	nucleiLastResolvedParams = params
+	severity := strings.Join(params.Severity, ",")
+	rateLimit := params.RateLimit
 
 	timeout := 5
+	if params.Timeout > 0 {
+		secs := int(params.Timeout / time.Second)
+		if secs > 0 && secs < 60 {
+			timeout = secs
+		}
+	}
 	if opts.Timeout > 0 && opts.Timeout < 60 {
 		timeout = opts.Timeout
 	}
@@ -101,7 +173,7 @@ func (n *NucleiTool) Run(ctx context.Context, inputs []string, opts RunOptions) 
 		}),
 	}
 
-	ne, err := nuclei.NewNucleiEngineCtx(ctx, engineOpts...)
+	ne, err := resolveNucleiEngineFactory()(ctx, engineOpts...)
 	if err != nil {
 		tr := buildToolRun(n, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
 		attachExecContext(&tr, "nuclei (SDK in-process)", 1, err.Error(), inputs)

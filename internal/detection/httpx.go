@@ -49,6 +49,37 @@ type HTTPXTool struct{}
 
 func NewHTTPXTool() *HTTPXTool { return &HTTPXTool{} }
 
+// httpxTransportOverride lets tests substitute the http.RoundTripper used
+// by HTTPXTool without rewiring net.Listen. Production callers leave it
+// nil; the default *http.Transport is constructed in Run.
+var httpxTransportOverride http.RoundTripper
+
+// resolveHttpxParams returns the params HTTPXTool should run with,
+// preferring opts.HttpxParams when supplied and falling back to
+// model.DefaultHttpxParams() per-field. The legacy opts.RateLimit
+// overrides Threads when typed params are absent so existing callers
+// keep working unchanged.
+func resolveHttpxParams(opts RunOptions) model.HttpxParams {
+	defaults := model.DefaultHttpxParams()
+	if opts.HttpxParams == nil {
+		if opts.RateLimit > 0 {
+			defaults.Threads = opts.RateLimit
+		}
+		return defaults
+	}
+	resolved := *opts.HttpxParams
+	if resolved.Threads <= 0 {
+		resolved.Threads = defaults.Threads
+	}
+	if len(resolved.Probes) == 0 {
+		resolved.Probes = defaults.Probes
+	}
+	if resolved.Timeout <= 0 {
+		resolved.Timeout = defaults.Timeout
+	}
+	return resolved
+}
+
 func (h *HTTPXTool) Name() string    { return "httpx" }
 func (h *HTTPXTool) Phase() string   { return "http_probe" }
 func (h *HTTPXTool) Kind() ToolKind  { return ToolKindNative }
@@ -90,28 +121,34 @@ type probeResult struct {
 func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (*RunResult, error) {
 	startedAt := time.Now().UTC()
 
-	concurrency := opts.RateLimit
-	if concurrency <= 0 {
-		concurrency = 50
-	}
+	params := resolveHttpxParams(opts)
+	concurrency := params.Threads
 
+	transport := http.RoundTripper(&http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, // intentional: scanning unknown targets
+		},
+		MaxIdleConnsPerHost: 10,
+	})
+	if httpxTransportOverride != nil {
+		transport = httpxTransportOverride
+	}
+	checkRedirect := func(req *http.Request, via []*http.Request) error {
+		if !params.FollowRedirects {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 3 {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
 	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // intentional: scanning unknown targets
-			},
-			MaxIdleConnsPerHost: 10,
-		},
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
+		Transport:     transport,
+		Timeout:       params.Timeout,
+		CheckRedirect: checkRedirect,
 	}
 
-	targets := buildProbeURLs(inputs)
+	targets := filterProbesBySchemes(buildProbeURLs(inputs), params.Probes)
 
 	var results []probeResult
 	var drops int
@@ -185,7 +222,7 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 	tr.OutputSummary = fmt.Sprintf("Probed %d target(s) → %d live URL(s), %d technolog(ies), %d dropped (vhost mismatch)",
 		len(targets), urlCount, techCount, drops)
 	attachExecContext(&tr,
-		fmt.Sprintf("httpx (in-process HTTP prober, concurrency=%d, timeout=10s)", concurrency),
+		fmt.Sprintf("httpx (in-process HTTP prober, concurrency=%d, timeout=%s)", concurrency, params.Timeout),
 		0,
 		"", // httpx's per-probe dropped/failure reasons already go to os.Stderr via the vhostMismatchLog writer and would be too verbose here
 		inputs,
@@ -198,6 +235,32 @@ func (h *HTTPXTool) Run(ctx context.Context, inputs []string, opts RunOptions) (
 	tr.Config["tech_count"] = techCount
 	runResult.ToolRun = tr
 	return runResult, nil
+}
+
+// filterProbesBySchemes drops probes whose scheme is not in the requested
+// set. An empty or nil schemes list returns the targets unchanged.
+func filterProbesBySchemes(targets []probeTarget, schemes []string) []probeTarget {
+	if len(schemes) == 0 {
+		return targets
+	}
+	allow := map[string]bool{}
+	for _, s := range schemes {
+		allow[strings.ToLower(s)] = true
+	}
+	if allow["http"] && allow["https"] {
+		return targets
+	}
+	out := make([]probeTarget, 0, len(targets))
+	for _, t := range targets {
+		scheme := "http"
+		if strings.HasPrefix(t.URL, "https://") {
+			scheme = "https"
+		}
+		if allow[scheme] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // buildProbeURLs parses a list of probe inputs into concrete probe targets.

@@ -239,69 +239,9 @@ func TestDaemonStatusHandler_HTTPRoute(t *testing.T) {
 	}
 }
 
-func TestDaemonTriggerHandler_HappyPath(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	dpath := writeDaemonState(t, dir, daemon.State{
-		Version: "0.5.0", PID: 1,
-		StartedAt: now.Add(-time.Minute),
-		WrittenAt: now,
-	})
-	h := &handler{daemon: &DaemonView{
-		DaemonStatePath: dpath,
-		Heartbeat:       30 * time.Second,
-	}}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/daemon/trigger",
-		strings.NewReader(`{"profile":"quick"}`))
-	rec := httptest.NewRecorder()
-	h.handleDaemonTrigger(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
-	}
-	if _, err := os.Stat(filepath.Join(dir, "trigger.json")); err != nil {
-		t.Errorf("trigger file not written: %v", err)
-	}
-}
-
-func TestDaemonTriggerHandler_Conflict(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	writeDaemonState(t, dir, daemon.State{
-		Version: "0.5.0", PID: 1, StartedAt: now, WrittenAt: now,
-	})
-	if err := os.WriteFile(filepath.Join(dir, "trigger.json.processing"), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := &handler{daemon: &DaemonView{
-		DaemonStatePath: filepath.Join(dir, "daemon.state.json"),
-		Heartbeat:       30 * time.Second,
-	}}
-	req := httptest.NewRequest(http.MethodPost, "/api/daemon/trigger",
-		strings.NewReader(`{"profile":"full"}`))
-	rec := httptest.NewRecorder()
-	h.handleDaemonTrigger(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Errorf("want 409, got %d", rec.Code)
-	}
-}
-
-func TestDaemonTriggerHandler_BadProfile(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	writeDaemonState(t, dir, daemon.State{Version: "0.5.0", PID: 1, StartedAt: now, WrittenAt: now})
-	h := &handler{daemon: &DaemonView{
-		DaemonStatePath: filepath.Join(dir, "daemon.state.json"),
-		Heartbeat:       30 * time.Second,
-	}}
-	req := httptest.NewRequest(http.MethodPost, "/api/daemon/trigger",
-		strings.NewReader(`{"profile":"bogus"}`))
-	rec := httptest.NewRecorder()
-	h.handleDaemonTrigger(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("want 400, got %d", rec.Code)
-	}
-}
+// SCHED1.2c: trigger handler tests live in handlers_trigger_test.go.
+// The pre-1.2b file-based behavior (writing trigger.json) is gone — see
+// handlers_trigger.go for the new ad-hoc dispatch shape.
 
 func TestRedactError(t *testing.T) {
 	cases := []struct{ in, want string }{

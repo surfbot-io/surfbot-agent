@@ -16,12 +16,149 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
+
+// fakeRoundTripper captures every request and returns a canned response.
+type fakeRoundTripper struct {
+	mu       sync.Mutex
+	requests []*http.Request
+	respond  func(*http.Request) (*http.Response, error)
+}
+
+func (f *fakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, r)
+	respond := f.respond
+	f.mu.Unlock()
+	if respond != nil {
+		return respond(r)
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("ok")),
+		Header:     http.Header{},
+		Request:    r,
+	}, nil
+}
+
+func swapHttpxTransport(t *testing.T, rt http.RoundTripper) {
+	t.Helper()
+	prev := httpxTransportOverride
+	httpxTransportOverride = rt
+	t.Cleanup(func() { httpxTransportOverride = prev })
+}
+
+func TestResolveHttpxParams_TypedOverridesWin(t *testing.T) {
+	got := resolveHttpxParams(RunOptions{
+		HttpxParams: &model.HttpxParams{
+			Threads: 25,
+			Probes:  []string{"https"},
+			Timeout: 3 * time.Second,
+		},
+	})
+	assert.Equal(t, 25, got.Threads)
+	assert.Equal(t, []string{"https"}, got.Probes)
+	assert.Equal(t, 3*time.Second, got.Timeout)
+}
+
+func TestResolveHttpxParams_FallsBackToDefaults(t *testing.T) {
+	got := resolveHttpxParams(RunOptions{})
+	def := model.DefaultHttpxParams()
+	assert.Equal(t, def.Threads, got.Threads)
+	assert.Equal(t, def.Probes, got.Probes)
+	assert.Equal(t, def.Timeout, got.Timeout)
+}
+
+func TestHttpx_ParamsPropagation_Threads(t *testing.T) {
+	var inflight, peak int32
+	rt := &fakeRoundTripper{
+		respond: func(r *http.Request) (*http.Response, error) {
+			cur := atomic.AddInt32(&inflight, 1)
+			defer atomic.AddInt32(&inflight, -1)
+			for {
+				old := atomic.LoadInt32(&peak)
+				if cur <= old || atomic.CompareAndSwapInt32(&peak, old, cur) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Header:     http.Header{},
+				Request:    r,
+			}, nil
+		},
+	}
+	swapHttpxTransport(t, rt)
+
+	h := NewHTTPXTool()
+	// 16 inputs × http+https = 32 probes. Threads=4 caps in-flight at 4.
+	inputs := make([]string, 16)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("host%d:80", i)
+	}
+	_, err := h.Run(context.Background(), inputs, RunOptions{
+		HttpxParams: &model.HttpxParams{Threads: 4, Probes: []string{"http", "https"}, Timeout: 5 * time.Second},
+	})
+	require.NoError(t, err)
+	observed := atomic.LoadInt32(&peak)
+	assert.LessOrEqual(t, observed, int32(4),
+		"peak in-flight requests must respect params.Threads (got %d)", observed)
+}
+
+func TestHttpx_ParamsPropagation_Probes(t *testing.T) {
+	rt := &fakeRoundTripper{}
+	swapHttpxTransport(t, rt)
+
+	h := NewHTTPXTool()
+	_, err := h.Run(context.Background(), []string{"example.com:8080"}, RunOptions{
+		HttpxParams: &model.HttpxParams{Threads: 4, Probes: []string{"https"}, Timeout: 5 * time.Second},
+	})
+	require.NoError(t, err)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, r := range rt.requests {
+		assert.Equal(t, "https", r.URL.Scheme,
+			"probes=[https] must skip http requests; saw %s", r.URL)
+	}
+}
+
+func TestHttpx_CtxCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := &fakeRoundTripper{
+		respond: func(r *http.Request) (*http.Response, error) {
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		},
+	}
+	swapHttpxTransport(t, rt)
+
+	h := NewHTTPXTool()
+	done := make(chan struct{})
+	go func() {
+		_, _ = h.Run(ctx, []string{"example.com:8080"}, RunOptions{
+			HttpxParams: &model.HttpxParams{Threads: 4, Probes: []string{"http"}, Timeout: 5 * time.Second},
+		})
+		close(done)
+	}()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return within 500ms after ctx cancel")
+	}
+}
 
 func TestHTTPXProbeHTTPS(t *testing.T) {
 	tlsCert := generateSelfSignedCert(t, "localhost", "127.0.0.1")

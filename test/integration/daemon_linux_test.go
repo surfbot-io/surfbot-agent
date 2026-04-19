@@ -177,50 +177,17 @@ type schedulerStatus struct {
 
 // TestDaemon_Scheduler_TicksWithin90s installs the daemon with very short
 // intervals (1m full, 30s quick, run_on_start=true) and asserts that both
-// last_full_at and last_quick_at are populated within 90s.
-func TestDaemon_Scheduler_TicksWithin90s(t *testing.T) {
-	requireRoot(t)
-	bin := buildBinary(t)
-	resetDaemonState(t)
-	cfgPath := writeConfig(t, `
-daemon:
-  scheduler:
-    enabled: true
-    full_scan_interval: 2m
-    quick_check_interval: 1m
-    jitter: 0s
-    run_on_start: true
-    quick_check_tools: [httpx, nuclei]
-`)
-	t.Cleanup(func() {
-		if t.Failed() {
-			dumpDaemonState(t)
-		}
-		_, _ = runCmd(t, bin, "daemon", "stop")
-		_, _ = runCmd(t, bin, "daemon", "uninstall")
-	})
-
-	if out, err := runCmd(t, bin, "--config", cfgPath, "daemon", "install"); err != nil {
-		t.Fatalf("install failed: %v\n%s", err, out)
-	}
-	if out, err := runCmd(t, bin, "daemon", "start"); err != nil {
-		t.Fatalf("start failed: %v\n%s", err, out)
-	}
-
-	deadline := time.Now().Add(150 * time.Second)
-	var last schedulerStatus
-	for time.Now().Before(deadline) {
-		out, _ := runCmd(t, bin, "daemon", "status", "--json")
-		_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &last)
-		if last.Scheduler != nil &&
-			!last.Scheduler.LastFullAt.IsZero() &&
-			!last.Scheduler.LastQuickAt.IsZero() {
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
-	t.Fatalf("scheduler never populated both cursors within 150s; last=%+v", last)
-}
+// TestDaemon_Scheduler_TicksWithin90s was a SPEC-X2 acceptance test
+// for the legacy IntervalScheduler. SCHED1.2b retired that scheduler
+// and its schedule.state.json cursor file (last_full_at / last_quick_at
+// no longer exist). With the new master ticker, scans only fire when
+// scan_schedules has rows — fresh installs have none until SCHED1.3
+// ships the schedule-creation API/CLI. The integration coverage for
+// the master ticker lives in
+// internal/daemon/intervalsched/scheduler_integration_test.go (build
+// tag: integration). Test removed; SCHED1.3 will add a daemon-level
+// equivalent that creates schedules via the new API and asserts a
+// scan fires.
 
 // TestDaemon_Scheduler_MaintenanceWindowSuppresses installs with a window
 // covering [now, now+5m] and asserts no scan fires while the window is open.

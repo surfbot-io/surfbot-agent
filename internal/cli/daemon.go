@@ -234,7 +234,7 @@ func durationOr(d, fallback time.Duration) time.Duration {
 // scan_schedules table simply produces an idle tick loop.
 func buildScheduler(_ config.SchedulerConfig, _ daemon.Paths, store *storage.SQLiteStore) (daemon.Scheduler, error) {
 	registry := detection.NewRegistry()
-	runner := daemon.NewLegacyScanRunner(store, registry, slog.Default())
+	runner := daemon.NewScanRunner(store, registry, slog.Default())
 
 	sched, err := intervalsched.New(intervalsched.Dependencies{
 		SchedStore:    store.Schedules(),

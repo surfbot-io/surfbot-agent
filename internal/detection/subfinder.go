@@ -18,6 +18,52 @@ import (
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
 
+// subfinderEnumerator is the narrow surface SubfinderTool uses from the
+// upstream SDK. The production implementation wraps
+// *subfinderRunner.Runner; tests inject a fake to capture the params it
+// would receive and to drive ctx-cancellation without external network
+// I/O.
+type subfinderEnumerator interface {
+	EnumerateSingleDomainWithCtx(ctx context.Context, domain string, writers []io.Writer) (map[string]map[string]struct{}, error)
+}
+
+// subfinderEnumeratorFactory constructs an enumerator from the resolved
+// SDK options. tests swap subfinderEnumeratorOverride.
+type subfinderEnumeratorFactory func(opts *subfinderRunner.Options) (subfinderEnumerator, error)
+
+var subfinderEnumeratorOverride subfinderEnumeratorFactory
+
+func defaultSubfinderEnumerator(opts *subfinderRunner.Options) (subfinderEnumerator, error) {
+	return subfinderRunner.NewRunner(opts)
+}
+
+func resolveSubfinderEnumerator() subfinderEnumeratorFactory {
+	if subfinderEnumeratorOverride != nil {
+		return subfinderEnumeratorOverride
+	}
+	return defaultSubfinderEnumerator
+}
+
+// resolveSubfinderParams returns the params SubfinderTool should run
+// with, preferring opts.SubfinderParams when supplied and falling back
+// to model.DefaultSubfinderParams() per-field. Sources/Resolvers slices
+// inherit when nil/empty so partial configs work.
+func resolveSubfinderParams(opts RunOptions) model.SubfinderParams {
+	defaults := model.DefaultSubfinderParams()
+	if opts.SubfinderParams == nil {
+		return defaults
+	}
+	resolved := *opts.SubfinderParams
+	// AllSources is bool; the typed struct's zero value is a valid
+	// explicit "no all-sources" override only when Sources is non-empty.
+	// If both Sources and AllSources are unset we fall back to default
+	// (AllSources=true) so behavior matches pre-1.2c.
+	if !resolved.AllSources && len(resolved.Sources) == 0 {
+		resolved.AllSources = defaults.AllSources
+	}
+	return resolved
+}
+
 // SubfinderTool discovers subdomains by driving the upstream subfinder SDK
 // in-process. Previously this shelled out to a `subfinder` binary on PATH;
 // that created a hidden install dependency — users who ran the binary
@@ -55,8 +101,9 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 		return &RunResult{ToolRun: tr}, nil
 	}
 
-	options := buildSubfinderOptions(opts)
-	runner, err := subfinderRunner.NewRunner(options)
+	params := resolveSubfinderParams(opts)
+	options := buildSubfinderOptions(opts, params)
+	runner, err := resolveSubfinderEnumerator()(options)
 	if err != nil {
 		tr := buildToolRun(s, startedAt, model.ToolRunFailed, err.Error(), len(inputs), 0)
 		attachExecContext(&tr, subfinderCommandLabel(opts), 1, err.Error(), inputs)
@@ -143,7 +190,7 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 // will silently return nothing if the user hasn't configured
 // ~/.config/subfinder/provider-config.yaml; that's the upstream behavior
 // and we don't pretend otherwise.
-func buildSubfinderOptions(opts RunOptions) *subfinderRunner.Options {
+func buildSubfinderOptions(opts RunOptions, params model.SubfinderParams) *subfinderRunner.Options {
 	threads := 10
 	if v, ok := opts.ExtraArgs["threads"]; ok {
 		if n, err := parseInt(v); err == nil && n > 0 {
@@ -163,13 +210,18 @@ func buildSubfinderOptions(opts RunOptions) *subfinderRunner.Options {
 		}
 	}
 
+	sources := goflags.StringSlice{}
+	for _, s := range params.Sources {
+		sources = append(sources, s)
+	}
+
 	// Domain field is populated per-call via EnumerateSingleDomainWithCtx,
 	// so we don't set it here — that field is only used by RunEnumeration().
 	return &subfinderRunner.Options{
 		Threads:            threads,
 		Timeout:            timeout,
 		MaxEnumerationTime: maxEnum,
-		All:                true,
+		All:                params.AllSources,
 		Silent:             true,
 		NoColor:            true,
 		DisableUpdateCheck: true,
@@ -177,7 +229,7 @@ func buildSubfinderOptions(opts RunOptions) *subfinderRunner.Options {
 		// writes progress lines. io.Discard drops them.
 		Output:         io.Discard,
 		Domain:         goflags.StringSlice{},
-		Sources:        goflags.StringSlice{},
+		Sources:        sources,
 		ExcludeSources: goflags.StringSlice{},
 	}
 }
