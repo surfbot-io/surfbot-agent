@@ -88,14 +88,14 @@ func (f *tickerScheduleStore) ListAll(context.Context) ([]model.Schedule, error)
 func (f *tickerScheduleStore) ListByTemplate(context.Context, string) ([]model.Schedule, error) {
 	return nil, nil
 }
-func (f *tickerScheduleStore) Update(context.Context, *model.Schedule) error              { return nil }
-func (f *tickerScheduleStore) Delete(context.Context, string) error                       { return nil }
-func (f *tickerScheduleStore) CountByTarget(context.Context, string) (int, error)         { return 0, nil }
+func (f *tickerScheduleStore) Update(context.Context, *model.Schedule) error      { return nil }
+func (f *tickerScheduleStore) Delete(context.Context, string) error               { return nil }
+func (f *tickerScheduleStore) CountByTarget(context.Context, string) (int, error) { return 0, nil }
 
 type tickerTemplateStore struct{}
 
-func (tickerTemplateStore) Create(context.Context, *model.Template) error          { return nil }
-func (tickerTemplateStore) Get(context.Context, string) (*model.Template, error)   { return nil, nil }
+func (tickerTemplateStore) Create(context.Context, *model.Template) error        { return nil }
+func (tickerTemplateStore) Get(context.Context, string) (*model.Template, error) { return nil, nil }
 func (tickerTemplateStore) GetByName(context.Context, string) (*model.Template, error) {
 	return nil, nil
 }
@@ -173,13 +173,13 @@ func (fakeAdHocStore) AttachScan(context.Context, string, string) error { return
 func (fakeAdHocStore) Delete(context.Context, string) error             { return nil }
 
 type fakeRunner struct {
-	mu        sync.Mutex
-	calls     []runnerCall
-	delay     time.Duration
-	scanID    string
-	runErr    error
-	blockCh   chan struct{}
-	observed  bool
+	mu       sync.Mutex
+	calls    []runnerCall
+	delay    time.Duration
+	scanID   string
+	runErr   error
+	blockCh  chan struct{}
+	observed bool
 }
 
 type runnerCall struct {
