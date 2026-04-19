@@ -55,6 +55,11 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 
 	// Singleton schedule defaults.
 	mux.HandleFunc("/api/v1/schedule-defaults", h.routeScheduleDefaults)
+
+	// Canonical ad-hoc dispatch. Sibling endpoint /api/daemon/trigger
+	// (owned by the webui package) keeps its legacy shape for 1.3a;
+	// 1.3b migrates callers onto this path.
+	mux.HandleFunc("/api/v1/scans/ad-hoc", h.routeAdHoc)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
