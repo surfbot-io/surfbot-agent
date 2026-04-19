@@ -200,7 +200,7 @@ func queryManyBlackouts(ctx context.Context, db dbtx, query string, args ...any)
 	if err != nil {
 		return nil, fmt.Errorf("querying blackouts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]model.BlackoutWindow, 0)
 	for rows.Next() {
 		b, err := scanBlackout(rows)

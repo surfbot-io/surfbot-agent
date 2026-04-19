@@ -59,13 +59,13 @@ func TestResolveEffectiveConfig_TopLevelFields(t *testing.T) {
 	defMW := &MaintenanceWindow{RRule: "FREQ=DAILY;BYHOUR=2", DurationSec: 1800, Timezone: "UTC"}
 
 	cases := []struct {
-		name       string
-		sched      Schedule
-		tmpl       *Template
-		defaults   ScheduleDefaults
-		wantRRule  string
-		wantTZ     string
-		wantMW     *MaintenanceWindow
+		name      string
+		sched     Schedule
+		tmpl      *Template
+		defaults  ScheduleDefaults
+		wantRRule string
+		wantTZ    string
+		wantMW    *MaintenanceWindow
 	}{
 		{
 			name:      "override wins: rrule",

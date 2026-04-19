@@ -36,7 +36,7 @@ func newBackend(t *testing.T) *storage.SQLiteStore {
 	t.Helper()
 	s, err := storage.NewSQLiteStore(":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 

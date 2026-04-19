@@ -276,19 +276,19 @@ type rowScanner interface {
 
 func scanSchedule(r rowScanner) (*model.Schedule, error) {
 	var (
-		s              model.Schedule
-		dtstart        sql.NullString
-		templateID     sql.NullString
-		toolJSON       string
-		overridesJSON  string
-		mwJSON         sql.NullString
-		enabled        int
-		nextRunAt      sql.NullString
-		lastRunAt      sql.NullString
-		lastRunStatus  sql.NullString
-		lastScanID     sql.NullString
-		createdAt      sql.NullString
-		updatedAt      sql.NullString
+		s             model.Schedule
+		dtstart       sql.NullString
+		templateID    sql.NullString
+		toolJSON      string
+		overridesJSON string
+		mwJSON        sql.NullString
+		enabled       int
+		nextRunAt     sql.NullString
+		lastRunAt     sql.NullString
+		lastRunStatus sql.NullString
+		lastScanID    sql.NullString
+		createdAt     sql.NullString
+		updatedAt     sql.NullString
 	)
 	if err := r.Scan(
 		&s.ID, &s.TargetID, &s.Name, &s.RRule, &dtstart, &s.Timezone,
@@ -348,7 +348,7 @@ func queryManySchedules(ctx context.Context, db dbtx, query string, args ...any)
 	if err != nil {
 		return nil, fmt.Errorf("querying schedules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]model.Schedule, 0)
 	for rows.Next() {

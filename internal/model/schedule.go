@@ -118,7 +118,7 @@ const (
 	AdHocRunning   AdHocRunStatus = "running"
 	AdHocCompleted AdHocRunStatus = "completed"
 	AdHocFailed    AdHocRunStatus = "failed"
-	AdHocCancelled AdHocRunStatus = "cancelled"
+	AdHocCanceled  AdHocRunStatus = "canceled"
 )
 
 // AdHocScanRun is a one-off scan invocation that is not tied to a

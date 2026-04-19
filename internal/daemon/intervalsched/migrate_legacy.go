@@ -176,30 +176,30 @@ func MigrateLegacyScheduleConfig(
 // durationToRRule maps a ScheduleConfig.FullScanInterval duration onto
 // an RFC-5545 RRULE. Mappings defined by SPEC-SCHED1 R21 step 4:
 //
-//	 15m   → FREQ=MINUTELY;INTERVAL=15
-//	 1h    → FREQ=HOURLY
-//	 6h    → FREQ=HOURLY;INTERVAL=6
-//	 24h   → FREQ=DAILY
-//	 7d    → FREQ=WEEKLY
-//	 30d   → FREQ=MONTHLY
-//	 other → FREQ=DAILY (fallback)
-//	 <1m   → ErrInvalidLegacyInterval
+//	15m   → FREQ=MINUTELY;INTERVAL=15
+//	1h    → FREQ=HOURLY
+//	6h    → FREQ=HOURLY;INTERVAL=6
+//	24h   → FREQ=DAILY
+//	7d    → FREQ=WEEKLY
+//	30d   → FREQ=MONTHLY
+//	other → FREQ=DAILY (fallback)
+//	<1m   → ErrInvalidLegacyInterval
 func durationToRRule(d time.Duration) (string, error) {
 	if d < time.Minute {
 		return "", fmt.Errorf("%w: %s (min 1m)", ErrInvalidLegacyInterval, d)
 	}
-	switch {
-	case d == 15*time.Minute:
+	switch d {
+	case 15 * time.Minute:
 		return "FREQ=MINUTELY;INTERVAL=15", nil
-	case d == time.Hour:
+	case time.Hour:
 		return "FREQ=HOURLY", nil
-	case d == 6*time.Hour:
+	case 6 * time.Hour:
 		return "FREQ=HOURLY;INTERVAL=6", nil
-	case d == 24*time.Hour:
+	case 24 * time.Hour:
 		return "FREQ=DAILY", nil
-	case d == 7*24*time.Hour:
+	case 7 * 24 * time.Hour:
 		return "FREQ=WEEKLY", nil
-	case d == 30*24*time.Hour:
+	case 30 * 24 * time.Hour:
 		return "FREQ=MONTHLY", nil
 	default:
 		return "FREQ=DAILY", nil

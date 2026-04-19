@@ -99,13 +99,13 @@ func (st *sqliteAdHocScanRunStore) ListByStatus(ctx context.Context, status mode
 func (st *sqliteAdHocScanRunStore) UpdateStatus(ctx context.Context, id string, status model.AdHocRunStatus, at time.Time) error {
 	// Mirror the status onto started_at / completed_at where the
 	// transition warrants it. A `running` transition pins started_at;
-	// `completed`, `failed`, `cancelled` pin completed_at.
+	// `completed`, `failed`, `canceled` pin completed_at.
 	var startedCol, completedCol any
 	stamp := at.UTC().Format(timeFormat)
 	switch status {
 	case model.AdHocRunning:
 		startedCol = stamp
-	case model.AdHocCompleted, model.AdHocFailed, model.AdHocCancelled:
+	case model.AdHocCompleted, model.AdHocFailed, model.AdHocCanceled:
 		completedCol = stamp
 	}
 
@@ -171,7 +171,7 @@ func validateAdHocInput(r *model.AdHocScanRun) error {
 	switch r.Status {
 	case "":
 		r.Status = model.AdHocPending
-	case model.AdHocPending, model.AdHocRunning, model.AdHocCompleted, model.AdHocFailed, model.AdHocCancelled:
+	case model.AdHocPending, model.AdHocRunning, model.AdHocCompleted, model.AdHocFailed, model.AdHocCanceled:
 	default:
 		return fmt.Errorf("invalid ad_hoc.status %q", r.Status)
 	}
@@ -183,14 +183,14 @@ func validateAdHocInput(r *model.AdHocScanRun) error {
 
 func scanAdHoc(r rowScanner) (*model.AdHocScanRun, error) {
 	var (
-		ah           model.AdHocScanRun
-		templateID   sql.NullString
-		toolJSON     string
-		scanID       sql.NullString
-		status       string
-		requestedAt  sql.NullString
-		startedAt    sql.NullString
-		completedAt  sql.NullString
+		ah          model.AdHocScanRun
+		templateID  sql.NullString
+		toolJSON    string
+		scanID      sql.NullString
+		status      string
+		requestedAt sql.NullString
+		startedAt   sql.NullString
+		completedAt sql.NullString
 	)
 	if err := r.Scan(
 		&ah.ID, &ah.TargetID, &templateID, &toolJSON, &ah.InitiatedBy, &ah.Reason,
@@ -228,7 +228,7 @@ func queryManyAdHoc(ctx context.Context, db dbtx, query string, args ...any) ([]
 	if err != nil {
 		return nil, fmt.Errorf("querying ad_hoc_scan_runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]model.AdHocScanRun, 0)
 	for rows.Next() {
 		r, err := scanAdHoc(rows)

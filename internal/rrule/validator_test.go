@@ -17,11 +17,11 @@ import (
 // Citations live inline on each case. SPEC-SCHED1 R13 acceptance.
 func TestValidateRRule_TableDriven(t *testing.T) {
 	cases := []struct {
-		name       string
-		rrule      string
-		wantErr    error
-		wantWarn   bool
-		warnMatch  string
+		name      string
+		rrule     string
+		wantErr   error
+		wantWarn  bool
+		warnMatch string
 	}{
 		// --- Tenable-style RRULEs ---------------------------------------
 		{name: "tenable/daily-at-2am", rrule: "FREQ=DAILY;BYHOUR=2"},

@@ -224,7 +224,7 @@ func TestMigration0004_PartialIndex(t *testing.T) {
 		`EXPLAIN QUERY PLAN SELECT id FROM scan_schedules WHERE enabled = 1 AND next_run_at <= ?`,
 		time.Now().UTC().Format(time.RFC3339))
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var plan string
 	for rows.Next() {

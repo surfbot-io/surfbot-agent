@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS ad_hoc_scan_runs (
     initiated_by     TEXT NOT NULL,
     reason           TEXT NOT NULL DEFAULT '',
     scan_id          TEXT REFERENCES scans(id) ON DELETE SET NULL,
-    status           TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    status           TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
     requested_at     TEXT NOT NULL,
     started_at       TEXT,
     completed_at     TEXT

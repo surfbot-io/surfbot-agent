@@ -92,7 +92,7 @@ func (st *sqliteTemplateStore) List(ctx context.Context) ([]model.Template, erro
 	if err != nil {
 		return nil, fmt.Errorf("store.templates.List: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]model.Template, 0)
 	for rows.Next() {
 		t, err := scanTemplate(rows)

@@ -25,12 +25,12 @@ func TestSchedule_JSONRoundTrip(t *testing.T) {
 	lastRun := tsUTC(t, "2026-04-19T02:00:00Z")
 
 	orig := Schedule{
-		ID:       "sched-01",
-		TargetID: "tgt-01",
-		Name:     "weekly-full",
-		RRule:    "FREQ=WEEKLY;BYDAY=MO;BYHOUR=2",
-		DTStart:  tsUTC(t, "2026-04-01T02:00:00Z"),
-		Timezone: "UTC",
+		ID:         "sched-01",
+		TargetID:   "tgt-01",
+		Name:       "weekly-full",
+		RRule:      "FREQ=WEEKLY;BYDAY=MO;BYHOUR=2",
+		DTStart:    tsUTC(t, "2026-04-01T02:00:00Z"),
+		Timezone:   "UTC",
 		TemplateID: &tmplID,
 		ToolConfig: ToolConfig{
 			"nuclei": json.RawMessage(`{"severity":["critical","high"]}`),
@@ -137,8 +137,8 @@ func TestAdHocScanRun_JSONRoundTrip(t *testing.T) {
 	started := tsUTC(t, "2026-04-19T02:00:00Z")
 	completed := tsUTC(t, "2026-04-19T02:03:00Z")
 	orig := AdHocScanRun{
-		ID:       "ah-01",
-		TargetID: "tgt-01",
+		ID:         "ah-01",
+		TargetID:   "tgt-01",
 		TemplateID: &tmplID,
 		ToolConfig: ToolConfig{
 			"nuclei": json.RawMessage(`{"tags":["cve-2025"]}`),

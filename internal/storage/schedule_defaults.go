@@ -35,12 +35,12 @@ func (st *sqliteScheduleDefaultsStore) Get(ctx context.Context) (*model.Schedule
 		        jitter_seconds, updated_at
 		 FROM schedule_defaults WHERE id = 1`)
 	var (
-		d         model.ScheduleDefaults
-		tmplID    sql.NullString
-		toolJSON  string
-		mwJSON    sql.NullString
+		d          model.ScheduleDefaults
+		tmplID     sql.NullString
+		toolJSON   string
+		mwJSON     sql.NullString
 		runOnStart int
-		updatedAt sql.NullString
+		updatedAt  sql.NullString
 	)
 	if err := row.Scan(
 		&tmplID, &d.DefaultRRule, &d.DefaultTimezone, &toolJSON, &mwJSON,

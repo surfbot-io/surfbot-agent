@@ -17,7 +17,7 @@ import (
 // that want to distinguish semantic causes should errors.Is against the
 // sentinels below.
 var (
-	ErrInvalidRRule        = errors.New("invalid rrule")
+	ErrInvalidRRule         = errors.New("invalid rrule")
 	ErrRRuleUnsupportedFreq = errors.New("unsupported FREQ")
 	ErrRRuleCountZero       = errors.New("COUNT=0")
 	ErrRRuleMissingFreq     = errors.New("missing FREQ")
