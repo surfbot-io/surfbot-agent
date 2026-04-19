@@ -42,6 +42,8 @@ type triggerResponse struct {
 	ScanID     string `json:"scan_id,omitempty"`
 }
 
+// TODO(SCHED1.4): remove this handler — use /api/v1/scans/ad-hoc.
+//
 // handleDaemonTrigger serves POST /api/daemon/trigger.
 //
 //	200 → impossible (creates work, never returns 200)
@@ -51,7 +53,13 @@ type triggerResponse struct {
 //	409 → target busy (ErrTargetBusy from DispatchAdHoc)
 //	423 → target inside an active blackout (ErrInBlackout)
 //	503 → daemon not installed / scheduler not reachable from this UI process
+//
+// As of SCHED1.3b the endpoint advertises deprecation via Deprecation /
+// Sunset / Link headers and logs a WARN on every call. Request/response
+// shape is unchanged. Removal lands in 1.4 alongside the UI rewrite.
 func (h *handler) handleDaemonTrigger(w http.ResponseWriter, r *http.Request) {
+	writeTriggerDeprecationHeaders(w)
+	log.Printf("[webui] DEPRECATED /api/daemon/trigger called by %s; migrate to /api/v1/scans/ad-hoc", r.RemoteAddr)
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -122,6 +130,23 @@ func (h *handler) handleDaemonTrigger(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, triggerResponse{AdHocRunID: run.ID})
+}
+
+// triggerSunset is the advertised removal date for /api/daemon/trigger.
+// SCHED1.3b picks 2026-07-31 (≈3 months post-merge) as the default;
+// 1.4 will firm this up and may extend if the UI rewrite slips.
+const triggerSunset = "Fri, 31 Jul 2026 00:00:00 GMT"
+
+// writeTriggerDeprecationHeaders adds the RFC-8594 Deprecation /
+// Sunset signals plus an RFC-8288 Link header pointing at the
+// successor endpoint. Headers must be written BEFORE any
+// WriteHeader/body call — keep this helper at the top of the
+// handler.
+func writeTriggerDeprecationHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Deprecation", "true")
+	h.Set("Sunset", triggerSunset)
+	h.Set("Link", `</api/v1/scans/ad-hoc>; rel="successor-version"`)
 }
 
 // triggerFromIntervalSchedErr maps the typed errors from
