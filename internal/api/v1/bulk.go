@@ -18,10 +18,10 @@ import (
 type BulkOperation string
 
 const (
-	BulkPause   BulkOperation = "pause"
-	BulkResume  BulkOperation = "resume"
-	BulkDelete  BulkOperation = "delete"
-	BulkClone   BulkOperation = "clone"
+	BulkPause  BulkOperation = "pause"
+	BulkResume BulkOperation = "resume"
+	BulkDelete BulkOperation = "delete"
+	BulkClone  BulkOperation = "clone"
 )
 
 // BulkScheduleRequest is the POST /api/v1/schedules/bulk body.

@@ -38,7 +38,7 @@ func TestScheduleDefaultsPut(t *testing.T) {
 		t.Fatalf("PUT status=%d body=%s", resp.StatusCode, raw)
 	}
 
-	resp, raw = doJSON(t, srv, http.MethodGet, "/api/v1/schedule-defaults", nil)
+	_, raw = doJSON(t, srv, http.MethodGet, "/api/v1/schedule-defaults", nil)
 	var d ScheduleDefaultsResponse
 	decode(t, raw, &d)
 	if d.DefaultRRule != body.DefaultRRule || d.MaxConcurrentScans != 6 || d.JitterSeconds != 30 {

@@ -30,23 +30,23 @@ const overlapHorizon = 7 * 24 * time.Hour
 // API (nothing today — kept explicit for future-proofing) are excluded
 // here rather than via a `-` tag on the model.
 type ScheduleResponse struct {
-	ID                string                    `json:"id"`
-	TargetID          string                    `json:"target_id"`
-	Name              string                    `json:"name"`
-	RRule             string                    `json:"rrule"`
-	DTStart           time.Time                 `json:"dtstart"`
-	Timezone          string                    `json:"timezone"`
-	TemplateID        *string                   `json:"template_id,omitempty"`
-	ToolConfig        model.ToolConfig          `json:"tool_config"`
-	Overrides         []string                  `json:"overrides"`
-	MaintenanceWindow *model.MaintenanceWindow  `json:"maintenance_window,omitempty"`
-	Status            string                    `json:"status"`
-	NextRunAt         *time.Time                `json:"next_run_at,omitempty"`
-	LastRunAt         *time.Time                `json:"last_run_at,omitempty"`
-	LastRunStatus     *model.ScheduleRunStatus  `json:"last_run_status,omitempty"`
-	LastScanID        *string                   `json:"last_scan_id,omitempty"`
-	CreatedAt         time.Time                 `json:"created_at"`
-	UpdatedAt         time.Time                 `json:"updated_at"`
+	ID                string                   `json:"id"`
+	TargetID          string                   `json:"target_id"`
+	Name              string                   `json:"name"`
+	RRule             string                   `json:"rrule"`
+	DTStart           time.Time                `json:"dtstart"`
+	Timezone          string                   `json:"timezone"`
+	TemplateID        *string                  `json:"template_id,omitempty"`
+	ToolConfig        model.ToolConfig         `json:"tool_config"`
+	Overrides         []string                 `json:"overrides"`
+	MaintenanceWindow *model.MaintenanceWindow `json:"maintenance_window,omitempty"`
+	Status            string                   `json:"status"`
+	NextRunAt         *time.Time               `json:"next_run_at,omitempty"`
+	LastRunAt         *time.Time               `json:"last_run_at,omitempty"`
+	LastRunStatus     *model.ScheduleRunStatus `json:"last_run_status,omitempty"`
+	LastScanID        *string                  `json:"last_scan_id,omitempty"`
+	CreatedAt         time.Time                `json:"created_at"`
+	UpdatedAt         time.Time                `json:"updated_at"`
 }
 
 // CreateScheduleRequest is the POST /api/v1/schedules body. TargetID,
@@ -54,17 +54,17 @@ type ScheduleResponse struct {
 // is optional and drives the overlap check; it is NOT persisted (no
 // column exists for it in schema 0004).
 type CreateScheduleRequest struct {
-	TargetID                  string                    `json:"target_id"`
-	Name                      string                    `json:"name"`
-	RRule                     string                    `json:"rrule"`
-	DTStart                   time.Time                 `json:"dtstart"`
-	Timezone                  string                    `json:"timezone"`
-	TemplateID                *string                   `json:"template_id,omitempty"`
-	ToolConfig                model.ToolConfig          `json:"tool_config,omitempty"`
-	Overrides                 []string                  `json:"overrides,omitempty"`
-	MaintenanceWindow         *model.MaintenanceWindow  `json:"maintenance_window,omitempty"`
-	Enabled                   *bool                     `json:"enabled,omitempty"`
-	EstimatedDurationSeconds  int                       `json:"estimated_duration_seconds,omitempty"`
+	TargetID                 string                   `json:"target_id"`
+	Name                     string                   `json:"name"`
+	RRule                    string                   `json:"rrule"`
+	DTStart                  time.Time                `json:"dtstart"`
+	Timezone                 string                   `json:"timezone"`
+	TemplateID               *string                  `json:"template_id,omitempty"`
+	ToolConfig               model.ToolConfig         `json:"tool_config,omitempty"`
+	Overrides                []string                 `json:"overrides,omitempty"`
+	MaintenanceWindow        *model.MaintenanceWindow `json:"maintenance_window,omitempty"`
+	Enabled                  *bool                    `json:"enabled,omitempty"`
+	EstimatedDurationSeconds int                      `json:"estimated_duration_seconds,omitempty"`
 }
 
 // UpdateScheduleRequest is the PUT /api/v1/schedules/{id} body. All
@@ -72,18 +72,18 @@ type CreateScheduleRequest struct {
 // RRule or DTStart change, the RRULE is re-validated and (when the
 // effective rrule changes) the overlap check re-runs.
 type UpdateScheduleRequest struct {
-	Name                     *string                   `json:"name,omitempty"`
-	RRule                    *string                   `json:"rrule,omitempty"`
-	DTStart                  *time.Time                `json:"dtstart,omitempty"`
-	Timezone                 *string                   `json:"timezone,omitempty"`
-	TemplateID               *string                   `json:"template_id,omitempty"`
-	ClearTemplate            bool                      `json:"clear_template,omitempty"`
-	ToolConfig               model.ToolConfig          `json:"tool_config,omitempty"`
-	Overrides                []string                  `json:"overrides,omitempty"`
-	MaintenanceWindow        *model.MaintenanceWindow  `json:"maintenance_window,omitempty"`
-	ClearMaintenanceWindow   bool                      `json:"clear_maintenance_window,omitempty"`
-	Enabled                  *bool                     `json:"enabled,omitempty"`
-	EstimatedDurationSeconds int                       `json:"estimated_duration_seconds,omitempty"`
+	Name                     *string                  `json:"name,omitempty"`
+	RRule                    *string                  `json:"rrule,omitempty"`
+	DTStart                  *time.Time               `json:"dtstart,omitempty"`
+	Timezone                 *string                  `json:"timezone,omitempty"`
+	TemplateID               *string                  `json:"template_id,omitempty"`
+	ClearTemplate            bool                     `json:"clear_template,omitempty"`
+	ToolConfig               model.ToolConfig         `json:"tool_config,omitempty"`
+	Overrides                []string                 `json:"overrides,omitempty"`
+	MaintenanceWindow        *model.MaintenanceWindow `json:"maintenance_window,omitempty"`
+	ClearMaintenanceWindow   bool                     `json:"clear_maintenance_window,omitempty"`
+	Enabled                  *bool                    `json:"enabled,omitempty"`
+	EstimatedDurationSeconds int                      `json:"estimated_duration_seconds,omitempty"`
 }
 
 func (h *handlers) routeSchedules(w http.ResponseWriter, r *http.Request) {
