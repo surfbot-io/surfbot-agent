@@ -48,6 +48,10 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	// Templates CRUD.
 	mux.HandleFunc("/api/v1/templates", h.routeTemplates)
 	mux.HandleFunc("/api/v1/templates/", h.routeTemplateByID)
+
+	// Blackouts CRUD.
+	mux.HandleFunc("/api/v1/blackouts", h.routeBlackouts)
+	mux.HandleFunc("/api/v1/blackouts/", h.routeBlackoutByID)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
