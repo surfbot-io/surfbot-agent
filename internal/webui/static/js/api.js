@@ -14,16 +14,7 @@ const API = {
 
   async get(path) {
     const resp = await fetch('/api/v1' + path, { headers: this._headers() });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ error: resp.statusText }));
-      // SPEC-SCHED1.3a uses RFC 7807 problem+json (title/detail/type/
-      // field_errors); legacy handlers still return {error:"..."}. The
-      // thrown Error carries both shapes so callers can render either.
-      const e = new Error(err.error || err.title || err.detail || 'Request failed');
-      e.status = resp.status;
-      e.problem = err;
-      throw e;
-    }
+    if (!resp.ok) throw await makeAPIError(resp);
     return resp.json();
   },
 
@@ -31,11 +22,11 @@ const API = {
     const resp = await fetch('/api/v1' + path, {
       method: 'POST',
       headers: this._headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
+      body: body == null ? undefined : JSON.stringify(body),
     });
-    const data = await resp.json().catch(() => ({ error: resp.statusText }));
-    if (!resp.ok) throw new Error(data.error || 'Request failed');
-    return data;
+    if (!resp.ok) throw await makeAPIError(resp);
+    if (resp.status === 204) return null;
+    return resp.json().catch(() => null);
   },
 
   async patch(path, body) {
@@ -44,9 +35,9 @@ const API = {
       headers: this._headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    const data = await resp.json().catch(() => ({ error: resp.statusText }));
-    if (!resp.ok) throw new Error(data.error || 'Request failed');
-    return data;
+    if (!resp.ok) throw await makeAPIError(resp);
+    if (resp.status === 204) return null;
+    return resp.json().catch(() => null);
   },
 
   async put(path, body) {
@@ -55,16 +46,16 @@ const API = {
       headers: this._headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    const data = await resp.json().catch(() => ({ error: resp.statusText }));
-    if (!resp.ok) throw new Error(data.error || data.errors ? JSON.stringify(data.errors) : 'Request failed');
-    return data;
+    if (!resp.ok) throw await makeAPIError(resp);
+    if (resp.status === 204) return null;
+    return resp.json().catch(() => null);
   },
 
   async del(path) {
     const resp = await fetch('/api/v1' + path, { method: 'DELETE', headers: this._headers() });
-    const data = await resp.json().catch(() => ({ error: resp.statusText }));
-    if (!resp.ok) throw new Error(data.error || 'Request failed');
-    return data;
+    if (!resp.ok) throw await makeAPIError(resp);
+    if (resp.status === 204) return null;
+    return resp.json().catch(() => null);
   },
 
   // Read endpoints
@@ -91,7 +82,36 @@ const API = {
   getBlackout(id)       { return this.get('/blackouts/' + encodeURIComponent(id)); },
   getScheduleDefaults() { return this.get('/schedule-defaults'); },
 
-  // Write endpoints
+  // --- SPEC-SCHED1.4b write methods ---
+  // Every method throws an APIError on 4xx/5xx (see makeAPIError below).
+  // Callers read .status / .code / .fieldErrors / .problem and render
+  // inline via Components.applyFieldErrors, or as a banner via
+  // Components.errorBanner. The .code field is set for Problem types the
+  // ad-hoc dispatcher modal wants to react to specifically.
+
+  createSchedule(body)      { return this.post('/schedules', body); },
+  updateSchedule(id, body)  { return this.put('/schedules/' + encodeURIComponent(id), body); },
+  deleteSchedule(id)        { return this.del('/schedules/' + encodeURIComponent(id)); },
+  pauseSchedule(id)         { return this.post('/schedules/' + encodeURIComponent(id) + '/pause'); },
+  resumeSchedule(id)        { return this.post('/schedules/' + encodeURIComponent(id) + '/resume'); },
+  bulkSchedules(body)       { return this.post('/schedules/bulk', body); },
+
+  createTemplate(body)      { return this.post('/templates', body); },
+  updateTemplate(id, body)  { return this.put('/templates/' + encodeURIComponent(id), body); },
+  deleteTemplate(id, opts)  {
+    const q = opts && opts.force ? '?force=true' : '';
+    return this.del('/templates/' + encodeURIComponent(id) + q);
+  },
+
+  createBlackout(body)      { return this.post('/blackouts', body); },
+  updateBlackout(id, body)  { return this.put('/blackouts/' + encodeURIComponent(id), body); },
+  deleteBlackout(id)        { return this.del('/blackouts/' + encodeURIComponent(id)); },
+
+  updateDefaults(body)      { return this.put('/schedule-defaults', body); },
+
+  createAdHocScan(body)     { return this.post('/scans/ad-hoc', body); },
+
+  // Legacy write endpoints (non-schedule resources).
   createTarget(value, type, scope) {
     return this.post('/targets', { value, type: type || '', scope: scope || 'external' });
   },
@@ -126,4 +146,39 @@ function toQuery(params) {
   const entries = Object.entries(params).filter(([, v]) => v != null && v !== '');
   if (entries.length === 0) return '';
   return '?' + entries.map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
+}
+
+// makeAPIError parses a failed Response into a rich Error object. The
+// 1.3a API returns RFC 7807 application/problem+json with title/detail/
+// type/field_errors; 1.4a legacy handlers and non-v1 routes may still
+// return {error:"..."}. The thrown object has:
+//   .message       — best human-readable line
+//   .status        — HTTP status
+//   .problem       — the parsed body (either shape)
+//   .fieldErrors   — alias for problem.field_errors (array of {field,message})
+//   .code          — symbolic code derived from problem.type for the
+//                    handful of dispatcher/bulk scenarios the UI cares
+//                    about (DISPATCHER_UNREACHABLE / TARGET_BUSY /
+//                    IN_BLACKOUT / VALIDATION / NOT_FOUND / CONFLICT)
+async function makeAPIError(resp) {
+  const body = await resp.json().catch(() => ({ error: resp.statusText }));
+  const e = new Error(body.title || body.error || body.detail || ('HTTP ' + resp.status));
+  e.status = resp.status;
+  e.problem = body;
+  e.fieldErrors = body.field_errors || [];
+  e.code = codeFromProblem(body, resp.status);
+  return e;
+}
+
+function codeFromProblem(body, status) {
+  const type = (body && body.type) || '';
+  if (type === '/problems/dispatcher-unreachable' || status === 503) return 'DISPATCHER_UNREACHABLE';
+  if (type === '/problems/target-busy') return 'TARGET_BUSY';
+  if (type === '/problems/in-blackout') return 'IN_BLACKOUT';
+  if (type === '/problems/template-in-use') return 'TEMPLATE_IN_USE';
+  if (type === '/problems/overlap') return 'OVERLAP';
+  if (type === '/problems/validation' || status === 422) return 'VALIDATION';
+  if (type === '/problems/not-found' || status === 404) return 'NOT_FOUND';
+  if (type === '/problems/already-exists' || status === 409) return 'CONFLICT';
+  return '';
 }
