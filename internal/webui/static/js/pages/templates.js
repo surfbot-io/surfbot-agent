@@ -20,12 +20,59 @@ const TemplatesPage = {
       const data = await API.listTemplates({ limit, offset });
       app.innerHTML = this.template(data, { limit, offset });
       this.bindListActions(app);
+      // SPEC-SCHED1.4c R6: hydrate USED BY counts for the visible
+      // page. Runs after paint so the first render isn't blocked by
+      // the N per-template fetches.
+      this.hydrateUsedByCounts(data && data.items);
     } catch (err) {
       app.innerHTML = `
         <div class="page-header"><h2>Templates</h2></div>
         ${Components.errorBanner(err)}
       `;
     }
+  },
+
+  // USED_BY_SOFT_THRESHOLD: above this count we skip the per-template
+  // fetch (OQ5) — the latency budget would balloon with the list size,
+  // and anyone browsing that many templates probably already knows
+  // which ones are hot. Placeholder '—' with a tooltip explains why.
+  USED_BY_SOFT_THRESHOLD: 50,
+
+  async hydrateUsedByCounts(items) {
+    if (!items || !items.length) return;
+    const cells = document.querySelectorAll('[data-used-by]');
+    if (!cells.length) return;
+
+    if (items.length > this.USED_BY_SOFT_THRESHOLD) {
+      cells.forEach(cell => {
+        cell.textContent = '—';
+        cell.title = 'Count unavailable for lists over ' + this.USED_BY_SOFT_THRESHOLD + ' templates.';
+      });
+      return;
+    }
+
+    // Fetch in parallel: bounded by slowest single request, not by sum.
+    const byId = new Map();
+    cells.forEach(cell => byId.set(cell.dataset.usedBy, cell));
+
+    await Promise.all(items.map(async t => {
+      const cell = byId.get(t.id);
+      if (!cell) return;
+      try {
+        const resp = await API.listSchedules({ template_id: t.id, limit: 1 });
+        const total = (resp && typeof resp.total === 'number') ? resp.total : null;
+        if (total == null) {
+          cell.textContent = '?';
+          cell.title = 'Count not available (API did not return a total).';
+        } else {
+          cell.textContent = String(total);
+          cell.title = total === 0 ? 'No schedules reference this template.' : total + ' schedule(s) reference this template.';
+        }
+      } catch (err) {
+        cell.textContent = '?';
+        cell.title = 'Error loading count: ' + (err.message || 'unknown');
+      }
+    }));
   },
 
   bindListActions(app) {
@@ -59,6 +106,7 @@ const TemplatesPage = {
           <td>${escapeHtml(t.name || '-')} ${sysBadge}</td>
           <td class="text-muted">${escapeHtml(Components.truncate(t.description || '', 80))}</td>
           <td>${toolCount}</td>
+          <td data-used-by="${escapeHtml(t.id)}" title="Loading…">…</td>
           <td>${Components.rruleCompact(t.rrule)}</td>
           <td class="text-muted">${Components.timeAgo(t.updated_at)}</td>
         </tr>
@@ -74,7 +122,7 @@ const TemplatesPage = {
         ${headerActions}
       </div>
       ${Components.table(
-        ['ID', 'Name', 'Description', 'Tools', 'RRULE', 'Updated'],
+        ['ID', 'Name', 'Description', 'Tools', 'USED BY', 'RRULE', 'Updated'],
         [rows]
       )}
       ${pager}
