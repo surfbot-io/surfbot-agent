@@ -91,7 +91,11 @@ func TestParseOutputFormat(t *testing.T) {
 }
 
 func TestEllipsize(t *testing.T) {
-	cases := []struct{ in string; max int; want string }{
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
 		{"short", 10, "short"},
 		{"1234567890", 5, "1234…"},
 		{"á́é", 2, "á…"},

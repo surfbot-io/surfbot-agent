@@ -48,12 +48,14 @@ var scheduleCmd = &cobra.Command{
 var scheduleListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List schedules",
+	Long:  "Print schedules matching the filter flags. Default output is a table; use -o json or -o yaml for scripting.",
 	RunE:  runScheduleList,
 }
 
 var scheduleShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show a single schedule",
+	Long:  "Fetch a schedule by id and print its full fields including RRULE, timezone, and last/next run timestamps.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runScheduleShow,
 }
@@ -61,12 +63,14 @@ var scheduleShowCmd = &cobra.Command{
 var scheduleCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a schedule",
+	Long:  "Create a schedule attached to a target. The RRULE is validated server-side; overlapping schedules for the same target are rejected.",
 	RunE:  runScheduleCreate,
 }
 
 var scheduleUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a schedule",
+	Long:  "Patch selected fields of a schedule. Only flags you pass are sent; others stay unchanged.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runScheduleUpdate,
 }
@@ -74,6 +78,7 @@ var scheduleUpdateCmd = &cobra.Command{
 var scheduleDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a schedule (hard delete)",
+	Long:  "Hard-delete a schedule. There is no soft delete in the 1.3a schema — the row is gone. Prompts for confirmation in a TTY; pass --force/-y to skip.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runScheduleDelete,
 }
@@ -81,6 +86,7 @@ var scheduleDeleteCmd = &cobra.Command{
 var schedulePauseCmd = &cobra.Command{
 	Use:   "pause <id>",
 	Short: "Pause a schedule",
+	Long:  "Mark a schedule as paused so the master ticker will skip it until resumed. Idempotent — calling pause twice is a no-op.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSchedulePause,
 }
@@ -88,6 +94,7 @@ var schedulePauseCmd = &cobra.Command{
 var scheduleResumeCmd = &cobra.Command{
 	Use:   "resume <id>",
 	Short: "Resume a paused schedule",
+	Long:  "Re-enable a paused schedule so the master ticker dispatches it on the next fire. Idempotent.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runScheduleResume,
 }
@@ -95,14 +102,20 @@ var scheduleResumeCmd = &cobra.Command{
 var scheduleUpcomingCmd = &cobra.Command{
 	Use:   "upcoming",
 	Short: "Show upcoming schedule firings",
+	Long:  "Expand all active schedules within the horizon and list their chronological fire times. Paused schedules are skipped. Blackouts that intersect the horizon are returned for calendar rendering.",
 	RunE:  runScheduleUpcoming,
 }
 
 var scheduleBulkCmd = &cobra.Command{
 	Use:   "bulk <operation> <id>...",
 	Short: "Run a bulk operation (pause|resume|delete) across schedules",
-	Args:  cobra.MinimumNArgs(2),
-	RunE:  runScheduleBulk,
+	Long: `Apply pause, resume, or delete to many schedules atomically.
+
+OQ4 decision: bulk takes explicit schedule IDs only — no --target fan-out.
+Scripting clients that want "pause every schedule for target X" should
+list first, then pass the resulting IDs.`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: runScheduleBulk,
 }
 
 func init() {
@@ -200,7 +213,7 @@ func runScheduleList(cmd *cobra.Command, _ []string) error {
 
 func renderScheduleTable(w io.Writer, items []apiclient.Schedule) error {
 	tw := common.NewTable(w)
-	fmt.Fprintln(tw, "ID\tTARGET\tTEMPLATE\tSTATUS\tRRULE\tNEXT RUN")
+	_, _ = fmt.Fprintln(tw, "ID\tTARGET\tTEMPLATE\tSTATUS\tRRULE\tNEXT RUN")
 	for _, s := range items {
 		tmpl := ""
 		if s.TemplateID != nil {
@@ -210,7 +223,7 @@ func renderScheduleTable(w io.Writer, items []apiclient.Schedule) error {
 		if s.NextRunAt != nil {
 			next = s.NextRunAt.Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			common.Ellipsize(s.ID, 12),
 			common.Ellipsize(s.TargetID, 12),
 			tmpl,
@@ -242,25 +255,25 @@ func runScheduleShow(cmd *cobra.Command, args []string) error {
 func renderScheduleDetail(w io.Writer, s apiclient.Schedule) error {
 	tw := common.NewTable(w)
 	defer func() { _ = tw.Flush() }()
-	fmt.Fprintf(tw, "ID:\t%s\n", s.ID)
-	fmt.Fprintf(tw, "Name:\t%s\n", s.Name)
-	fmt.Fprintf(tw, "Target:\t%s\n", s.TargetID)
+	_, _ = fmt.Fprintf(tw, "ID:\t%s\n", s.ID)
+	_, _ = fmt.Fprintf(tw, "Name:\t%s\n", s.Name)
+	_, _ = fmt.Fprintf(tw, "Target:\t%s\n", s.TargetID)
 	if s.TemplateID != nil {
-		fmt.Fprintf(tw, "Template:\t%s\n", *s.TemplateID)
+		_, _ = fmt.Fprintf(tw, "Template:\t%s\n", *s.TemplateID)
 	}
-	fmt.Fprintf(tw, "Status:\t%s\n", s.Status)
-	fmt.Fprintf(tw, "RRULE:\t%s\n", s.RRule)
-	fmt.Fprintf(tw, "DTStart:\t%s\n", s.DTStart.Format(time.RFC3339))
-	fmt.Fprintf(tw, "Timezone:\t%s\n", s.Timezone)
+	_, _ = fmt.Fprintf(tw, "Status:\t%s\n", s.Status)
+	_, _ = fmt.Fprintf(tw, "RRULE:\t%s\n", s.RRule)
+	_, _ = fmt.Fprintf(tw, "DTStart:\t%s\n", s.DTStart.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(tw, "Timezone:\t%s\n", s.Timezone)
 	if s.NextRunAt != nil {
-		fmt.Fprintf(tw, "Next run:\t%s\n", s.NextRunAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(tw, "Next run:\t%s\n", s.NextRunAt.Format(time.RFC3339))
 	}
 	if s.LastRunAt != nil {
 		status := "?"
 		if s.LastRunStatus != nil {
 			status = *s.LastRunStatus
 		}
-		fmt.Fprintf(tw, "Last run:\t%s (%s)\n", s.LastRunAt.Format(time.RFC3339), status)
+		_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", s.LastRunAt.Format(time.RFC3339), status)
 	}
 	return nil
 }
@@ -369,7 +382,7 @@ func runScheduleDelete(cmd *cobra.Command, args []string) error {
 	prompt := fmt.Sprintf("Delete schedule %s? This cannot be undone. Type 'yes': ", id)
 	if !common.ConfirmDestructive(os.Stdin, cmd.OutOrStdout(), prompt, force) {
 		cmd.SilenceUsage = true
-		fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
 		return errExit(common.ExitValidation)
 	}
 	c, err := scheduleClientFactory(cmd)
@@ -379,7 +392,7 @@ func runScheduleDelete(cmd *cobra.Command, args []string) error {
 	if err := c.DeleteSchedule(context.Background(), id); err != nil {
 		return scheduleExit(cmd, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
 	return nil
 }
 
@@ -434,9 +447,9 @@ func runScheduleUpcoming(cmd *cobra.Command, _ []string) error {
 	format, _ := scheduleFormat(cmd)
 	return common.Render(cmd.OutOrStdout(), format, up, func(w io.Writer) error {
 		tw := common.NewTable(w)
-		fmt.Fprintln(tw, "SCHEDULE\tTARGET\tFIRES AT")
+		_, _ = fmt.Fprintln(tw, "SCHEDULE\tTARGET\tFIRES AT")
 		for _, f := range up.Items {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n",
 				common.Ellipsize(f.ScheduleID, 12),
 				common.Ellipsize(f.TargetID, 16),
 				f.FiresAt.Format(time.RFC3339))
@@ -445,7 +458,7 @@ func runScheduleUpcoming(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if len(up.BlackoutsInHorizon) > 0 {
-			fmt.Fprintf(w, "\nBlackouts in horizon: %d\n", len(up.BlackoutsInHorizon))
+			_, _ = fmt.Fprintf(w, "\nBlackouts in horizon: %d\n", len(up.BlackoutsInHorizon))
 		}
 		return nil
 	})
@@ -466,7 +479,7 @@ func runScheduleBulk(cmd *cobra.Command, args []string) error {
 		prompt := fmt.Sprintf("Bulk delete %d schedule(s)? Type 'yes': ", len(ids))
 		if !common.ConfirmDestructive(os.Stdin, cmd.OutOrStdout(), prompt, force) {
 			cmd.SilenceUsage = true
-			fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
 			return errExit(common.ExitValidation)
 		}
 	}
@@ -482,10 +495,10 @@ func runScheduleBulk(cmd *cobra.Command, args []string) error {
 	}
 	format, _ := scheduleFormat(cmd)
 	return common.Render(cmd.OutOrStdout(), format, out, func(w io.Writer) error {
-		fmt.Fprintf(w, "operation: %s\nsucceeded: %d\nfailed: %d\n",
+		_, _ = fmt.Fprintf(w, "operation: %s\nsucceeded: %d\nfailed: %d\n",
 			out.Operation, len(out.Succeeded), len(out.Failed))
 		for _, f := range out.Failed {
-			fmt.Fprintf(w, "  - %s: %s\n", f.ScheduleID, f.Error)
+			_, _ = fmt.Fprintf(w, "  - %s: %s\n", f.ScheduleID, f.Error)
 		}
 		return nil
 	})

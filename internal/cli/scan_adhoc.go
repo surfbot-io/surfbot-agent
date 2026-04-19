@@ -90,7 +90,7 @@ func runScanAdhoc(cmd *cobra.Command, _ []string) error {
 		override, oerr := readToolConfigOverride(path)
 		if oerr != nil {
 			cmd.SilenceUsage = true
-			fmt.Fprintln(cmd.ErrOrStderr(), oerr)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), oerr)
 			return errExit(common.ExitValidation)
 		}
 		req.ToolConfigOverride = override
@@ -101,7 +101,7 @@ func runScanAdhoc(cmd *cobra.Command, _ []string) error {
 	// once the 202 lands. 1.5 may add a scan-status endpoint the CLI
 	// can poll; this flag is forward-compatible.
 	if wait, _ := cmd.Flags().GetBool("wait"); wait {
-		fmt.Fprintln(cmd.ErrOrStderr(), "[!] --wait is a no-op: no polling endpoint exists yet (SCHED1.3a scope)")
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[!] --wait is a no-op: no polling endpoint exists yet (SCHED1.3a scope)")
 	}
 
 	c, err := adhocScanClientFactory(cmd)
@@ -114,9 +114,9 @@ func runScanAdhoc(cmd *cobra.Command, _ []string) error {
 	}
 	format, _ := adhocScanFormat(cmd)
 	return common.Render(cmd.OutOrStdout(), format, out, func(w io.Writer) error {
-		fmt.Fprintf(w, "ad_hoc_run_id: %s\n", out.AdHocRunID)
+		_, _ = fmt.Fprintf(w, "ad_hoc_run_id: %s\n", out.AdHocRunID)
 		if out.ScanID != "" {
-			fmt.Fprintf(w, "scan_id:       %s\n", out.ScanID)
+			_, _ = fmt.Fprintf(w, "scan_id:       %s\n", out.ScanID)
 		}
 		return nil
 	})

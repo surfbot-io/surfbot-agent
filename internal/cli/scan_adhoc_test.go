@@ -108,7 +108,7 @@ func TestScanAdhocOverrideFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("adhoc: %v", err)
 	}
-	if stub.lastReq.ToolConfigOverride == nil || len(stub.lastReq.ToolConfigOverride) == 0 {
+	if len(stub.lastReq.ToolConfigOverride) == 0 {
 		t.Fatalf("override not forwarded: %+v", stub.lastReq.ToolConfigOverride)
 	}
 }

@@ -37,12 +37,14 @@ var blackoutCmd = &cobra.Command{
 var blackoutListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List blackouts",
+	Long:  "Print blackout windows. Pass --active-at <rfc3339> to filter down to windows active at a given instant.",
 	RunE:  runBlackoutList,
 }
 
 var blackoutShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show a blackout",
+	Long:  "Fetch a blackout by id and print its recurrence rule, duration, and scope.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runBlackoutShow,
 }
@@ -50,12 +52,14 @@ var blackoutShowCmd = &cobra.Command{
 var blackoutCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a blackout",
+	Long:  "Create a blackout window. Leave --target-id empty for a global blackout; set it to scope to a single target.",
 	RunE:  runBlackoutCreate,
 }
 
 var blackoutUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a blackout",
+	Long:  "Patch selected blackout fields.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runBlackoutUpdate,
 }
@@ -63,6 +67,7 @@ var blackoutUpdateCmd = &cobra.Command{
 var blackoutDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a blackout",
+	Long:  "Delete a blackout. Prompts for confirmation in a TTY; pass --force/-y to skip.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runBlackoutDelete,
 }
@@ -130,13 +135,13 @@ func runBlackoutList(cmd *cobra.Command, _ []string) error {
 	format, _ := blackoutFormat(cmd)
 	return common.Render(cmd.OutOrStdout(), format, page, func(w io.Writer) error {
 		tw := common.NewTable(w)
-		fmt.Fprintln(tw, "ID\tNAME\tSCOPE\tTARGET\tRRULE\tDURATION\tENABLED")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tSCOPE\tTARGET\tRRULE\tDURATION\tENABLED")
 		for _, b := range page.Items {
 			target := "—"
 			if b.TargetID != nil {
 				target = common.Ellipsize(*b.TargetID, 12)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%t\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%t\n",
 				common.Ellipsize(b.ID, 12),
 				common.Ellipsize(b.Name, 24),
 				b.Scope,
@@ -168,16 +173,16 @@ func runBlackoutShow(cmd *cobra.Command, args []string) error {
 func renderBlackoutDetail(w io.Writer, b apiclient.Blackout) error {
 	tw := common.NewTable(w)
 	defer func() { _ = tw.Flush() }()
-	fmt.Fprintf(tw, "ID:\t%s\n", b.ID)
-	fmt.Fprintf(tw, "Name:\t%s\n", b.Name)
-	fmt.Fprintf(tw, "Scope:\t%s\n", b.Scope)
+	_, _ = fmt.Fprintf(tw, "ID:\t%s\n", b.ID)
+	_, _ = fmt.Fprintf(tw, "Name:\t%s\n", b.Name)
+	_, _ = fmt.Fprintf(tw, "Scope:\t%s\n", b.Scope)
 	if b.TargetID != nil {
-		fmt.Fprintf(tw, "Target:\t%s\n", *b.TargetID)
+		_, _ = fmt.Fprintf(tw, "Target:\t%s\n", *b.TargetID)
 	}
-	fmt.Fprintf(tw, "RRULE:\t%s\n", b.RRule)
-	fmt.Fprintf(tw, "Duration:\t%s\n", time.Duration(b.DurationSeconds)*time.Second)
-	fmt.Fprintf(tw, "Timezone:\t%s\n", b.Timezone)
-	fmt.Fprintf(tw, "Enabled:\t%t\n", b.Enabled)
+	_, _ = fmt.Fprintf(tw, "RRULE:\t%s\n", b.RRule)
+	_, _ = fmt.Fprintf(tw, "Duration:\t%s\n", time.Duration(b.DurationSeconds)*time.Second)
+	_, _ = fmt.Fprintf(tw, "Timezone:\t%s\n", b.Timezone)
+	_, _ = fmt.Fprintf(tw, "Enabled:\t%t\n", b.Enabled)
 	return nil
 }
 
@@ -262,7 +267,7 @@ func runBlackoutDelete(cmd *cobra.Command, args []string) error {
 	prompt := fmt.Sprintf("Delete blackout %s? Type 'yes': ", id)
 	if !common.ConfirmDestructive(os.Stdin, cmd.OutOrStdout(), prompt, force) {
 		cmd.SilenceUsage = true
-		fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
 		return errExit(common.ExitValidation)
 	}
 	c, err := blackoutClientFactory(cmd)
@@ -272,6 +277,6 @@ func runBlackoutDelete(cmd *cobra.Command, args []string) error {
 	if err := c.DeleteBlackout(context.Background(), id); err != nil {
 		return blackoutExit(cmd, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
 	return nil
 }

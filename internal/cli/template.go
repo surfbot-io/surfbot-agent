@@ -38,12 +38,14 @@ var templateCmd = &cobra.Command{
 var templateListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List templates",
+	Long:  "Print every template. Templates live across schedules — many schedules may reference one template.",
 	RunE:  runTemplateList,
 }
 
 var templateShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show a template",
+	Long:  "Fetch a template by id and print its tool configuration and metadata.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTemplateShow,
 }
@@ -51,12 +53,14 @@ var templateShowCmd = &cobra.Command{
 var templateCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a template",
+	Long:  "Create a reusable template. Tool configuration is supplied via --tool-config <file.json> or --tool-config-inline '<json>'. Exactly one of the two must be provided.",
 	RunE:  runTemplateCreate,
 }
 
 var templateUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a template",
+	Long:  "Patch selected template fields. Each update cascades next_run_at recomputation across every schedule referencing this template.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTemplateUpdate,
 }
@@ -64,6 +68,7 @@ var templateUpdateCmd = &cobra.Command{
 var templateDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a template",
+	Long:  "Delete a template. Refuses with 409 when schedules still reference it; pass --cascade to delete those schedules atomically on the server.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTemplateDelete,
 }
@@ -130,9 +135,9 @@ func runTemplateList(cmd *cobra.Command, _ []string) error {
 	format, _ := templateFormat(cmd)
 	return common.Render(cmd.OutOrStdout(), format, page, func(w io.Writer) error {
 		tw := common.NewTable(w)
-		fmt.Fprintln(tw, "ID\tNAME\tRRULE\tTZ\tUPDATED")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tRRULE\tTZ\tUPDATED")
 		for _, t := range page.Items {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 				common.Ellipsize(t.ID, 12),
 				common.Ellipsize(t.Name, 24),
 				common.Ellipsize(t.RRule, 32),
@@ -161,16 +166,16 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 func renderTemplateDetail(w io.Writer, t apiclient.Template) error {
 	tw := common.NewTable(w)
 	defer func() { _ = tw.Flush() }()
-	fmt.Fprintf(tw, "ID:\t%s\n", t.ID)
-	fmt.Fprintf(tw, "Name:\t%s\n", t.Name)
-	fmt.Fprintf(tw, "Description:\t%s\n", t.Description)
-	fmt.Fprintf(tw, "RRULE:\t%s\n", t.RRule)
-	fmt.Fprintf(tw, "Timezone:\t%s\n", t.Timezone)
-	fmt.Fprintf(tw, "IsSystem:\t%t\n", t.IsSystem)
-	fmt.Fprintf(tw, "Updated:\t%s\n", t.UpdatedAt.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(tw, "ID:\t%s\n", t.ID)
+	_, _ = fmt.Fprintf(tw, "Name:\t%s\n", t.Name)
+	_, _ = fmt.Fprintf(tw, "Description:\t%s\n", t.Description)
+	_, _ = fmt.Fprintf(tw, "RRULE:\t%s\n", t.RRule)
+	_, _ = fmt.Fprintf(tw, "Timezone:\t%s\n", t.Timezone)
+	_, _ = fmt.Fprintf(tw, "IsSystem:\t%t\n", t.IsSystem)
+	_, _ = fmt.Fprintf(tw, "Updated:\t%s\n", t.UpdatedAt.Format(time.RFC3339))
 	if len(t.ToolConfig) > 0 {
 		raw, _ := json.Marshal(t.ToolConfig)
-		fmt.Fprintf(tw, "ToolConfig:\t%s\n", string(raw))
+		_, _ = fmt.Fprintf(tw, "ToolConfig:\t%s\n", string(raw))
 	}
 	return nil
 }
@@ -184,7 +189,7 @@ func runTemplateCreate(cmd *cobra.Command, _ []string) error {
 	tc, err := readToolConfigFlags(cmd)
 	if err != nil {
 		cmd.SilenceUsage = true
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return errExit(common.ExitValidation)
 	}
 	desc, _ := cmd.Flags().GetString("description")
@@ -233,7 +238,7 @@ func runTemplateUpdate(cmd *cobra.Command, args []string) error {
 		tc, terr := readToolConfigFlags(cmd)
 		if terr != nil {
 			cmd.SilenceUsage = true
-			fmt.Fprintln(cmd.ErrOrStderr(), terr)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), terr)
 			return errExit(common.ExitValidation)
 		}
 		req.ToolConfig = tc
@@ -255,7 +260,7 @@ func runTemplateDelete(cmd *cobra.Command, args []string) error {
 	prompt := fmt.Sprintf("Delete template %s?%s Type 'yes': ", id, cascadeSuffix(cascade))
 	if !common.ConfirmDestructive(os.Stdin, cmd.OutOrStdout(), prompt, force) {
 		cmd.SilenceUsage = true
-		fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "aborted (pass --force/-y to confirm non-interactively)")
 		return errExit(common.ExitValidation)
 	}
 	c, err := templateClientFactory(cmd)
@@ -265,7 +270,7 @@ func runTemplateDelete(cmd *cobra.Command, args []string) error {
 	if err := c.DeleteTemplate(context.Background(), id, cascade); err != nil {
 		return templateExit(cmd, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", id)
 	return nil
 }
 

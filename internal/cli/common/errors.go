@@ -31,7 +31,7 @@ func HandleAPIError(err error, format OutputFormat, stderr io.Writer) int {
 	}
 	var apiErr *apiclient.APIError
 	if !errors.As(err, &apiErr) {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return ExitRuntime
 	}
 
@@ -40,7 +40,7 @@ func HandleAPIError(err error, format OutputFormat, stderr io.Writer) int {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(apiErr)
 	} else {
-		fmt.Fprintln(stderr, apiErr)
+		_, _ = fmt.Fprintln(stderr, apiErr)
 	}
 	return StatusToExitCode(apiErr.StatusCode)
 }

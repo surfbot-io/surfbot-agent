@@ -31,12 +31,14 @@ var defaultsCmd = &cobra.Command{
 var defaultsShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show schedule defaults",
+	Long:  "Print the singleton schedule_defaults row.",
 	RunE:  runDefaultsShow,
 }
 
 var defaultsUpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update schedule defaults (partial — server PUTs are full-replace; CLI fetches, merges, then PUTs)",
+	Short: "Update schedule defaults",
+	Long:  "Partial update of schedule defaults. The server's PUT is full-replace, so the CLI first fetches the current row, merges the flags you passed, and re-PUTs the result.",
 	RunE:  runDefaultsUpdate,
 }
 
@@ -92,13 +94,13 @@ func runDefaultsShow(cmd *cobra.Command, _ []string) error {
 func renderDefaultsDetail(w io.Writer, d apiclient.ScheduleDefaults) error {
 	tw := common.NewTable(w)
 	defer func() { _ = tw.Flush() }()
-	fmt.Fprintf(tw, "DefaultRRule:\t%s\n", d.DefaultRRule)
-	fmt.Fprintf(tw, "DefaultTimezone:\t%s\n", d.DefaultTimezone)
-	fmt.Fprintf(tw, "MaxConcurrentScans:\t%d\n", d.MaxConcurrentScans)
-	fmt.Fprintf(tw, "RunOnStart:\t%t\n", d.RunOnStart)
-	fmt.Fprintf(tw, "JitterSeconds:\t%d\n", d.JitterSeconds)
+	_, _ = fmt.Fprintf(tw, "DefaultRRule:\t%s\n", d.DefaultRRule)
+	_, _ = fmt.Fprintf(tw, "DefaultTimezone:\t%s\n", d.DefaultTimezone)
+	_, _ = fmt.Fprintf(tw, "MaxConcurrentScans:\t%d\n", d.MaxConcurrentScans)
+	_, _ = fmt.Fprintf(tw, "RunOnStart:\t%t\n", d.RunOnStart)
+	_, _ = fmt.Fprintf(tw, "JitterSeconds:\t%d\n", d.JitterSeconds)
 	if d.DefaultTemplateID != nil {
-		fmt.Fprintf(tw, "DefaultTemplateID:\t%s\n", *d.DefaultTemplateID)
+		_, _ = fmt.Fprintf(tw, "DefaultTemplateID:\t%s\n", *d.DefaultTemplateID)
 	}
 	return nil
 }

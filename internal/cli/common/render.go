@@ -102,7 +102,10 @@ func Ellipsize(s string, maxRunes int) string {
 
 // FormatTime formats t for human output. Zero time returns "—" so
 // empty cells look deliberate rather than "0001-01-01...".
-func FormatTime(t interface{ IsZero() bool; String() string }) string {
+func FormatTime(t interface {
+	IsZero() bool
+	String() string
+}) string {
 	if t.IsZero() {
 		return "—"
 	}
