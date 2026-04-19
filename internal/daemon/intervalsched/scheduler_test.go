@@ -104,11 +104,20 @@ func (tickerTemplateStore) Update(context.Context, *model.Template) error  { ret
 func (tickerTemplateStore) Delete(context.Context, string) error           { return nil }
 
 type tickerBlackoutStore struct {
+	mu      sync.Mutex
 	windows []model.BlackoutWindow
+}
+
+func (f *tickerBlackoutStore) setWindows(ws []model.BlackoutWindow) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.windows = ws
 }
 
 func (f *tickerBlackoutStore) Create(context.Context, *model.BlackoutWindow) error { return nil }
 func (f *tickerBlackoutStore) Get(_ context.Context, id string) (*model.BlackoutWindow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.windows {
 		if f.windows[i].ID == id {
 			w := f.windows[i]
@@ -118,11 +127,15 @@ func (f *tickerBlackoutStore) Get(_ context.Context, id string) (*model.Blackout
 	return nil, nil
 }
 func (f *tickerBlackoutStore) List(context.Context) ([]model.BlackoutWindow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]model.BlackoutWindow, len(f.windows))
 	copy(out, f.windows)
 	return out, nil
 }
 func (f *tickerBlackoutStore) ListByScope(_ context.Context, scope model.BlackoutScope) ([]model.BlackoutWindow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := []model.BlackoutWindow{}
 	for _, w := range f.windows {
 		if w.Scope == scope {
@@ -132,6 +145,8 @@ func (f *tickerBlackoutStore) ListByScope(_ context.Context, scope model.Blackou
 	return out, nil
 }
 func (f *tickerBlackoutStore) ListByTarget(_ context.Context, targetID string) ([]model.BlackoutWindow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := []model.BlackoutWindow{}
 	for _, w := range f.windows {
 		if w.TargetID != nil && *w.TargetID == targetID {
@@ -449,6 +464,122 @@ func TestScheduler_RunnerErrorRecordedAsFailed(t *testing.T) {
 	rec := store.snapshotRecorded()
 	require.Len(t, rec, 1)
 	assert.Equal(t, model.ScheduleRunFailed, rec[0].Status)
+}
+
+func TestScheduler_PauseInFlight_BlackoutCancelsCtx(t *testing.T) {
+	store := newTickerScheduleStore()
+	store.due = []model.Schedule{
+		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
+	}
+	bo := &tickerBlackoutStore{}
+	// Block until ctx is cancelled — simulates a long-running scan.
+	runner := &fakeRunner{blockCh: make(chan struct{})}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: bo,
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, s.Start(ctx))
+
+	// Wait until the scan is in flight.
+	waitFor(t, func() bool { return len(runner.snapshot()) >= 1 })
+
+	// Inject a one-shot blackout that activates ~1s in the future. The
+	// rrule library truncates DTStart to seconds, so we pad CreatedAt to
+	// guarantee the window starts AFTER the job's acquiredAt — otherwise
+	// activeThen=true and the defensive "pre-existing blackout" branch
+	// fires instead of the cancel path. COUNT=1 keeps the expander loop
+	// cheap so ComputeNextRunAt terminates fast.
+	bo.setWindows([]model.BlackoutWindow{{
+		ID:          "b1",
+		Scope:       model.BlackoutScopeGlobal,
+		Name:        "future",
+		RRule:       "FREQ=DAILY;COUNT=1",
+		DurationSec: 600,
+		Timezone:    "UTC",
+		Enabled:     true,
+		CreatedAt:   time.Now().UTC().Add(1 * time.Second),
+	}})
+
+	// Wait for paused_blackout status to land. Test tick interval is 10ms.
+	// We need to wait for the blackout to activate (~1s) AND for the next
+	// tick after that (~10ms) AND for the worker to record the run.
+	deadline := time.Now().Add(4 * time.Second)
+	var sawPaused bool
+	for time.Now().Before(deadline) {
+		for _, r := range store.snapshotRecorded() {
+			if r.Status == model.ScheduleRunPausedBlackout {
+				sawPaused = true
+				break
+			}
+		}
+		if sawPaused {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	_ = s.Stop(stopCtx)
+	assert.True(t, sawPaused, "expected last_run_status=paused_blackout after blackout activated mid-scan")
+}
+
+func TestScheduler_PauseInFlight_DoesNotCancelPreExistingBlackout(t *testing.T) {
+	// Defensive guard: if a job somehow dispatched while a blackout was
+	// already active for its target, the pause-in-flight loop must not
+	// double-cancel — that's spec R8's "activeThen" check.
+	store := newTickerScheduleStore()
+	now := time.Now().UTC()
+	bo := &tickerBlackoutStore{
+		windows: []model.BlackoutWindow{{
+			ID:          "b1",
+			Scope:       model.BlackoutScopeGlobal,
+			Name:        "always",
+			RRule:       "FREQ=MINUTELY",
+			DurationSec: 3600,
+			Timezone:    "UTC",
+			Enabled:     true,
+			CreatedAt:   now.Add(-time.Hour),
+		}},
+	}
+	runner := &fakeRunner{blockCh: make(chan struct{})}
+	s := newSchedulerForTest(t, Dependencies{
+		SchedStore:    store,
+		TmplStore:     tickerTemplateStore{},
+		BlackoutStore: bo,
+		DefaultsStore: &fakeDefaultsStore{defaults: newDefaults()},
+		AdHocStore:    fakeAdHocStore{},
+		Runner:        runner,
+		JitterSeed:    1,
+	})
+
+	// Pre-populate inflight by hand to simulate a job dispatched before
+	// the blackout was loaded. Use a dummy ctx; the cancel func observes
+	// whether it ever fires.
+	jobCtx, jobCancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { jobCancel(nil) })
+	s.inflight.Store("dispatched-pre-blackout", &inflightJob{
+		scheduleID: "dispatched-pre-blackout",
+		targetID:   "t1",
+		acquiredAt: now.Add(-time.Minute),
+		cancel:     jobCancel,
+	})
+	defer s.inflight.Delete("dispatched-pre-blackout")
+
+	require.Nil(t, bo.windows[0].TargetID) // global; covers any target
+	require.NoError(t, s.blackouts.Refresh(context.Background()))
+	s.evaluateInFlightBlackouts(now)
+
+	// Should not have cancelled — pre-existing blackout case.
+	assert.NoError(t, jobCtx.Err(), "ctx must not be cancelled for jobs dispatched while blackout was already active")
 }
 
 func TestScheduler_InflightCleanup(t *testing.T) {

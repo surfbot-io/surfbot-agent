@@ -315,12 +315,40 @@ func (s *Scheduler) handleBlackoutSkip(sched model.Schedule, now time.Time) {
 	}
 }
 
-// evaluateInFlightBlackouts is a no-op in SCHED1.2b. SCHED1.2c will
-// iterate live jobs and cancel ctx for any whose target enters a new
-// blackout window.
-//
-// TODO: SCHED1.2c — implement pause-in-flight ctx cancellation.
-func (s *Scheduler) evaluateInFlightBlackouts(_ time.Time) {}
+// BlackoutPauseCause is attached to in-flight job ctx via
+// context.WithCancelCause when a blackout activates mid-scan.
+// scanJobRunner inspects context.Cause(ctx) to distinguish this cause
+// from a normal shutdown / operator cancel and records the schedule run
+// as ScheduleRunPausedBlackout on completion.
+var BlackoutPauseCause = errors.New("blackout activated")
+
+// evaluateInFlightBlackouts walks the in-flight job table and cancels
+// the ctx of any job whose target has entered a blackout since dispatch.
+// Jobs that were already in a blackout at dispatch time (defensive —
+// the ticker shouldn't have dispatched them) are left alone so the same
+// blackout doesn't double-cancel them.
+func (s *Scheduler) evaluateInFlightBlackouts(now time.Time) {
+	s.inflight.Range(func(_, value any) bool {
+		job := value.(*inflightJob)
+		activeNow, _ := s.blackouts.IsActive(job.targetID, now)
+		if !activeNow {
+			return true
+		}
+		activeThen, _ := s.blackouts.IsActive(job.targetID, job.acquiredAt)
+		if activeThen {
+			// Pre-existing blackout — the ticker shouldn't have
+			// dispatched this. Don't double-cancel; just log so the
+			// regression is observable.
+			s.deps.Log.Warn("blackout active at dispatch time; in-flight check skipped",
+				"schedule_id", job.scheduleID, "target_id", job.targetID)
+			return true
+		}
+		s.deps.Log.Info("scan paused by blackout",
+			"schedule_id", job.scheduleID, "target_id", job.targetID)
+		job.cancel(BlackoutPauseCause)
+		return true
+	})
+}
 
 func (s *Scheduler) loadTemplate(ctx context.Context, id *string) *model.Template {
 	if id == nil || *id == "" {
@@ -374,12 +402,16 @@ func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
 
 	status := model.ScheduleRunSuccess
 	if runErr != nil {
-		// SCHED1.2c will distinguish blackout-cancel from operator-cancel
-		// from real failure. For 1.2b every error path lands as failed.
 		status = model.ScheduleRunFailed
 		if errors.Is(runErr, context.Canceled) {
-			r.s.deps.Log.Info("scan canceled",
-				"schedule_id", sched.ID, "target_id", sched.TargetID)
+			if errors.Is(context.Cause(jobCtx), BlackoutPauseCause) {
+				status = model.ScheduleRunPausedBlackout
+				r.s.deps.Log.Info("scan paused by blackout (final)",
+					"schedule_id", sched.ID, "target_id", sched.TargetID)
+			} else {
+				r.s.deps.Log.Info("scan canceled",
+					"schedule_id", sched.ID, "target_id", sched.TargetID)
+			}
 		}
 	}
 
