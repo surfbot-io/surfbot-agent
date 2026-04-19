@@ -81,9 +81,6 @@ const API = {
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
   scanStatus()          { return this.get('/scans/status'); },
-  schedule()            { return this.get('/schedule'); },
-  updateSchedule(cfg)   { return this.put('/schedule', cfg); },
-
   // SPEC-SCHED1.3a read-only endpoints. 1.4b adds write methods on top.
   listSchedules(params) { return this.get('/schedules' + toQuery(params)); },
   getSchedule(id)       { return this.get('/schedules/' + encodeURIComponent(id)); },

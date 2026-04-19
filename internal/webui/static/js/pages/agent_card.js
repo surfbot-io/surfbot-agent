@@ -65,7 +65,7 @@ const AgentCard = {
         aria-label="Status: running"></span>`;
     const srOnly = `<span class="sr-only">Status: running.</span>`;
     const sched = d.scheduler;
-    const schedLink = `<div style="padding-top:4px"><a href="#/settings/schedule" class="text-muted" style="font-size:12px">Configure schedule →</a></div>`;
+    const schedLink = `<div style="padding-top:4px"><a href="#/schedules" class="text-muted" style="font-size:12px">View schedules →</a></div>`;
     const schedHtml = !sched
       ? schedLink
       : !sched.enabled

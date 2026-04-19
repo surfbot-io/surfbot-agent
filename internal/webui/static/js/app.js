@@ -22,7 +22,6 @@ const Router = {
     { pattern: /^#\/blackouts\/(.+)$/, page: 'blackouts', render: (m) => BlackoutsPage.render(app, { id: decodeURIComponent(m[1]) }) },
     { pattern: /^#\/blackouts/, page: 'blackouts', render: () => BlackoutsPage.render(app, parseQueryParams()) },
     { pattern: /^#\/settings\/defaults/, page: 'settings-defaults', render: () => SettingsDefaultsPage.render(app) },
-    { pattern: /^#\/settings\/schedule/, page: 'settings', render: () => SettingsSchedulePage.render(app) },
   ],
 
   navigate() {
