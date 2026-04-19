@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "full_scan_interval": "24h",
+  "quick_check_interval": "1h",
+  "jitter": "60s",
+  "run_on_start": false,
+  "quick_check_tools": ["nuclei", "httpx"],
+  "maintenance_window": {
+    "enabled": true,
+    "start": "02:00",
+    "end": "04:00",
+    "timezone": "UTC"
+  }
+}
