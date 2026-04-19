@@ -180,6 +180,20 @@ func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 	}
 	cleanup := func() { _ = runStore.Close() }
 
+	report, err := intervalsched.MigrateLegacyScheduleConfig(
+		context.Background(), paths.StateDir, runStore, slog.Default())
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("legacy schedule migration: %w", err)
+	}
+	if report.SkippedReason == "" {
+		slog.Default().Info("legacy schedule migrated",
+			"template_id", report.TemplateID,
+			"targets_migrated", report.TargetsMigrated,
+			"schedules_created", report.SchedulesCreated,
+		)
+	}
+
 	sched, err := buildScheduler(cfg.Daemon.Scheduler, paths, runStore)
 	if err != nil {
 		cleanup()
