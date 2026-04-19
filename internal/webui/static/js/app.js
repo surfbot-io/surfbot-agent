@@ -10,7 +10,18 @@ const Router = {
     { pattern: /^#\/targets\/(.+)$/, page: 'targets', render: (m) => TargetsPage.render(app, { id: m[1] }) },
     { pattern: /^#\/targets/, page: 'targets', render: () => TargetsPage.render(app) },
     { pattern: /^#\/tools/, page: 'tools', render: () => ToolsPage.render(app) },
-    { pattern: /^#\/settings\/schedule/, page: 'settings', render: () => SettingsSchedulePage.render(app) },
+    // SPEC-SCHED1.4a: first-class schedule resources. Detail routes are
+    // the `(.+)$` variants and must come BEFORE the list route so the
+    // longest-prefix match wins. No Go-side route changes — the SPA
+    // fallback in server.go already serves index.html for any unknown
+    // path, so these hash routes resolve entirely client-side.
+    { pattern: /^#\/schedules\/(.+)$/, page: 'schedules', render: (m) => SchedulesPage.render(app, { id: decodeURIComponent(m[1]) }) },
+    { pattern: /^#\/schedules/, page: 'schedules', render: () => SchedulesPage.render(app, parseQueryParams()) },
+    { pattern: /^#\/templates\/(.+)$/, page: 'templates', render: (m) => TemplatesPage.render(app, { id: decodeURIComponent(m[1]) }) },
+    { pattern: /^#\/templates/, page: 'templates', render: () => TemplatesPage.render(app, parseQueryParams()) },
+    { pattern: /^#\/blackouts\/(.+)$/, page: 'blackouts', render: (m) => BlackoutsPage.render(app, { id: decodeURIComponent(m[1]) }) },
+    { pattern: /^#\/blackouts/, page: 'blackouts', render: () => BlackoutsPage.render(app, parseQueryParams()) },
+    { pattern: /^#\/settings\/defaults/, page: 'settings-defaults', render: () => SettingsDefaultsPage.render(app) },
   ],
 
   navigate() {

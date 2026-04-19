@@ -212,7 +212,11 @@ func TestValidateOrigin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodPost, base+"/api/daemon/trigger", strings.NewReader(`{"profile":"quick"}`))
+			// POST endpoint choice is incidental — validateOrigin runs
+			// before the mux, so the test just needs any cross-origin-
+			// sensitive mutating path. SPEC-SCHED1.4a removed
+			// /api/daemon/trigger; /api/v1/targets is the stand-in.
+			req, err := http.NewRequest(http.MethodPost, base+"/api/v1/targets", strings.NewReader(`{"value":"example.com","scope":"external"}`))
 			require.NoError(t, err)
 			for k, v := range tc.headers {
 				req.Header.Set(k, v)

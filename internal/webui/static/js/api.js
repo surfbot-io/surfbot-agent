@@ -16,7 +16,13 @@ const API = {
     const resp = await fetch('/api/v1' + path, { headers: this._headers() });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: resp.statusText }));
-      throw new Error(err.error || 'Request failed');
+      // SPEC-SCHED1.3a uses RFC 7807 problem+json (title/detail/type/
+      // field_errors); legacy handlers still return {error:"..."}. The
+      // thrown Error carries both shapes so callers can render either.
+      const e = new Error(err.error || err.title || err.detail || 'Request failed');
+      e.status = resp.status;
+      e.problem = err;
+      throw e;
     }
     return resp.json();
   },
@@ -75,8 +81,15 @@ const API = {
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
   scanStatus()          { return this.get('/scans/status'); },
-  schedule()            { return this.get('/schedule'); },
-  updateSchedule(cfg)   { return this.put('/schedule', cfg); },
+  // SPEC-SCHED1.3a read-only endpoints. 1.4b adds write methods on top.
+  listSchedules(params) { return this.get('/schedules' + toQuery(params)); },
+  getSchedule(id)       { return this.get('/schedules/' + encodeURIComponent(id)); },
+  upcomingSchedules(params) { return this.get('/schedules/upcoming' + toQuery(params)); },
+  listTemplates(params) { return this.get('/templates' + toQuery(params)); },
+  getTemplate(id)       { return this.get('/templates/' + encodeURIComponent(id)); },
+  listBlackouts(params) { return this.get('/blackouts' + toQuery(params)); },
+  getBlackout(id)       { return this.get('/blackouts/' + encodeURIComponent(id)); },
+  getScheduleDefaults() { return this.get('/schedule-defaults'); },
 
   // Write endpoints
   createTarget(value, type, scope) {
@@ -97,22 +110,13 @@ const API = {
     return this.post('/scans', body);
   },
 
-  // SPEC-X3.1 — daemon endpoints live outside /api/v1/.
+  // SPEC-X3.1 — daemon endpoints live outside /api/v1/. The former
+  // daemonTrigger() is gone with SPEC-SCHED1.4a; target-anchored ad-hoc
+  // dispatch via /api/v1/scans/ad-hoc lands in the write-flow UI (1.4b).
   daemonStatus() {
     return fetch('/api/daemon/status', { headers: this._headers() }).then(r => {
       if (!r.ok) throw new Error('daemon status failed: ' + r.status);
       return r.json();
-    });
-  },
-  daemonTrigger(profile) {
-    return fetch('/api/daemon/trigger', {
-      method: 'POST',
-      headers: this._headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ profile: profile || 'full' }),
-    }).then(async r => {
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || ('trigger failed: ' + r.status));
-      return data;
     });
   },
 };

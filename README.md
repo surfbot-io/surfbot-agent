@@ -244,38 +244,25 @@ and `requires_admin: true`; macOS gets unprefixed user-mode commands and
 CLI (the UI surfaces a "run from an elevated terminal" hint instead of
 inventing a `sudo` equivalent).
 
-### Scan now
+### Ad-hoc scans
 
-The Agent card has a profile selector (full / quick) and a **Scan now**
-button. Clicking it `POST`s to `/api/daemon/trigger`, which writes a
-`trigger.json` flag file into the daemon's state directory. The
-scheduler picks the file up on its next idle poll (≤ 2 s), claims it via
-atomic rename, runs the requested profile, and writes the result back to
-`schedule.state.json`. The next status poll then surfaces the updated
-`last_full_at` / `last_quick_at`.
-
-**Triggers bypass the maintenance window.** This is intentional — a
-manual click is an explicit user override of the configured silence
-period. The button's tooltip and this paragraph are the only places this
-behavior is documented; do not change it without updating both.
-
-A second click while a trigger is in flight returns `409 Conflict`. The
-button itself is also disabled for one poll cycle after firing.
+Target-anchored ad-hoc dispatch is served by `POST /api/v1/scans/ad-hoc`
+(RFC 7807 problem+json on errors). SPEC-SCHED1.4a removed the legacy
+profile-based `/api/daemon/trigger` endpoint and the Agent-card **Scan
+now** button; target-page dispatch lands in SPEC-SCHED1.4b alongside the
+rest of the write-flow UI. Until then, operators trigger ad-hoc scans
+via `surfbot scan ad-hoc --target <id>` or the REST endpoint directly.
 
 ### Endpoints
 
 | Method     | Path                  | Notes                                              |
 | ---------- | --------------------- | -------------------------------------------------- |
 | GET / HEAD | `/api/daemon/status`  | always 200; status in body (HEAD has empty body)   |
-| POST       | `/api/daemon/trigger` | body: `{"profile":"full"\|"quick"}`; 202 / 409     |
 
-Both endpoints sit behind the same loopback token and CSRF / Host /
-header defenses described in the [Security model](#security-model)
-section. `/api/daemon/trigger` is a mutating route, so it additionally
-requires a same-origin `Origin` (or `Referer`) header.
-
-These live outside `/api/v1/` because they describe the daemon process,
-not versioned domain data.
+`/api/daemon/status` sits behind the same loopback token and CSRF /
+Host / header defenses described in the [Security model](#security-model)
+section. The route lives outside `/api/v1/` because it describes the
+daemon process, not versioned domain data.
 
 ## LLM integration — `surfbot agent-spec`
 

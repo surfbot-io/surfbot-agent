@@ -140,6 +140,63 @@ const Components = {
   backLink(hash, label) {
     return `<a href="${hash}" class="back-link">&larr; ${label}</a>`;
   },
+
+  // SPEC-SCHED1.4a helpers. The 1.3a API returns RFC 7807 problems; the
+  // api.js fetch wrapper attaches the parsed problem to thrown errors as
+  // err.problem. errorBanner renders what it has: status + title + detail
+  // when the error came from the API, err.message otherwise.
+  errorBanner(err) {
+    if (!err) return '';
+    const problem = err.problem || {};
+    const parts = [];
+    const title = problem.title || err.message || 'Request failed';
+    if (err.status) parts.push(`<span class="mono">${err.status}</span>`);
+    parts.push(escapeHtml(title));
+    let body = `<strong>${parts.join(' ')}</strong>`;
+    if (problem.detail) body += `<div class="text-muted">${escapeHtml(problem.detail)}</div>`;
+    if (problem.field_errors && problem.field_errors.length) {
+      body += '<ul>' + problem.field_errors.map(f =>
+        `<li><span class="mono">${escapeHtml(f.field)}</span>: ${escapeHtml(f.message)}</li>`
+      ).join('') + '</ul>';
+    }
+    return `<div class="error-banner">${body}</div>`;
+  },
+
+  // rruleCompact keeps the first semicolon-separated component (FREQ=...)
+  // or the first 40 chars, whichever is shorter. Full RRULE goes into the
+  // title attribute for hover.
+  rruleCompact(rrule) {
+    if (!rrule) return '-';
+    const safe = escapeHtml(rrule);
+    const first = rrule.split(';')[0];
+    let short = first.length < 40 ? first : rrule.slice(0, 40);
+    if (short.length < rrule.length) short += '…';
+    return `<span class="mono" title="${safe}">${escapeHtml(short)}</span>`;
+  },
+
+  // nextRun formats a *future* time as "in 3h 42m" and a past time as
+  // "42m ago" — timeAgo handles the past branch; this helper adds the
+  // "in X" idiom for future timestamps.
+  nextRun(dateStr) {
+    if (!dateStr) return '<span class="text-muted">—</span>';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '<span class="text-muted">—</span>';
+    const now = new Date();
+    const diff = Math.floor((d - now) / 1000);
+    if (diff <= 0) return Components.timeAgo(dateStr);
+    if (diff < 60) return 'in ' + diff + 's';
+    const mins = Math.floor(diff / 60);
+    if (mins < 60) return 'in ' + mins + 'm';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return 'in ' + hrs + 'h ' + (mins % 60) + 'm';
+    const days = Math.floor(hrs / 24);
+    return 'in ' + days + 'd ' + (hrs % 24) + 'h';
+  },
+
+  scheduleStatusBadge(status) {
+    const cls = status === 'active' ? 'badge-info' : 'badge-muted';
+    return `<span class="badge ${cls}">${escapeHtml(status || '-')}</span>`;
+  },
 };
 
 function toggleTreeNode(el) {

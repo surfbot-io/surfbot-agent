@@ -19,7 +19,11 @@ func TestIsAssetPath(t *testing.T) {
 		"/":               false,
 		"/findings":       false,
 		"/scans/abc":      false,
-		"/api/v1/scans":   false,
+		// /api/* is asset-like (returns 404 on miss) so unregistered
+		// API paths never silently resolve to the SPA shell — see
+		// SPEC-SCHED1.4a R11.
+		"/api/v1/scans": true,
+		"/api/daemon/x": true,
 	}
 	for p, want := range cases {
 		if got := isAssetPath(p); got != want {
