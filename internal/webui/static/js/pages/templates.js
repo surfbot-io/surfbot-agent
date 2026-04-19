@@ -19,6 +19,7 @@ const TemplatesPage = {
     try {
       const data = await API.listTemplates({ limit, offset });
       app.innerHTML = this.template(data, { limit, offset });
+      this.bindListActions(app);
     } catch (err) {
       app.innerHTML = `
         <div class="page-header"><h2>Templates</h2></div>
@@ -27,15 +28,25 @@ const TemplatesPage = {
     }
   },
 
+  bindListActions(app) {
+    const newBtn = document.getElementById('templates-new');
+    if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm(app));
+  },
+
   template(data, f) {
     const items = data.items || [];
     const total = data.total || 0;
 
+    const headerActions = '<div style="margin-left:auto"><button type="button" class="btn btn-primary" id="templates-new">New template</button></div>';
+
     if (items.length === 0) {
       return `
-        <div class="page-header"><h2>Templates</h2></div>
+        <div class="page-header">
+          <h2>Templates</h2>
+          ${headerActions}
+        </div>
         ${Components.emptyState('No templates',
-          'No templates yet. Create one via CLI: <code class="mono">surfbot template create --name \'...\' --rrule \'...\'</code>')}
+          'No templates yet. Click <strong>New template</strong> above or use <code class="mono">surfbot template create</code>.')}
       `;
     }
 
@@ -60,6 +71,7 @@ const TemplatesPage = {
       <div class="page-header">
         <h2>Templates</h2>
         <p>${total} template${total === 1 ? '' : 's'}</p>
+        ${headerActions}
       </div>
       ${Components.table(
         ['ID', 'Name', 'Description', 'Tools', 'RRULE', 'Updated'],
@@ -104,12 +116,21 @@ const TemplatesPage = {
         usedBy = [];
       }
       app.innerHTML = this.detailTemplate(t, usedBy);
+      this.bindDetailActions(app, t, usedBy);
     } catch (err) {
       app.innerHTML = `
         ${Components.backLink('#/templates', 'Back to templates')}
         ${Components.errorBanner(err)}
       `;
     }
+  },
+
+  bindDetailActions(app, t, usedBy) {
+    const editBtn = document.getElementById('template-edit-btn');
+    if (editBtn) editBtn.addEventListener('click', () => this.openEditForm(app, t));
+
+    const delBtn = document.getElementById('template-delete-btn');
+    if (delBtn) delBtn.addEventListener('click', () => this.confirmDelete(app, t, usedBy));
   },
 
   detailTemplate(t, usedBy) {
@@ -131,7 +152,12 @@ const TemplatesPage = {
           <div class="detail-header">
             <h2>${escapeHtml(t.name)}</h2>
             ${t.is_system ? '<span class="badge badge-muted">system</span>' : ''}
+            <div style="margin-left:auto;display:flex;gap:8px">
+              ${t.is_system ? '' : '<button type="button" class="btn btn-ghost" id="template-edit-btn">Edit</button>'}
+              ${t.is_system ? '' : '<button type="button" class="btn btn-danger" id="template-delete-btn">Delete</button>'}
+            </div>
           </div>
+          <div id="template-action-error" style="margin-top:8px"></div>
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(t.id)}</span>
             <span class="detail-label">Description</span><span class="detail-value">${escapeHtml(t.description || '-')}</span>
@@ -159,4 +185,171 @@ const TemplatesPage = {
       </div>
     `;
   },
+
+  // --- SPEC-SCHED1.4b: template create / edit / delete ---
+  //
+  // Tool config is a `<textarea>` holding pretty-printed JSON. The UI
+  // validates only the outer shape (top-level keys in the known tool
+  // set + parseable JSON); per-tool parameter validation happens
+  // server-side and comes back as field errors scoped to
+  // `tool_config.<name>`. Delete surfaces the 409 /problems/template-
+  // in-use payload as a follow-up cascade-delete confirm.
+
+  openCreateForm(app) {
+    this.openForm({
+      mode: 'create',
+      onSaved: () => TemplatesPage.render(app, {}),
+    });
+  },
+
+  openEditForm(app, t) {
+    this.openForm({
+      mode: 'edit',
+      template: t,
+      onSaved: () => TemplatesPage.renderDetail(app, t.id),
+    });
+  },
+
+  openForm({ mode, template, onSaved }) {
+    const t = template || {};
+    const toolConfigJson = JSON.stringify(t.tool_config || {}, null, 2);
+    const body = `
+      <form id="template-form" novalidate>
+        <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
+        ${Components.formInput({ label: 'Name', name: 'name', value: t.name, required: true })}
+        ${Components.formInput({ label: 'Description', name: 'description', value: t.description || '' })}
+        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: t.rrule })}
+        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: t.timezone || 'UTC' })}
+        ${Components.formTextarea({
+          label: 'Tool config (JSON)', name: 'tool_config',
+          value: t.tool_config ? toolConfigJson : '{}',
+          rows: 10, monospace: true,
+          help: 'Top-level keys must be known tool names (nuclei, naabu, httpx, subfinder, dnsx). Per-tool params are validated on the server.',
+        })}
+      </form>
+    `;
+
+    const m = Components.modal({
+      title: mode === 'create' ? 'New template' : 'Edit template',
+      body,
+      size: 'lg',
+      primaryAction: {
+        label: mode === 'create' ? 'Create' : 'Save',
+        onClick: async ({ close }) => {
+          const form = document.getElementById('template-form');
+          const data = readTemplateForm(form);
+          if (!data) return;
+          try {
+            if (mode === 'create') await API.createTemplate(data);
+            else await API.updateTemplate(t.id, data);
+            if (onSaved) onSaved();
+            close('saved');
+          } catch (err) {
+            showTemplateFormError(form, err);
+          }
+        },
+      },
+      secondaryAction: { label: 'Cancel' },
+    });
+    Components.rruleAttachBlurCheck(m.root.querySelector('#template-form'), 'rrule');
+  },
+
+  async confirmDelete(app, t, usedBy) {
+    const box = document.getElementById('template-action-error');
+    const dependents = usedBy || [];
+
+    const initial = await Components.confirmDialog({
+      title: 'Delete template?',
+      message: dependents.length
+        ? `Template "${t.name}" is referenced by ${dependents.length} schedule(s). Delete the template first? Schedules that still reference it will be listed next.`
+        : `Delete template "${t.name}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!initial) return;
+
+    try {
+      await API.deleteTemplate(t.id);
+      location.hash = '#/templates';
+      TemplatesPage.render(app, {});
+      return;
+    } catch (err) {
+      if (err && err.code === 'TEMPLATE_IN_USE') {
+        const ids = (err.fieldErrors || []).map(fe => fe.message);
+        const cascade = await Components.confirmDialog({
+          title: 'Cascade delete?',
+          message: `Template is still referenced by ${ids.length} schedule(s). Delete template AND its schedules?`,
+          confirmLabel: 'Delete template + schedules',
+          danger: true,
+        });
+        if (!cascade) return;
+        try {
+          await API.deleteTemplate(t.id, { force: true });
+          location.hash = '#/templates';
+          TemplatesPage.render(app, {});
+          return;
+        } catch (err2) {
+          if (box) box.innerHTML = Components.errorBanner(err2);
+          return;
+        }
+      }
+      if (box) box.innerHTML = Components.errorBanner(err);
+    }
+  },
 };
+
+const KNOWN_TOOLS = new Set(['nuclei', 'naabu', 'httpx', 'subfinder', 'dnsx']);
+
+// readTemplateForm serializes the template form into the API shape.
+// Returns null after surfacing client-side JSON/tool errors.
+function readTemplateForm(form) {
+  if (!form) return null;
+  const fd = new FormData(form);
+  const out = {
+    name: (fd.get('name') || '').toString().trim(),
+    description: (fd.get('description') || '').toString(),
+    rrule: (fd.get('rrule') || '').toString().trim(),
+    timezone: (fd.get('timezone') || '').toString().trim() || 'UTC',
+  };
+  const tcRaw = (fd.get('tool_config') || '').toString().trim();
+  if (tcRaw) {
+    let tc;
+    try {
+      tc = JSON.parse(tcRaw);
+    } catch (err) {
+      Components.applyFieldErrors(form, [{ field: 'tool_config', message: 'Invalid JSON: ' + err.message }]);
+      return null;
+    }
+    if (tc === null || typeof tc !== 'object' || Array.isArray(tc)) {
+      Components.applyFieldErrors(form, [{ field: 'tool_config', message: 'Must be a JSON object' }]);
+      return null;
+    }
+    const unknown = Object.keys(tc).filter(k => !KNOWN_TOOLS.has(k));
+    if (unknown.length) {
+      Components.applyFieldErrors(form, unknown.map(k => ({
+        field: 'tool_config.' + k,
+        message: 'Unknown tool (allowed: ' + Array.from(KNOWN_TOOLS).join(', ') + ')',
+      })));
+      return null;
+    }
+    out.tool_config = tc;
+  } else {
+    out.tool_config = {};
+  }
+  return out;
+}
+
+function showTemplateFormError(form, err) {
+  if (!form) return;
+  if (err && err.fieldErrors && err.fieldErrors.length) {
+    Components.applyFieldErrors(form, err.fieldErrors);
+    return;
+  }
+  const general = form.querySelector('[data-field-error="__general__"]');
+  if (general) {
+    const title = (err && err.problem && err.problem.title) || (err && err.message) || 'Request failed';
+    const detail = err && err.problem && err.problem.detail ? ' — ' + err.problem.detail : '';
+    general.textContent = title + detail;
+    general.style.display = 'block';
+  }
+}
