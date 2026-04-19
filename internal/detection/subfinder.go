@@ -31,10 +31,7 @@ type subfinderEnumerator interface {
 // SDK options. tests swap subfinderEnumeratorOverride.
 type subfinderEnumeratorFactory func(opts *subfinderRunner.Options) (subfinderEnumerator, error)
 
-var (
-	subfinderEnumeratorOverride subfinderEnumeratorFactory
-	subfinderLastResolvedParams model.SubfinderParams
-)
+var subfinderEnumeratorOverride subfinderEnumeratorFactory
 
 func defaultSubfinderEnumerator(opts *subfinderRunner.Options) (subfinderEnumerator, error) {
 	return subfinderRunner.NewRunner(opts)
@@ -105,7 +102,6 @@ func (s *SubfinderTool) Run(ctx context.Context, inputs []string, opts RunOption
 	}
 
 	params := resolveSubfinderParams(opts)
-	subfinderLastResolvedParams = params
 	options := buildSubfinderOptions(opts, params)
 	runner, err := resolveSubfinderEnumerator()(options)
 	if err != nil {

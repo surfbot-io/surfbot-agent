@@ -18,7 +18,6 @@ import (
 // can assert the params drove the right RPCs and how many times each
 // happened.
 type fakeDnsxResolver struct {
-	mu              sync.Mutex
 	hostLookups     int32
 	cnameLookups    int32
 	hostFn          func(context.Context, string) ([]string, error)

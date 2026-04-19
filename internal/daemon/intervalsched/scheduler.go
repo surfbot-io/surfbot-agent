@@ -267,7 +267,7 @@ func (s *Scheduler) Next() time.Time {
 // returns ErrTargetBusy on contention) and refuses to dispatch while a
 // blackout covers the target (returns ErrInBlackout). Ad-hoc runs
 // participate in pause-in-flight: an active mid-scan blackout cancels
-// their ctx the same way scheduled scans are cancelled.
+// their ctx the same way scheduled scans are canceled.
 //
 // The method blocks until the underlying scan completes and returns
 // the new scan's ID. Callers that want async semantics (e.g. the HTTP
@@ -316,7 +316,7 @@ func (s *Scheduler) DispatchAdHoc(ctx context.Context, run model.AdHocScanRun) (
 	case res := <-resultCh:
 		return res.scanID, res.err
 	case <-ctx.Done():
-		// Caller cancelled; the worker keeps running until the scan
+		// Caller canceled; the worker keeps running until the scan
 		// completes on its own. We surface the ctx error to the caller
 		// but the ad_hoc_scan_runs row will still get updated by the
 		// worker.
@@ -406,12 +406,12 @@ func (s *Scheduler) handleBlackoutSkip(sched model.Schedule, now time.Time) {
 	}
 }
 
-// BlackoutPauseCause is attached to in-flight job ctx via
+// ErrBlackoutPause is attached to in-flight job ctx via
 // context.WithCancelCause when a blackout activates mid-scan.
 // scanJobRunner inspects context.Cause(ctx) to distinguish this cause
 // from a normal shutdown / operator cancel and records the schedule run
 // as ScheduleRunPausedBlackout on completion.
-var BlackoutPauseCause = errors.New("blackout activated")
+var ErrBlackoutPause = errors.New("blackout activated")
 
 // evaluateInFlightBlackouts walks the in-flight job table and cancels
 // the ctx of any job whose target has entered a blackout since dispatch.
@@ -436,7 +436,7 @@ func (s *Scheduler) evaluateInFlightBlackouts(now time.Time) {
 		}
 		s.deps.Log.Info("scan paused by blackout",
 			"schedule_id", job.scheduleID, "target_id", job.targetID)
-		job.cancel(BlackoutPauseCause)
+		job.cancel(ErrBlackoutPause)
 		return true
 	})
 }
@@ -506,7 +506,7 @@ func (r *scanJobRunner) runAdHoc(ctx context.Context, job Job, ah *adHocPayload)
 	finalStatus := model.AdHocCompleted
 	if runErr != nil {
 		finalStatus = model.AdHocFailed
-		if errors.Is(runErr, context.Canceled) && errors.Is(context.Cause(jobCtx), BlackoutPauseCause) {
+		if errors.Is(runErr, context.Canceled) && errors.Is(context.Cause(jobCtx), ErrBlackoutPause) {
 			r.s.deps.Log.Info("ad-hoc scan paused by blackout",
 				"adhoc_id", run.ID, "target_id", run.TargetID)
 		}
@@ -561,7 +561,7 @@ func (r *scanJobRunner) Run(ctx context.Context, job Job) error {
 	if runErr != nil {
 		status = model.ScheduleRunFailed
 		if errors.Is(runErr, context.Canceled) {
-			if errors.Is(context.Cause(jobCtx), BlackoutPauseCause) {
+			if errors.Is(context.Cause(jobCtx), ErrBlackoutPause) {
 				status = model.ScheduleRunPausedBlackout
 				r.s.deps.Log.Info("scan paused by blackout (final)",
 					"schedule_id", sched.ID, "target_id", sched.TargetID)

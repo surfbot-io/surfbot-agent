@@ -472,7 +472,7 @@ func TestScheduler_PauseInFlight_BlackoutCancelsCtx(t *testing.T) {
 		{ID: "s1", TargetID: "t1", RRule: "FREQ=DAILY", Timezone: "UTC", Enabled: true},
 	}
 	bo := &tickerBlackoutStore{}
-	// Block until ctx is cancelled — simulates a long-running scan.
+	// Block until ctx is canceled — simulates a long-running scan.
 	runner := &fakeRunner{blockCh: make(chan struct{})}
 	s := newSchedulerForTest(t, Dependencies{
 		SchedStore:    store,
@@ -578,8 +578,8 @@ func TestScheduler_PauseInFlight_DoesNotCancelPreExistingBlackout(t *testing.T) 
 	require.NoError(t, s.blackouts.Refresh(context.Background()))
 	s.evaluateInFlightBlackouts(now)
 
-	// Should not have cancelled — pre-existing blackout case.
-	assert.NoError(t, jobCtx.Err(), "ctx must not be cancelled for jobs dispatched while blackout was already active")
+	// Should not have canceled — pre-existing blackout case.
+	assert.NoError(t, jobCtx.Err(), "ctx must not be canceled for jobs dispatched while blackout was already active")
 }
 
 func TestScheduler_InflightCleanup(t *testing.T) {
