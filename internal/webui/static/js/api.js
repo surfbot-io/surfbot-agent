@@ -113,22 +113,13 @@ const API = {
     return this.post('/scans', body);
   },
 
-  // SPEC-X3.1 — daemon endpoints live outside /api/v1/.
+  // SPEC-X3.1 — daemon endpoints live outside /api/v1/. The former
+  // daemonTrigger() is gone with SPEC-SCHED1.4a; target-anchored ad-hoc
+  // dispatch via /api/v1/scans/ad-hoc lands in the write-flow UI (1.4b).
   daemonStatus() {
     return fetch('/api/daemon/status', { headers: this._headers() }).then(r => {
       if (!r.ok) throw new Error('daemon status failed: ' + r.status);
       return r.json();
-    });
-  },
-  daemonTrigger(profile) {
-    return fetch('/api/daemon/trigger', {
-      method: 'POST',
-      headers: this._headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ profile: profile || 'full' }),
-    }).then(async r => {
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || ('trigger failed: ' + r.status));
-      return data;
     });
   },
 };

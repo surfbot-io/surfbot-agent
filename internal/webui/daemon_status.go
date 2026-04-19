@@ -58,10 +58,10 @@ type DaemonView struct {
 	WindowTimezone string
 
 	// AdHocDispatcher is the master ticker's ad-hoc dispatch entry
-	// point. When non-nil, /api/daemon/trigger creates an
+	// point. When non-nil, /api/v1/scans/ad-hoc creates an
 	// ad_hoc_scan_runs row and dispatches via this — when nil, the
-	// trigger endpoint returns 503 (the daemon is in a separate
-	// process and not reachable from this UI process).
+	// endpoint returns 503 (the daemon is in a separate process and
+	// not reachable from this UI process).
 	AdHocDispatcher AdHocDispatcher
 
 	// triggerMu serializes write access to the trigger flag file.
@@ -358,9 +358,6 @@ func nextWindowStart(w intervalsched.MaintenanceWindow, after time.Time) time.Ti
 	// Should be unreachable: in 24h we always cross the start.
 	return time.Time{}
 }
-
-// (handleDaemonTrigger lives in handlers_trigger.go — SCHED1.2c
-// reintroduced it on top of ad_hoc_scan_runs and DispatchAdHoc.)
 
 // --- helpers ---
 

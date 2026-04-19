@@ -47,9 +47,10 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 
 	// SPEC-X3.1 Agent card endpoints. Note the /api/daemon/* prefix —
 	// these live outside /api/v1/ because they describe the daemon
-	// process, not versioned domain data.
+	// process, not versioned domain data. SPEC-SCHED1.4a removed the
+	// former /api/daemon/trigger handler; callers migrate to
+	// /api/v1/scans/ad-hoc (deprecation window ended at the 1.4a merge).
 	mux.HandleFunc("/api/daemon/status", h.handleDaemonStatus)
-	mux.HandleFunc("/api/daemon/trigger", h.handleDaemonTrigger)
 
 	// Read-only API routes
 	mux.HandleFunc("/api/v1/overview", h.handleOverview)
@@ -187,8 +188,7 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 // registerV1Routes wires the SPEC-SCHED1.3a REST API onto mux. The
 // dispatcher slot is populated only when the caller plugged a live
 // AdHocDispatcher into the DaemonView — otherwise POST /scans/ad-hoc
-// returns 503 with the dispatcher-unreachable problem type, mirroring
-// the 1.2c /api/daemon/trigger fallback.
+// returns 503 with the dispatcher-unreachable problem type.
 func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *DaemonView) {
 	deps := apiv1.APIDeps{
 		Store:         store,

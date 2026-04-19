@@ -239,10 +239,6 @@ func TestDaemonStatusHandler_HTTPRoute(t *testing.T) {
 	}
 }
 
-// SCHED1.2c: trigger handler tests live in handlers_trigger_test.go.
-// The pre-1.2b file-based behavior (writing trigger.json) is gone — see
-// handlers_trigger.go for the new ad-hoc dispatch shape.
-
 func TestRedactError(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", ""},

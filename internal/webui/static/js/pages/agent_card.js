@@ -12,7 +12,8 @@
 const AgentCard = {
   POLL_MS: 8000,
   _timer: null,
-  _busy: false, // "Scan now" in flight, suppresses double-click
+  // "Scan now" was removed with SPEC-SCHED1.4a; target-anchored ad-hoc
+  // dispatch via /api/v1/scans/ad-hoc lands on target pages in 1.4b.
 
   // mount(containerEl) renders the placeholder and starts the poll loop.
   mount(el) {
@@ -86,17 +87,6 @@ const AgentCard = {
         <span class="detail-value mono">${d.pid || '-'}</span>
       </div>
       ${schedHtml}
-      <div class="agent-actions" style="margin-top:12px">
-        <select id="agent-scan-profile" aria-label="Scan profile">
-          <option value="full" selected>Full scan</option>
-          <option value="quick">Quick check</option>
-        </select>
-        <button id="agent-scan-now" class="refresh-btn"
-          title="Triggers a scan immediately. Bypasses the maintenance window.">
-          Scan now
-        </button>
-        <span id="agent-scan-status" class="text-muted" style="margin-left:8px"></span>
-      </div>
     </section>`;
   },
 
@@ -195,9 +185,8 @@ const AgentCard = {
     </section>`;
   },
 
-  // bind() wires up button event handlers after every render. Cheap —
-  // there are at most three buttons in the card.
-  bind(root, data) {
+  // bind() wires up the copy button event handler after every render.
+  bind(root, _data) {
     const copyBtn = root.querySelector('#agent-copy-cmd');
     if (copyBtn) {
       copyBtn.addEventListener('click', () => {
@@ -210,37 +199,6 @@ const AgentCard = {
           }
         });
       });
-    }
-    const scanBtn = root.querySelector('#agent-scan-now');
-    if (scanBtn) {
-      const running = data && data.running;
-      if (!running || this._busy) scanBtn.setAttribute('disabled', 'true');
-      scanBtn.addEventListener('click', () => this.triggerScan(root));
-    }
-  },
-
-  async triggerScan(root) {
-    if (this._busy) return;
-    const sel = root.querySelector('#agent-scan-profile');
-    const profile = sel ? sel.value : 'full';
-    const status = root.querySelector('#agent-scan-status');
-    const btn = root.querySelector('#agent-scan-now');
-    this._busy = true;
-    if (btn) btn.setAttribute('disabled', 'true');
-    if (status) status.textContent = 'starting…';
-    try {
-      const r = await API.daemonTrigger(profile);
-      if (status) status.textContent = 'queued (' + (r.trigger_id || '') + ')';
-    } catch (err) {
-      if (status) status.textContent = 'failed: ' + err.message;
-    } finally {
-      // Release the lock after the next poll cycle so the user sees the
-      // updated last_full/last_quick before being able to fire again.
-      setTimeout(() => {
-        this._busy = false;
-        if (btn) btn.removeAttribute('disabled');
-        if (status) status.textContent = '';
-      }, this.POLL_MS + 500);
     }
   },
 
