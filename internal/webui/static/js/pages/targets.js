@@ -182,8 +182,19 @@ const TargetsPage = {
     `;
 
     // Wire action buttons.
+    // SPEC-SCHED1.4c R4: the detail-page "Scan now" button opens the
+    // 1.4b ad-hoc dispatcher modal with target_id pre-filled (readonly
+    // by default; unlockable via the modal's "Edit target" link). The
+    // list-page row's legacy scanTarget() path still uses the synchronous
+    // /api/v1/scans endpoint — targets list overhaul is separate work.
     const scanBtn = document.getElementById('target-scan-btn');
-    if (scanBtn) scanBtn.addEventListener('click', () => this.scanTarget(t.id, t.value));
+    if (scanBtn) scanBtn.addEventListener('click', () => {
+      if (typeof AdHocPage !== 'undefined' && AdHocPage.open) {
+        AdHocPage.open({ prefillTargetID: t.id, lockTargetID: true });
+      } else {
+        this.scanTarget(t.id, t.value);
+      }
+    });
     const fBtn = document.getElementById('target-findings-btn');
     if (fBtn) fBtn.addEventListener('click', () => this.viewFindings(t.id));
     const aBtn = document.getElementById('target-assets-btn');

@@ -8,8 +8,24 @@
 // targets-page integration lands in 1.4c (spec non-goal N3).
 
 const AdHocPage = {
-  open() {
-    const body = this.formBody({});
+  // SPEC-SCHED1.4c R4: open() accepts an optional prefill object so
+  // target-page launchers can pre-fill target_id without duplicating
+  // the modal wiring. Backwards compatible — existing callers pass no
+  // argument. When `lockTargetID` is truthy (typical when launched
+  // from a target page) the field renders readonly with an "Edit
+  // target" link that relaxes the lock — guards against accidental
+  // retargeting per OQ3.
+  open(prefill) {
+    const p = prefill || {};
+    const body = this.formBody({
+      target_id: p.prefillTargetID || p.target_id || '',
+      template_id: p.prefillTemplateID || p.template_id || '',
+      reason: p.prefillReason || p.reason || '',
+      tool_config_override: p.prefillToolConfigOverride || p.tool_config_override || '',
+      lockTargetID: p.lockTargetID !== undefined
+        ? !!p.lockTargetID
+        : !!p.prefillTargetID,
+    });
     const m = Components.modal({
       title: 'Run scan now',
       body,
@@ -30,6 +46,20 @@ const AdHocPage = {
       },
       secondaryAction: { label: 'Close' },
     });
+
+    // Unlock link wiring: clicking "Edit target" drops the readonly
+    // attribute and focuses the field. Idempotent.
+    const unlock = m.root.querySelector('#adhoc-target-unlock');
+    if (unlock) unlock.addEventListener('click', (e) => {
+      e.preventDefault();
+      const input = m.root.querySelector('input[name="target_id"]');
+      if (input) {
+        input.removeAttribute('readonly');
+        input.focus();
+        unlock.style.display = 'none';
+      }
+    });
+
     return m;
   },
 
@@ -37,14 +67,27 @@ const AdHocPage = {
   // restore the original form markup after a successful dispatch.
   formBody(preset) {
     const p = preset || {};
+    const lock = !!p.lockTargetID;
+    const targetIdField = `
+      <div class="form-field" data-field="target_id">
+        <label class="form-label" for="f-target_id">Target ID <span class="form-required">*</span></label>
+        <input class="form-input" id="f-target_id" name="target_id" type="text"
+               required
+               ${lock ? 'readonly' : ''}
+               placeholder="UUID from /targets"
+               value="${escapeHtml(p.target_id || '')}">
+        <div class="form-help">
+          ${lock
+            ? 'Pre-filled from the current target page. <a href="#" id="adhoc-target-unlock">Edit target</a>.'
+            : 'Free-text target ID. Picker ships in a future release.'}
+        </div>
+        <div class="field-error" data-field-error="target_id" style="display:none"></div>
+      </div>
+    `;
     return `
       <form id="adhoc-form" novalidate>
         <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
-        ${Components.formInput({
-          label: 'Target ID', name: 'target_id', value: p.target_id || '', required: true,
-          placeholder: 'UUID from /targets',
-          help: 'Free-text target ID. Picker ships in 1.4c.',
-        })}
+        ${targetIdField}
         ${Components.formInput({ label: 'Template ID', name: 'template_id', value: p.template_id || '',
           help: 'Optional. If set, the template\'s tool_config is used (overlaid with the override below).' })}
         ${Components.formInput({ label: 'Reason', name: 'reason', value: p.reason || '',
