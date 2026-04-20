@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/surfbot-io/surfbot-agent/internal/cli/apiclient"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
@@ -392,6 +393,45 @@ func TestIntegration_SchemasEndpoint_ViaWebui(t *testing.T) {
 
 	code, _ = getBody(t, base+"/api/v1/schemas/tools/nonexistent")
 	assert.Equal(t, http.StatusNotFound, code)
+}
+
+// TestIntegration_NextRunAt_PopulatedOnCreate is SPEC-SCHED1-HOTFIX R4,
+// create-path flavor. Before this hotfix, registerV1Routes never set
+// APIDeps.Expander, so POST /api/v1/schedules landed with
+// next_run_at = NULL. This test drives a create through the full webui
+// HTTP stack (webui.NewServer, not apiv1.mux) via the apiclient, which
+// proves that the expander is wired AND that the CLI's Origin header
+// derivation threads cleanly through validateOrigin. A stored-row read
+// confirms the column is populated synchronously, not just on the
+// response body.
+func TestIntegration_NextRunAt_PopulatedOnCreate(t *testing.T) {
+	store, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	ctx := t.Context()
+	tgt := &model.Target{Value: "example.com"}
+	require.NoError(t, store.CreateTarget(ctx, tgt))
+
+	client := apiclient.New(base)
+	enabled := true
+	created, err := client.CreateSchedule(ctx, apiclient.CreateScheduleRequest{
+		TargetID: tgt.ID,
+		Name:     "hotfix-create",
+		RRule:    "FREQ=DAILY",
+		Timezone: "UTC",
+		Enabled:  &enabled,
+	})
+	require.NoError(t, err, "POST /api/v1/schedules must succeed through webui stack")
+	require.NotNil(t, created.NextRunAt, "response body must carry next_run_at")
+	assert.True(t, created.NextRunAt.After(time.Now().Add(-1*time.Minute)),
+		"next_run_at must be a concrete near-future timestamp, got %v", created.NextRunAt)
+
+	// The stored row must reflect the same populated timestamp — proves
+	// the expander wrote through SetNextRunAt synchronously, not just
+	// that the response body computed a value locally.
+	got, err := store.Schedules().Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.NextRunAt, "stored schedule row must have next_run_at populated")
 }
 
 func readEmbedded(t *testing.T, path string) string {
