@@ -158,6 +158,14 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	inputs := []string{target.Value}
 	hostnames := []string{target.Value} // original hostnames for hostname-aware phases
 	ipToHostname := map[string]string{} // primary hostname per resolved IP (SUR-242)
+
+	// resolvedFilterDropped tracks how many discovery hostnames the
+	// resolution-evidence filter removed before the port_scan handoff.
+	// -1 is the "filter did not run" sentinel (resolution phase hasn't
+	// fired yet, or was skipped for this scan_type). Consumed by the
+	// port_scan phase-summary line so operators can see the filter at
+	// work in the scan log (SPEC-SCAN-PIPELINE-FIX R2).
+	resolvedFilterDropped := -1
 	result := &PipelineResult{
 		ScanID: scan.ID,
 		Target: target.Value,
@@ -366,8 +374,12 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// `surfbot scan detail` can show per-tool logs.
 		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "", &toolResult.ToolRun)
 
-		// Print phase summary
-		printPhaseSummary(tool, toolResult)
+		// Print phase summary. The port_scan summary surfaces the
+		// resolution-filter drop count so operators can see the
+		// SPEC-SCAN-PIPELINE-FIX filter at work (R2).
+		printPhaseSummary(tool, toolResult, phaseSummaryExtras{
+			resolvedFilterDropped: resolvedFilterDropped,
+		})
 
 		// Thread outputs to next phase
 		nextInputs := extractInputsForNextPhase(tool.Phase(), toolResult)
@@ -408,9 +420,11 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			// output lacked the resolved_from metadata), keep the full
 			// hostname list — the pre-existing hedge for handing naabu
 			// SOMETHING rather than nothing.
-			if filtered, _ := narrowHostnamesByResolution(hostnames, toolResult); filtered != nil {
+			filtered, dropped := narrowHostnamesByResolution(hostnames, toolResult)
+			if filtered != nil {
 				hostnames = filtered
 			}
+			resolvedFilterDropped = dropped
 		}
 
 		// For http_probe: pair each ip:port with its resolved hostname
@@ -841,7 +855,16 @@ func extractInputsForNextPhase(phase string, result *detection.RunResult) []stri
 	return nil
 }
 
-func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult) {
+// phaseSummaryExtras carries side-channel telemetry into
+// printPhaseSummary for fields that aren't derivable from the tool
+// result alone. resolvedFilterDropped = -1 means "the filter did not
+// run / the phase does not consume it" — only the port_scan case
+// actually reads it today.
+type phaseSummaryExtras struct {
+	resolvedFilterDropped int
+}
+
+func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult, extras phaseSummaryExtras) {
 	pp := newPipelinePrinter(os.Stderr)
 	switch tool.Phase() {
 	case "discovery":
@@ -879,10 +902,14 @@ func printPhaseSummary(tool detection.DetectionTool, result *detection.RunResult
 				open++
 			}
 		}
+		resolvedFilter := ""
+		if extras.resolvedFilterDropped >= 0 {
+			resolvedFilter = fmt.Sprintf(" resolved_filter=%d", extras.resolvedFilterDropped)
+		}
 		if filtered > 0 {
-			pp.muted("    Scanned hosts, found %d open ports, %d filtered\n", open, filtered)
+			pp.muted("    Scanned hosts, found %d open ports, %d filtered%s\n", open, filtered, resolvedFilter)
 		} else {
-			pp.muted("    Scanned hosts, found %d open ports\n", open)
+			pp.muted("    Scanned hosts, found %d open ports%s\n", open, resolvedFilter)
 		}
 	case "http_probe":
 		urls, techs := 0, 0
