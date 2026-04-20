@@ -366,6 +366,34 @@ func TestIntegration_UITimeline(t *testing.T) {
 	}
 }
 
+// TestIntegration_SchemasEndpoint_ViaWebui confirms SPEC-SCHED1.5 R3
+// is reachable through the same webui HTTP stack the SPA uses, not
+// just the bare apiv1 mux the per-package tests run against.
+func TestIntegration_SchemasEndpoint_ViaWebui(t *testing.T) {
+	_, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	code, body := getBody(t, base+"/api/v1/schemas/tools")
+	assert.Equal(t, http.StatusOK, code)
+	var index struct {
+		Tools []string `json:"tools"`
+	}
+	require.NoError(t, json.Unmarshal(body, &index))
+	wantCount := 5
+	assert.Len(t, index.Tools, wantCount)
+
+	for _, tool := range index.Tools {
+		code, body = getBody(t, base+"/api/v1/schemas/tools/"+tool)
+		assert.Equal(t, http.StatusOK, code, "tool %s", tool)
+		var obj map[string]any
+		require.NoError(t, json.Unmarshal(body, &obj), "tool %s", tool)
+		assert.NotEmpty(t, obj["title"], "tool %s missing title", tool)
+	}
+
+	code, _ = getBody(t, base+"/api/v1/schemas/tools/nonexistent")
+	assert.Equal(t, http.StatusNotFound, code)
+}
+
 func readEmbedded(t *testing.T, path string) string {
 	t.Helper()
 	f, err := staticFS.Open(path)
