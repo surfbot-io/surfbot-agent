@@ -15,6 +15,16 @@ import (
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
 //
+// 3.0.0 — first-class schedules. SPEC-SCHED1 replaces the config-driven
+//
+//	single-schedule model with four resources (schedule, template,
+//	blackout, schedule_defaults), typed tool params
+//	(nuclei/naabu/httpx/subfinder/dnsx with validated structs),
+//	canonical ad-hoc dispatch at /api/v1/scans/ad-hoc, pause-in-flight
+//	blackout semantics, and a cascade resolver for effective config.
+//	/api/daemon/trigger is removed. See docs/agent-spec.md and
+//	docs/scheduling.md.
+//
 // 2.0.0 — scan aggregates redesign. ScanStats is removed; Scan now exposes
 //
 //	target_state (what the target looks like), delta (what this scan
@@ -30,7 +40,7 @@ import (
 // 1.1.0 — probe accepts the enriched "hostname|ip:port/tcp" input format
 //
 //	alongside the legacy bare ip:port/tcp. See SUR-242.
-const SpecVersion = "2.0.0"
+const SpecVersion = "3.0.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {
