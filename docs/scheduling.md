@@ -232,6 +232,18 @@ Check `scan_runs.reason` — if it's `blackout_pause`, a blackout window
 activated mid-scan (the pause-in-flight behavior). The next scheduled
 tick after the blackout ends re-dispatches normally.
 
+### "403 `missing origin` from the CLI"
+
+The `surfbot ui` web server enforces a same-origin check on every
+mutating request (`POST`/`PUT`/`DELETE`/`PATCH`) — cross-site callers
+without an `Origin` header pointing back at the loopback UI are
+rejected with `403 missing origin`. Builds from **SCHED1-HOTFIX-P0 and
+later** derive the `Origin` header automatically inside the CLI's API
+client, so the stock `surfbot schedule|template|blackout|defaults|scan
+adhoc` commands just work. If you see this 403, upgrade your `surfbot`
+binary; older builds predate the fix and will keep getting rejected
+even against localhost.
+
 ### "Edit to a template didn't take effect"
 
 Template edits cascade asynchronously: the server triggers
