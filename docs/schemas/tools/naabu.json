@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surfbot.example/schemas/tools/naabu.json",
+  "title": "Naabu tool params",
+  "description": "Per-run parameters accepted for the `naabu` key of ToolConfig on templates, schedules, and ad-hoc scan overrides.",
+  "$comment": "Source: internal/model/tool_params.go NaabuParams struct as of agent-spec 3.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ports": {
+      "description": "Port selector. Accepts the canonical naabu shapes: `topN`, explicit lists (`80,443`), ranges (`1-1024`), or `-` for all.",
+      "type": "string",
+      "default": "top100"
+    },
+    "rate": {
+      "description": "Probes per second. The default of 20 is tuned for residential uplinks; raise carefully on shared infrastructure.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 20
+    },
+    "retries": {
+      "description": "Retry count per port on timeout.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "scan_type": {
+      "description": "Transport-layer scan mode. `connect` is the unprivileged default; `syn` requires elevated permissions.",
+      "type": "string",
+      "enum": ["connect", "syn"],
+      "default": "connect"
+    },
+    "banner_grab": {
+      "description": "When true, naabu captures a short banner preview for each open port.",
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

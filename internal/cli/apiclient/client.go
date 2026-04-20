@@ -21,8 +21,15 @@ const DefaultTimeout = 30 * time.Second
 // Client is the surfbot CLI's API client. One instance is shared
 // across all subcommands per invocation; tests create their own with
 // httptest.NewServer.
+//
+// The client sets an Origin header (derived from baseURL as
+// "scheme://host[:port]") on every request so that it satisfies the
+// same-origin check enforced by the webui middleware for mutating
+// methods. Callers pointing at a bare apiv1 mux (no webui middleware)
+// are unaffected — the header is additive.
 type Client struct {
 	baseURL    string
+	origin     string
 	httpClient *http.Client
 	userAgent  string
 	authToken  string
@@ -55,10 +62,17 @@ func WithAuthToken(token string) Option {
 
 // New returns a Client targeting baseURL (e.g. "http://127.0.0.1:8470").
 // Trailing slashes are trimmed so callers don't have to worry about
-// double-slashes in request paths.
+// double-slashes in request paths. An Origin header is derived from
+// baseURL and sent on every request to satisfy the webui same-origin
+// check; if baseURL is empty or unparseable, the origin is left empty
+// and requests fall through to the underlying HTTP round-trip (callers
+// pointing at an unauthenticated daemon or a bare apiv1 mux see no
+// behavior change).
 func New(baseURL string, opts ...Option) *Client {
+	trimmed := strings.TrimRight(baseURL, "/")
 	c := &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    trimmed,
+		origin:     deriveOrigin(trimmed),
 		httpClient: &http.Client{Timeout: DefaultTimeout},
 		userAgent:  "surfbot-cli",
 	}
@@ -66,6 +80,21 @@ func New(baseURL string, opts ...Option) *Client {
 		o(c)
 	}
 	return c
+}
+
+// deriveOrigin reassembles the scheme+host of baseURL into the
+// Origin-header shape ("scheme://host[:port]"). Returns "" for inputs
+// that url.Parse rejects or that lack a scheme/host — callers treat an
+// empty origin as "do not set the header".
+func deriveOrigin(baseURL string) string {
+	if baseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // BaseURL returns the effective base URL — exposed so the CLI can
@@ -94,6 +123,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	req.Header.Set("Accept", "application/json, application/problem+json")
 	req.Header.Set("User-Agent", c.userAgent)
+	if c.origin != "" {
+		req.Header.Set("Origin", c.origin)
+	}
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}

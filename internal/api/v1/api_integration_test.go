@@ -154,3 +154,49 @@ func TestIntegration_AdHocNoDispatcher503(t *testing.T) {
 		t.Fatalf("expected 1 failed run, got %d", len(runs))
 	}
 }
+
+// TestIntegration_SchemasEndpoint covers SPEC-SCHED1.5 R3 via the
+// integration harness. Index returns every registered tool, per-tool
+// GET returns a parseable Schema body, unknown tools 404.
+func TestIntegration_SchemasEndpoint(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	srv := newTestAPI(t, defaultAPIDeps(store))
+
+	resp, raw := doJSON(t, srv, http.MethodGet, "/api/v1/schemas/tools", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("index status=%d body=%s", resp.StatusCode, raw)
+	}
+	var index ToolSchemaIndex
+	if err := json.Unmarshal(raw, &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	want := map[string]bool{"nuclei": true, "naabu": true, "httpx": true, "subfinder": true, "dnsx": true}
+	if len(index.Tools) != len(want) {
+		t.Fatalf("index tools=%v want keys %v", index.Tools, want)
+	}
+	for _, n := range index.Tools {
+		if !want[n] {
+			t.Errorf("unexpected tool %q", n)
+		}
+	}
+
+	for tool := range want {
+		resp, raw := doJSON(t, srv, http.MethodGet, "/api/v1/schemas/tools/"+tool, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", tool, resp.StatusCode, raw)
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			t.Fatalf("%s decode: %v", tool, err)
+		}
+		if obj["title"] == nil || obj["properties"] == nil {
+			t.Errorf("%s schema missing title/properties", tool)
+		}
+	}
+
+	resp, _ = doJSON(t, srv, http.MethodGet, "/api/v1/schemas/tools/nonexistent", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown tool status=%d want 404", resp.StatusCode)
+	}
+}

@@ -63,6 +63,10 @@ func RegisterRoutes(mux *http.ServeMux, deps APIDeps) {
 	// (owned by the webui package) keeps its legacy shape for 1.3a;
 	// 1.3b migrates callers onto this path.
 	mux.HandleFunc("/api/v1/scans/ad-hoc", h.routeAdHoc)
+
+	// SPEC-SCHED1.5 R3: JSON Schemas for tool params.
+	mux.HandleFunc("/api/v1/schemas/tools", h.routeSchemas)
+	mux.HandleFunc("/api/v1/schemas/tools/", h.routeSchemaByName)
 }
 
 // handlers is the zero-LOC glue struct that binds APIDeps to every
