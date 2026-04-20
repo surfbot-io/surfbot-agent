@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surfbot.example/schemas/tools/nuclei.json",
+  "title": "Nuclei tool params",
+  "description": "Per-run parameters accepted for the `nuclei` key of ToolConfig on templates, schedules, and ad-hoc scan overrides.",
+  "$comment": "Source: internal/model/tool_params.go NucleiParams struct as of agent-spec 3.0. Timeout is a Go time.Duration; serialized as nanoseconds (integer).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "templates": {
+      "description": "Specific nuclei template IDs to run. Empty = use the full registered template set.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "severity": {
+      "description": "Severity filter. Default includes every level.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["critical", "high", "medium", "low", "info"]
+      },
+      "default": ["critical", "high", "medium", "low", "info"]
+    },
+    "tags": {
+      "description": "Include-only tag filter.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "exclude_tags": {
+      "description": "Tags to skip.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "rate_limit": {
+      "description": "Global requests/second cap across all templates.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 150
+    },
+    "timeout": {
+      "description": "Per-template timeout in nanoseconds (Go time.Duration JSON encoding). Default 5000000000 = 5s.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 5000000000
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surfbot.example/schemas/tools/httpx.json",
+  "title": "Httpx tool params",
+  "description": "Per-run parameters accepted for the `httpx` key of ToolConfig on templates, schedules, and ad-hoc scan overrides.",
+  "$comment": "Source: internal/model/tool_params.go HttpxParams struct as of agent-spec 3.0. Timeout is a Go time.Duration; serialized as nanoseconds (integer).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "threads": {
+      "description": "Worker fan-out.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 50
+    },
+    "probes": {
+      "description": "Which URL schemes to probe. Defaults cover the usual web surface.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["http", "https"]
+      },
+      "default": ["http", "https"]
+    },
+    "follow_redirects": {
+      "description": "Whether httpx follows 3xx responses (up to the tool's internal hop limit).",
+      "type": "boolean",
+      "default": true
+    },
+    "timeout": {
+      "description": "Per-probe timeout in nanoseconds (Go time.Duration JSON encoding). Default 10000000000 = 10s.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 10000000000
+    }
+  }
+}

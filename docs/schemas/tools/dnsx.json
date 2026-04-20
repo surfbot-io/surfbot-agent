@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surfbot.example/schemas/tools/dnsx.json",
+  "title": "Dnsx tool params",
+  "description": "Per-run parameters accepted for the `dnsx` key of ToolConfig on templates, schedules, and ad-hoc scan overrides.",
+  "$comment": "Source: internal/model/tool_params.go DnsxParams struct as of agent-spec 3.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "record_types": {
+      "description": "DNS record types to resolve.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "PTR", "SRV", "CAA"]
+      },
+      "default": ["A", "AAAA", "CNAME"]
+    },
+    "resolvers": {
+      "description": "Custom DNS resolvers (IPs or IP:port). Empty uses the system resolver.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "retries": {
+      "description": "In-loop retry count on resolver failure. The resolver itself also performs its own retries.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    }
+  }
+}

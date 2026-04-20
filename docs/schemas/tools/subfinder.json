@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surfbot.example/schemas/tools/subfinder.json",
+  "title": "Subfinder tool params",
+  "description": "Per-run parameters accepted for the `subfinder` key of ToolConfig on templates, schedules, and ad-hoc scan overrides.",
+  "$comment": "Source: internal/model/tool_params.go SubfinderParams struct as of agent-spec 3.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "sources": {
+      "description": "Explicit list of passive DNS sources. Leave empty and set `all_sources: true` to use every source subfinder knows about.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "all_sources": {
+      "description": "When true, use every registered passive source (overrides any narrower `sources` list).",
+      "type": "boolean",
+      "default": true
+    },
+    "recursive": {
+      "description": "Recurse into discovered subdomains looking for further levels.",
+      "type": "boolean",
+      "default": false
+    },
+    "resolvers": {
+      "description": "Custom DNS resolvers (IPs or IP:port). Empty uses the system resolver.",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
