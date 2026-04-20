@@ -1434,6 +1434,46 @@ body.modal-open { overflow: hidden; }
   border-top: 1px solid var(--border);
 }
 
+/* Timeline (SCHED1.4c). */
+.timeline-day {
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.timeline-day-header {
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.timeline-day-items { padding: 4px 0; }
+.timeline-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr 1fr;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.timeline-row:last-child { border-bottom: 0; }
+.timeline-row.clickable { cursor: pointer; }
+.timeline-row.clickable:hover { background: var(--bg-hover); }
+.timeline-time { color: var(--accent); }
+.timeline-empty-slot {
+  padding: 10px 14px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+.timeline-empty-slot.clickable { cursor: pointer; }
+.timeline-empty-slot.clickable:hover { background: var(--bg-hover); color: var(--text-secondary); }
+
 /* Bulk actions bar (SCHED1.4b). */
 .bulk-actions-bar {
   position: sticky;

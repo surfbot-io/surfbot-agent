@@ -15,6 +15,7 @@ const Router = {
     // longest-prefix match wins. No Go-side route changes — the SPA
     // fallback in server.go already serves index.html for any unknown
     // path, so these hash routes resolve entirely client-side.
+    { pattern: /^#\/timeline/, page: 'timeline', render: () => TimelinePage.render(app, parseQueryParams()) },
     { pattern: /^#\/schedules\/(.+)$/, page: 'schedules', render: (m) => SchedulesPage.render(app, { id: decodeURIComponent(m[1]) }) },
     { pattern: /^#\/schedules/, page: 'schedules', render: () => SchedulesPage.render(app, parseQueryParams()) },
     { pattern: /^#\/templates\/(.+)$/, page: 'templates', render: (m) => TemplatesPage.render(app, { id: decodeURIComponent(m[1]) }) },

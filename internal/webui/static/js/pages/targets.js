@@ -175,20 +175,107 @@ const TargetsPage = {
         </div>
 
         ${stateCard}
+        <div id="target-schedules-slot"></div>
         ${findingsCard}
         ${scansCard}
       </div>
     `;
 
     // Wire action buttons.
+    // SPEC-SCHED1.4c R4: the detail-page "Scan now" button opens the
+    // 1.4b ad-hoc dispatcher modal with target_id pre-filled (readonly
+    // by default; unlockable via the modal's "Edit target" link). The
+    // list-page row's legacy scanTarget() path still uses the synchronous
+    // /api/v1/scans endpoint — targets list overhaul is separate work.
     const scanBtn = document.getElementById('target-scan-btn');
-    if (scanBtn) scanBtn.addEventListener('click', () => this.scanTarget(t.id, t.value));
+    if (scanBtn) scanBtn.addEventListener('click', () => {
+      if (typeof AdHocPage !== 'undefined' && AdHocPage.open) {
+        AdHocPage.open({ prefillTargetID: t.id, lockTargetID: true });
+      } else {
+        this.scanTarget(t.id, t.value);
+      }
+    });
     const fBtn = document.getElementById('target-findings-btn');
     if (fBtn) fBtn.addEventListener('click', () => this.viewFindings(t.id));
     const aBtn = document.getElementById('target-assets-btn');
     if (aBtn) aBtn.addEventListener('click', () => { location.hash = '#/assets?target_id=' + t.id; });
     const dBtn = document.getElementById('target-delete-btn');
     if (dBtn) dBtn.addEventListener('click', () => this.deleteTarget(t.id, t.value));
+
+    // SPEC-SCHED1.4c R3: schedules-for-this-target section.
+    this.renderTargetSchedulesSection(t);
+  },
+
+  async renderTargetSchedulesSection(t) {
+    const slot = document.getElementById('target-schedules-slot');
+    if (!slot) return;
+    slot.innerHTML = '<div class="card"><div class="card-label">Schedules</div><div class="text-muted" style="padding:8px 0">Loading…</div></div>';
+    try {
+      const resp = await API.listSchedules({ target_id: t.id, limit: 100 });
+      const items = (resp && resp.items) || [];
+      slot.innerHTML = this.targetSchedulesCard(t, items);
+      this.bindTargetSchedulesActions(t);
+    } catch (err) {
+      slot.innerHTML = `<div class="card"><div class="card-label">Schedules</div>${Components.errorBanner(err)}</div>`;
+    }
+  },
+
+  targetSchedulesCard(t, items) {
+    if (items.length === 0) {
+      return `<div class="card">
+        <div class="card-label">Schedules</div>
+        <div style="margin-top:8px">
+          <span class="text-muted">No schedules for this target yet.</span>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button type="button" class="btn btn-sm btn-accent" id="target-schedules-adhoc">Run scan now</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="target-schedules-create">Create schedule</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    const rows = items.map(s => `
+      <tr class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">
+        <td class="mono">${Components.truncateID(s.id)}</td>
+        <td class="mono">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
+        <td>${Components.scheduleStatusBadge(s.status)}</td>
+        <td>${Components.rruleCompact(s.rrule)}</td>
+        <td class="text-muted">${Components.nextRun(s.next_run_at)}</td>
+      </tr>
+    `).join('');
+    return `<div class="card">
+      <div class="card-label">Schedules <span class="text-muted" style="font-weight:400;text-transform:none">(${items.length})</span>
+        <button type="button" class="btn btn-sm btn-ghost" id="target-schedules-create" style="margin-left:12px">+ New</button>
+      </div>
+      <div class="table-container" style="border:none;margin:8px 0 0">
+        <table>
+          <thead><tr>
+            <th scope="col">ID</th>
+            <th scope="col">Template</th>
+            <th scope="col">Status</th>
+            <th scope="col">RRULE</th>
+            <th scope="col">Next run</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  },
+
+  bindTargetSchedulesActions(t) {
+    const adhocBtn = document.getElementById('target-schedules-adhoc');
+    if (adhocBtn) adhocBtn.addEventListener('click', () => {
+      if (typeof AdHocPage !== 'undefined' && AdHocPage.open) AdHocPage.open({ prefillTargetID: t.id });
+    });
+    const createBtn = document.getElementById('target-schedules-create');
+    if (createBtn) createBtn.addEventListener('click', () => {
+      if (typeof SchedulesPage !== 'undefined' && SchedulesPage.openForm) {
+        SchedulesPage.openForm({
+          mode: 'create',
+          schedule: { target_id: t.id },
+          onSaved: () => TargetsPage.renderDetail(document.getElementById('app'), t.id),
+        });
+      }
+    });
   },
 
   renderTargetStateCard(scan) {

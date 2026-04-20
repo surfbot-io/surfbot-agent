@@ -190,12 +190,26 @@ const BlackoutsPage = {
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-section="blackout-activations-placeholder">
           <div class="card-label">Upcoming activations</div>
-          <div style="margin-top:8px">
-            <span class="text-muted">Preview unavailable in 1.4a. The
-              <a href="#/schedules">/schedules/upcoming</a> endpoint returns
-              blackouts within the horizon of the calendar view (1.4b).</span>
+          <div style="margin-top:8px;font-size:13px">
+            <p class="text-muted" style="margin:0">
+              Activation preview will be available in a future release.
+              Expanding an RRULE client-side would duplicate the
+              scheduler's intervalsched logic; a dedicated endpoint is
+              tracked as post-launch work.
+            </p>
+            <p style="margin-top:8px">
+              This blackout's RRULE:
+              <br><code class="mono">${escapeHtml(b.rrule || '(none)')}</code>
+              for <code class="mono">${escapeHtml(b.duration_seconds + 's')}</code>
+              in <code class="mono">${escapeHtml(b.timezone || 'UTC')}</code>.
+            </p>
+            <p class="text-muted" style="margin-top:8px">
+              Use <code class="mono">surfbot blackout show ${escapeHtml(b.id)}</code>
+              or query SQLite directly to inspect occurrences until the
+              endpoint lands.
+            </p>
           </div>
         </div>
       </div>
