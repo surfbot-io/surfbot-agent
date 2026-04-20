@@ -108,9 +108,95 @@ where the certificate CN/SANs provide the proof.
 - **minor** — additive (new commands, new optional fields)
 - **patch** — doc/description changes only
 
-Current: **2.0.0**.
+Current: **3.0.0**.
 
 ## Changelog
+
+### 3.0.0 — first-class schedules (SPEC-SCHED1)
+
+Breaking rewrite of the scheduling subsystem. Pre-3.0, recurrence was
+driven by a single `schedule.config.json` file read at daemon boot;
+3.0 promotes scheduling into four first-class resources (templates,
+schedules, blackout windows, schedule defaults) with their own REST
+endpoints and CLI verbs.
+
+**What's new**
+
+- **Four resources**, each with full CRUD at `/api/v1/*`:
+  `schedules`, `templates`, `blackouts`, `schedule-defaults`. See
+  [`docs/scheduling.md`](scheduling.md) for the conceptual model and
+  [`docs/api.md`](api.md) for the endpoint reference.
+- **Typed tool params.** `ToolConfig` is no longer an opaque
+  `map[string]interface{}`. Each tool name (`nuclei`, `naabu`, `httpx`,
+  `subfinder`, `dnsx`) maps to a validated Go struct in
+  `internal/model/tool_params.go`. Unknown tool keys are rejected at
+  create/update time. JSON Schemas for each are shipped under
+  [`docs/schemas/tools/`](schemas/tools/) and served at
+  `/api/v1/schemas/tools/{tool}`.
+- **Canonical ad-hoc dispatch** at `POST /api/v1/scans/ad-hoc`, with
+  `tool_config_override` auto-population from the template + defaults
+  when absent.
+- **Blackout windows** with `scope` (`global` or `target`) + optional
+  `target_id`, **pause-in-flight** semantics (in-flight scans canceled
+  with `ErrBlackoutPause` when a blackout activates mid-scan), and a
+  7-day max duration.
+- **Schedule defaults singleton** with cascade resolution:
+  `schedule → template → defaults → compile-time`.
+- **Bulk endpoint** at `POST /api/v1/schedules/bulk` for atomic-per-
+  item pause/resume/delete/clone across many schedules at once.
+- **Web UI overhaul** — `#/schedules`, `#/templates`, `#/blackouts`,
+  `#/settings/defaults`, `#/timeline`. Every resource has create/edit/
+  delete; schedules support pause/resume + bulk ops; target-detail
+  pages show schedules for the target and wire the ad-hoc modal.
+
+**What's removed**
+
+- `POST /api/daemon/trigger` is gone. Callers must use
+  `POST /api/v1/scans/ad-hoc`. The trigger handler, tests, dashboard
+  "Scan now" button, and JS caller were all deleted in SPEC-SCHED1.4a
+  and the button was restored against the new endpoint in 1.4c.
+- `GET /api/v1/schedule` (singular) returns `410 Gone` with a pointer
+  to `/api/v1/schedules` (plural).
+- The legacy `/settings/schedule` SPA page is gone — operators use
+  `#/schedules` and `#/settings/defaults` instead.
+- `schedule.config.json` is no longer read at boot. On first 3.0 boot
+  against a 2.x data dir, the SCHED1.1 migration auto-imports the old
+  config into the new tables.
+
+### Migration from 2.0
+
+**Data migration.** SPEC-SCHED1.1 installs a one-shot migration that
+runs on daemon first boot with 3.0: any pre-existing
+`schedule.config.json` is translated into a system template + one
+schedule per configured target, and the file is archived. The
+migration is idempotent — a second boot with the file already absent
+is a no-op.
+
+**CLI callers.** Replace:
+
+- `surfbot scan trigger ...` → `surfbot scan ad-hoc ...`
+- `surfbot schedule show` / `--set ...` (pre-3.0 single-config
+  management) → new `surfbot schedule list / show / create / update /
+  delete / pause / resume` verbs. Run `surfbot schedule --help` for the
+  full surface. The old CLI commands are gone in 1.3b; they will not
+  reappear.
+
+**HTTP integrators.** Replace:
+
+- `POST /api/daemon/trigger` with body `{"profile":"full"}` →
+  `POST /api/v1/scans/ad-hoc` with `{"target_id": "..."}`. Profile-
+  based dispatch is no longer the API shape; target-anchored is.
+- `GET /api/v1/schedule` → `GET /api/v1/schedules` (plural) + filter
+  by `target_id` or `template_id` as needed.
+- Raw `tool_config` blobs → typed params per the schemas at
+  [`docs/schemas/tools/`](schemas/tools/). Submitting unknown keys now
+  returns `422 /problems/validation`.
+
+**See also:**
+
+- [`docs/scheduling.md`](scheduling.md) — full concept guide.
+- [`docs/api.md`](api.md) — endpoint reference.
+- [`docs/examples/`](examples/) — four copy-pasteable recipes.
 
 ### 2.0.0 — scan aggregates redesign (SPEC-QA3 / SUR-244)
 
