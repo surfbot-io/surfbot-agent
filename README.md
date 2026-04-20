@@ -274,8 +274,23 @@ give it a complete picture of Surfbot with zero prior knowledge:
 surfbot agent-spec --format json > surfbot.spec.json
 ```
 
-See [docs/agent-spec.md](docs/agent-spec.md) for the document shape and
-stability guarantees.
+Current agent-spec version: **3.0** (see [docs/agent-spec.md](docs/agent-spec.md)
+for the changelog and migration guide from 2.0).
+
+## Documentation
+
+- [`docs/scheduling.md`](docs/scheduling.md) — operator concept guide
+  for the SPEC-SCHED1 first-class scheduling model (templates,
+  schedules, blackouts, defaults, cascade resolver, pause-in-flight).
+- [`docs/api.md`](docs/api.md) — REST endpoint reference with curl
+  examples and Problem-response tables.
+- [`docs/agent-spec.md`](docs/agent-spec.md) — document shape,
+  stability guarantees, and the v3.0 changelog.
+- [`docs/examples/`](docs/examples/) — four copy-pasteable recipes
+  (daily nuclei, weekly naabu + blackout, ad-hoc chain, bulk ops).
+- [`docs/schemas/tools/`](docs/schemas/tools/) — JSON Schemas for
+  every tool's Params struct, also served at
+  `/api/v1/schemas/tools/{tool}`.
 
 ## Architecture
 
