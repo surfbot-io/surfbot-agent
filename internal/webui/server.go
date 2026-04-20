@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"html"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	apiv1 "github.com/surfbot-io/surfbot-agent/internal/api/v1"
+	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
@@ -189,6 +191,20 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 // dispatcher slot is populated only when the caller plugged a live
 // AdHocDispatcher into the DaemonView — otherwise POST /scans/ad-hoc
 // returns 503 with the dispatcher-unreachable problem type.
+//
+// SPEC-SCHED1-HOTFIX R2: the RRule expander is constructed here so
+// schedule create/update and the template/defaults cascade handlers
+// can populate scan_schedules.next_run_at synchronously. Without this,
+// every schedule written via the REST API would land with
+// next_run_at = NULL and be invisible to the master ticker.
+//
+// The expander + blackout evaluator are built once at registration
+// from a current snapshot of schedule_defaults and blackouts. In the
+// single-process webui topology, operator edits to
+// /settings/defaults after startup will not flow into the in-process
+// expander until the process restarts — that's an accepted trade-off
+// for this hotfix; the daemon-owned scheduler refreshes on its own
+// loop and is the authoritative recomputer in the long run.
 func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *DaemonView) {
 	deps := apiv1.APIDeps{
 		Store:         store,
@@ -198,6 +214,7 @@ func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *Daem
 		DefaultsStore: store.ScheduleDefaults(),
 		AdHocStore:    store.AdHocScanRuns(),
 	}
+	deps.Expander, deps.Blackouts = buildV1Expander(store)
 	if view != nil && view.AdHocDispatcher != nil {
 		// webui.AdHocDispatcher and apiv1.Dispatcher have identical
 		// method sets; direct assignment wires the scheduler through
@@ -205,6 +222,29 @@ func registerV1Routes(mux *http.ServeMux, store *storage.SQLiteStore, view *Daem
 		deps.Dispatcher = view.AdHocDispatcher
 	}
 	apiv1.RegisterRoutes(mux, deps)
+}
+
+// buildV1Expander constructs an RRuleExpander + BlackoutEvaluator
+// snapshot for the REST API handlers. Returns (nil, nil) when the
+// defaults singleton can't be read — the handlers then fall back to
+// the pre-hotfix behavior (leaves next_run_at unset, daemon will
+// recompute on its next tick). This is strictly best-effort wiring
+// and must never fail the server boot.
+func buildV1Expander(store *storage.SQLiteStore) (*intervalsched.RRuleExpander, *intervalsched.BlackoutEvaluator) {
+	ctx := context.Background()
+	defaults, err := store.ScheduleDefaults().Get(ctx)
+	if err != nil || defaults == nil {
+		log.Printf("[webui] rrule expander not wired: %v", err)
+		return nil, nil
+	}
+	blackouts := intervalsched.NewBlackoutEvaluator(store.Blackouts())
+	if err := blackouts.Refresh(ctx); err != nil {
+		// Non-fatal: the evaluator treats an unpopulated cache as
+		// "no blackouts", which matches the fallback we want anyway.
+		log.Printf("[webui] blackout evaluator initial refresh failed: %v", err)
+	}
+	expander := intervalsched.NewRRuleExpander(*defaults, blackouts, nil, time.Now().UnixNano())
+	return expander, blackouts
 }
 
 // isAssetPath reports whether a request path lives under one of the

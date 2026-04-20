@@ -253,6 +253,29 @@ func TestClientSchedulePauseResume(t *testing.T) {
 	}
 }
 
+func TestClientOriginHeader(t *testing.T) {
+	var gotOrigin string
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"POST /api/v1/schedules": func(w http.ResponseWriter, r *http.Request) {
+			gotOrigin = r.Header.Get("Origin")
+			writeJSON(w, http.StatusCreated, Schedule{ID: "s1"})
+		},
+	})
+	c := New(srv.URL)
+	if _, err := c.CreateSchedule(context.Background(), CreateScheduleRequest{TargetID: "t"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// httptest.NewServer URL is "http://127.0.0.1:PORT"; the derived
+	// Origin must be the scheme+host form of that URL exactly, so the
+	// webui's validateOrigin allow-list matches it without slashing.
+	if gotOrigin == "" {
+		t.Fatalf("Origin header not set")
+	}
+	if gotOrigin != srv.URL {
+		t.Fatalf("Origin = %q, want %q", gotOrigin, srv.URL)
+	}
+}
+
 func TestClientAuthorizationHeader(t *testing.T) {
 	var gotAuth string
 	srv := newTestServer(t, map[string]http.HandlerFunc{

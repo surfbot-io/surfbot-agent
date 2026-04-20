@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/surfbot-io/surfbot-agent/internal/cli/apiclient"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 )
@@ -392,6 +393,134 @@ func TestIntegration_SchemasEndpoint_ViaWebui(t *testing.T) {
 
 	code, _ = getBody(t, base+"/api/v1/schemas/tools/nonexistent")
 	assert.Equal(t, http.StatusNotFound, code)
+}
+
+// TestIntegration_NextRunAt_PopulatedOnCreate is SPEC-SCHED1-HOTFIX R4,
+// create-path flavor. Before this hotfix, registerV1Routes never set
+// APIDeps.Expander, so POST /api/v1/schedules landed with
+// next_run_at = NULL. This test drives a create through the full webui
+// HTTP stack (webui.NewServer, not apiv1.mux) via the apiclient, which
+// proves that the expander is wired AND that the CLI's Origin header
+// derivation threads cleanly through validateOrigin. A stored-row read
+// confirms the column is populated synchronously, not just on the
+// response body.
+func TestIntegration_NextRunAt_PopulatedOnCreate(t *testing.T) {
+	store, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	ctx := t.Context()
+	tgt := &model.Target{Value: "example.com"}
+	require.NoError(t, store.CreateTarget(ctx, tgt))
+
+	client := apiclient.New(base)
+	enabled := true
+	created, err := client.CreateSchedule(ctx, apiclient.CreateScheduleRequest{
+		TargetID: tgt.ID,
+		Name:     "hotfix-create",
+		RRule:    "FREQ=DAILY",
+		Timezone: "UTC",
+		Enabled:  &enabled,
+	})
+	require.NoError(t, err, "POST /api/v1/schedules must succeed through webui stack")
+	require.NotNil(t, created.NextRunAt, "response body must carry next_run_at")
+	assert.True(t, created.NextRunAt.After(time.Now().Add(-1*time.Minute)),
+		"next_run_at must be a concrete near-future timestamp, got %v", created.NextRunAt)
+
+	// The stored row must reflect the same populated timestamp — proves
+	// the expander wrote through SetNextRunAt synchronously, not just
+	// that the response body computed a value locally.
+	got, err := store.Schedules().Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.NextRunAt, "stored schedule row must have next_run_at populated")
+}
+
+// TestIntegration_NextRunAt_PopulatedOnCascades covers the three other
+// paths that depend on APIDeps.Expander:
+//   - PUT /api/v1/templates/{id} triggers RecomputeNextRunForTemplate
+//   - PUT /api/v1/schedule-defaults cascades across every template
+//   - POST /api/v1/schedules/bulk (clone op) recomputes dependents of
+//     the affected template
+//
+// Each assertion reads the stored row directly so we verify the
+// write-through, not just the handler return value.
+func TestIntegration_NextRunAt_PopulatedOnCascades(t *testing.T) {
+	store, base, stop := startIntegrationServer(t)
+	defer stop()
+
+	ctx := t.Context()
+	tgt := &model.Target{Value: "example.com"}
+	require.NoError(t, store.CreateTarget(ctx, tgt))
+
+	// Seed a template and a schedule that references it but has
+	// next_run_at = NULL (as every pre-hotfix row would).
+	tmpl := &model.Template{Name: "nightly", RRule: "FREQ=DAILY", Timezone: "UTC"}
+	require.NoError(t, store.Templates().Create(ctx, tmpl))
+	sched := &model.Schedule{
+		TargetID:   tgt.ID,
+		Name:       "cascade-target",
+		RRule:      "FREQ=DAILY",
+		DTStart:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Timezone:   "UTC",
+		TemplateID: &tmpl.ID,
+		Enabled:    true,
+	}
+	require.NoError(t, store.Schedules().Create(ctx, sched))
+	require.Nil(t, sched.NextRunAt, "seed schedule must start without next_run_at")
+
+	client := apiclient.New(base)
+
+	// (1) Template update cascade.
+	newRRule := "FREQ=WEEKLY"
+	_, err := client.UpdateTemplate(ctx, tmpl.ID, apiclient.UpdateTemplateRequest{
+		RRule: &newRRule,
+	})
+	require.NoError(t, err, "PUT /api/v1/templates/{id} must succeed")
+
+	afterTmpl, err := store.Schedules().Get(ctx, sched.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterTmpl.NextRunAt,
+		"template-update cascade must populate dependent schedule's next_run_at")
+
+	// (2) Defaults PUT cascade. Clear next_run_at first so we prove the
+	// PUT repopulates it rather than inheriting the prior value.
+	require.NoError(t, store.Schedules().SetNextRunAt(ctx, sched.ID, nil))
+	cleared, err := store.Schedules().Get(ctx, sched.ID)
+	require.NoError(t, err)
+	require.Nil(t, cleared.NextRunAt, "setup: expected nil next_run_at before PUT")
+
+	_, err = client.UpdateDefaults(ctx, apiclient.UpdateScheduleDefaultsRequest{
+		DefaultRRule:       "FREQ=DAILY;BYHOUR=3",
+		DefaultTimezone:    "UTC",
+		MaxConcurrentScans: 4,
+		JitterSeconds:      0,
+	})
+	require.NoError(t, err, "PUT /api/v1/schedule-defaults must succeed")
+	afterDefaults, err := store.Schedules().Get(ctx, sched.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterDefaults.NextRunAt,
+		"defaults-update cascade must re-populate dependent schedule's next_run_at")
+
+	// (3) Bulk create path — clone preserves src.TemplateID so the
+	// affected template's dependents (including our `sched`) are
+	// recomputed after the tx commits. Clear next_run_at on the source
+	// first so we prove the bulk endpoint re-populates it via cascade.
+	require.NoError(t, store.Schedules().SetNextRunAt(ctx, sched.ID, nil))
+	bulk, err := client.BulkSchedules(ctx, apiclient.BulkScheduleRequest{
+		Operation:   "clone",
+		ScheduleIDs: []string{sched.ID},
+		CreateTemplate: &apiclient.CreateScheduleRequest{
+			Name:     "clone-of-cascade-target",
+			RRule:    "FREQ=DAILY",
+			Timezone: "UTC",
+		},
+	})
+	require.NoError(t, err, "POST /api/v1/schedules/bulk clone must succeed")
+	require.Len(t, bulk.Succeeded, 1, "clone reports one success")
+
+	afterBulk, err := store.Schedules().Get(ctx, sched.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterBulk.NextRunAt,
+		"bulk-create cascade must re-populate dependent schedule's next_run_at")
 }
 
 func readEmbedded(t *testing.T, path string) string {
