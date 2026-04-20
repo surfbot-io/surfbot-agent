@@ -395,6 +395,22 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 					ipToHostname[a.Value] = h
 				}
 			}
+
+			// Narrow `hostnames` to entries that dnsx actually resolved,
+			// so port_scan (naabu) does not waste a dial() per unresolvable
+			// subfinder output. See SPEC-SCAN-PIPELINE-FIX: without this,
+			// a noisy subfinder run (e.g. 29k abuse-record subdomains for
+			// a popular public domain) hands every one of those to naabu
+			// and starves the assessment phase inside the scan timeout.
+			//
+			// Fallback: when the resolution phase emitted no resolved
+			// hostnames (either dnsx genuinely found nothing, or its
+			// output lacked the resolved_from metadata), keep the full
+			// hostname list — the pre-existing hedge for handing naabu
+			// SOMETHING rather than nothing.
+			if filtered, _ := narrowHostnamesByResolution(hostnames, toolResult); filtered != nil {
+				hostnames = filtered
+			}
 		}
 
 		// For http_probe: pair each ip:port with its resolved hostname
@@ -677,6 +693,49 @@ func ipFromHostport(hp string) string {
 		return ""
 	}
 	return body[:idx]
+}
+
+// narrowHostnamesByResolution returns the subset of `hostnames` that
+// produced at least one resolved IP during the resolution phase, based
+// on the `resolved_from` metadata on the phase's emitted IP assets. The
+// second return is the count of hostnames dropped by the filter.
+//
+// When the resolution phase emits no hostname evidence (no IP assets,
+// or none carrying a resolved_from tag), the function returns nil for
+// the filtered slice and 0 for the drop count — callers treat nil as
+// "keep the original list" so the naabu fallback hedge stays intact.
+//
+// Ordering of the surviving hostnames is preserved from the input
+// slice; duplicates are not deduped here because `mergeHostnames`
+// (downstream) already dedupes against the port_scan input list.
+func narrowHostnamesByResolution(hostnames []string, result *detection.RunResult) ([]string, int) {
+	if result == nil {
+		return nil, 0
+	}
+	resolved := map[string]bool{}
+	for _, a := range result.Assets {
+		if a.Type != model.AssetTypeIPv4 && a.Type != model.AssetTypeIPv6 {
+			continue
+		}
+		h, ok := a.Metadata["resolved_from"].(string)
+		if !ok || h == "" {
+			continue
+		}
+		resolved[h] = true
+	}
+	if len(resolved) == 0 {
+		return nil, 0
+	}
+	out := make([]string, 0, len(hostnames))
+	dropped := 0
+	for _, h := range hostnames {
+		if resolved[h] {
+			out = append(out, h)
+			continue
+		}
+		dropped++
+	}
+	return out, dropped
 }
 
 // mergeHostnames appends hostnames to the input list, deduplicating.

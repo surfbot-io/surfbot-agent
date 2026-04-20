@@ -580,6 +580,255 @@ func TestPipelineThreadsHostnameToHTTPProbe(t *testing.T) {
 		"http_probe input must carry hostname alongside ip:port")
 }
 
+// TestNarrowHostnamesByResolution covers SPEC-SCAN-PIPELINE-FIX R1:
+// after the resolution phase runs, hostnames handed to port_scan must
+// be narrowed to just those that dnsx actually resolved. The fallback
+// path (resolution produced no evidence) must leave the list alone so
+// naabu still has something to chew on when dnsx is broken or skipped.
+func TestNarrowHostnamesByResolution(t *testing.T) {
+	tests := []struct {
+		name          string
+		hostnames     []string
+		assets        []model.Asset
+		wantFiltered  []string
+		wantDropped   int
+		wantNilResult bool
+	}{
+		{
+			name:      "subset resolved — drops unresolved entries",
+			hostnames: []string{"a.example.com", "b.example.com", "c.example.com"},
+			assets: []model.Asset{
+				{
+					Type:     model.AssetTypeIPv4,
+					Value:    "1.2.3.4",
+					Metadata: map[string]interface{}{"resolved_from": "a.example.com"},
+				},
+			},
+			wantFiltered: []string{"a.example.com"},
+			wantDropped:  2,
+		},
+		{
+			name:      "multiple hostnames share one IP — both survive the filter",
+			hostnames: []string{"a.example.com", "b.example.com", "c.example.com"},
+			assets: []model.Asset{
+				{
+					Type:     model.AssetTypeIPv4,
+					Value:    "1.2.3.4",
+					Metadata: map[string]interface{}{"resolved_from": "a.example.com"},
+				},
+				{
+					// Same IP surfaces twice with a different hostname;
+					// the parallel-set filter keeps both hostnames.
+					Type:     model.AssetTypeIPv4,
+					Value:    "1.2.3.4",
+					Metadata: map[string]interface{}{"resolved_from": "b.example.com"},
+				},
+			},
+			wantFiltered: []string{"a.example.com", "b.example.com"},
+			wantDropped:  1,
+		},
+		{
+			name:      "zero resolved — fallback keeps full list",
+			hostnames: []string{"a.example.com", "b.example.com"},
+			assets: []model.Asset{
+				// No IP assets at all — resolution found nothing.
+			},
+			wantNilResult: true,
+			wantDropped:   0,
+		},
+		{
+			name:      "IPs emitted but none carry resolved_from — fallback",
+			hostnames: []string{"a.example.com", "b.example.com"},
+			assets: []model.Asset{
+				// IP with no metadata tag. Treated as zero evidence.
+				{Type: model.AssetTypeIPv4, Value: "1.2.3.4"},
+			},
+			wantNilResult: true,
+			wantDropped:   0,
+		},
+		{
+			name:      "ordering preserved",
+			hostnames: []string{"z.example.com", "a.example.com", "m.example.com"},
+			assets: []model.Asset{
+				{
+					Type:     model.AssetTypeIPv4,
+					Value:    "9.9.9.9",
+					Metadata: map[string]interface{}{"resolved_from": "a.example.com"},
+				},
+				{
+					Type:     model.AssetTypeIPv4,
+					Value:    "1.1.1.1",
+					Metadata: map[string]interface{}{"resolved_from": "z.example.com"},
+				},
+			},
+			wantFiltered: []string{"z.example.com", "a.example.com"},
+			wantDropped:  1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &detection.RunResult{Assets: tc.assets}
+			got, dropped := narrowHostnamesByResolution(tc.hostnames, result)
+			assert.Equal(t, tc.wantDropped, dropped, "drop count")
+			if tc.wantNilResult {
+				assert.Nil(t, got, "fallback case must return nil so caller keeps original list")
+				return
+			}
+			assert.Equal(t, tc.wantFiltered, got)
+		})
+	}
+}
+
+// TestPipelineNarrowsHostnamesForPortScan is the end-to-end flavor of
+// the narrowing R1. It asserts three cases — subset resolved, zero
+// resolved, resolution-skipped scan_type — exercising the narrowing
+// across the real pipeline loop (not just the helper).
+func TestPipelineNarrowsHostnamesForPortScan(t *testing.T) {
+	t.Run("subset resolved — port_scan input dropped unresolved hostnames", func(t *testing.T) {
+		s := newTestStore(t)
+		target := createTarget(t, s, "example.com")
+
+		var naabuInputs []string
+		naabu := &inputCapturingMockTool{
+			mockTool: mockTool{
+				name:  "naabu",
+				phase: "port_scan",
+				assets: []model.Asset{
+					{Type: model.AssetTypePort, Value: "1.2.3.4:443/tcp", Status: model.AssetStatusNew},
+				},
+			},
+			capturedInputs: &naabuInputs,
+		}
+
+		tools := []detection.DetectionTool{
+			&mockTool{
+				name:  "subfinder",
+				phase: "discovery",
+				assets: []model.Asset{
+					{Type: model.AssetTypeSubdomain, Value: "good.example.com", Status: model.AssetStatusNew},
+					{Type: model.AssetTypeSubdomain, Value: "junk.example.com", Status: model.AssetStatusNew},
+					{Type: model.AssetTypeSubdomain, Value: "noise.example.com", Status: model.AssetStatusNew},
+				},
+			},
+			&mockTool{
+				name:  "dnsx",
+				phase: "resolution",
+				assets: []model.Asset{
+					{
+						Type:     model.AssetTypeIPv4,
+						Value:    "1.2.3.4",
+						Status:   model.AssetStatusNew,
+						Metadata: map[string]interface{}{"resolved_from": "good.example.com"},
+					},
+				},
+			},
+			naabu,
+			&mockTool{name: "httpx", phase: "http_probe", assets: []model.Asset{}},
+			&mockTool{name: "nuclei", phase: "assessment"},
+		}
+		reg := mockRegistry(tools...)
+		pipe := New(s, reg)
+		_, err := pipe.Run(context.Background(), target.ID, PipelineOptions{ScanType: model.ScanTypeFull})
+		require.NoError(t, err)
+
+		assert.Contains(t, naabuInputs, "good.example.com",
+			"resolved hostname must reach port_scan")
+		assert.NotContains(t, naabuInputs, "junk.example.com",
+			"unresolved hostname must be dropped by the resolution filter")
+		assert.NotContains(t, naabuInputs, "noise.example.com",
+			"unresolved hostname must be dropped by the resolution filter")
+	})
+
+	t.Run("zero resolved — fallback hands full hostname list to port_scan", func(t *testing.T) {
+		s := newTestStore(t)
+		target := createTarget(t, s, "example.com")
+
+		var naabuInputs []string
+		naabu := &inputCapturingMockTool{
+			mockTool: mockTool{
+				name:  "naabu",
+				phase: "port_scan",
+				// Port_scan needs at least one IP to pass non-empty
+				// input to the next phase — but we're asserting on
+				// its captured inputs, not its outputs.
+				assets: []model.Asset{},
+			},
+			capturedInputs: &naabuInputs,
+		}
+
+		tools := []detection.DetectionTool{
+			&mockTool{
+				name:  "subfinder",
+				phase: "discovery",
+				assets: []model.Asset{
+					{Type: model.AssetTypeSubdomain, Value: "a.example.com", Status: model.AssetStatusNew},
+					{Type: model.AssetTypeSubdomain, Value: "b.example.com", Status: model.AssetStatusNew},
+				},
+			},
+			&mockTool{
+				name:   "dnsx",
+				phase:  "resolution",
+				assets: []model.Asset{}, // zero evidence
+			},
+			naabu,
+			&mockTool{name: "httpx", phase: "http_probe", assets: []model.Asset{}},
+			&mockTool{name: "nuclei", phase: "assessment"},
+		}
+		reg := mockRegistry(tools...)
+		pipe := New(s, reg)
+		_, err := pipe.Run(context.Background(), target.ID, PipelineOptions{ScanType: model.ScanTypeFull})
+		require.NoError(t, err)
+
+		assert.Contains(t, naabuInputs, "a.example.com",
+			"fallback must keep all hostnames when resolution produced zero evidence")
+		assert.Contains(t, naabuInputs, "b.example.com",
+			"fallback must keep all hostnames when resolution produced zero evidence")
+	})
+
+	t.Run("discovery scan_type — port_scan skipped entirely", func(t *testing.T) {
+		s := newTestStore(t)
+		target := createTarget(t, s, "example.com")
+
+		var naabuInputs []string
+		naabu := &inputCapturingMockTool{
+			mockTool: mockTool{
+				name:  "naabu",
+				phase: "port_scan",
+			},
+			capturedInputs: &naabuInputs,
+		}
+
+		tools := []detection.DetectionTool{
+			&mockTool{
+				name:  "subfinder",
+				phase: "discovery",
+				assets: []model.Asset{
+					{Type: model.AssetTypeSubdomain, Value: "sub.example.com", Status: model.AssetStatusNew},
+				},
+			},
+			&mockTool{
+				name:  "dnsx",
+				phase: "resolution",
+				assets: []model.Asset{
+					{
+						Type:     model.AssetTypeIPv4,
+						Value:    "1.2.3.4",
+						Status:   model.AssetStatusNew,
+						Metadata: map[string]interface{}{"resolved_from": "sub.example.com"},
+					},
+				},
+			},
+			naabu,
+		}
+		reg := mockRegistry(tools...)
+		pipe := New(s, reg)
+		_, err := pipe.Run(context.Background(), target.ID, PipelineOptions{ScanType: model.ScanTypeDiscovery})
+		require.NoError(t, err)
+
+		assert.Empty(t, naabuInputs, "naabu must not run under ScanTypeDiscovery")
+	})
+}
+
 func TestShouldSkip(t *testing.T) {
 	tools := []struct {
 		name  string
