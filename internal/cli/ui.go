@@ -167,17 +167,52 @@ func runUI(cmd *cobra.Command, args []string) error {
 	select {
 	case <-ctx.Done():
 		p.Muted("\nShutting down...\n")
-		if runner != nil {
-			_ = runner.Stop(shutdownGrace)
-		}
-		return srv.Shutdown(context.Background())
+		shutdownUI(srv, runner, shutdownGrace, p)
+		return nil
 	case err := <-errCh:
-		if runner != nil {
-			_ = runner.Stop(shutdownGrace)
-		}
+		shutdownUI(srv, runner, shutdownGrace, p)
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
 		return nil
+	}
+}
+
+// httpShutdownGrace bounds how long srv.Shutdown is allowed to drain
+// in-flight HTTP handlers before the UI moves on to stopping the
+// scheduler. 10s is plenty for the read-only dashboard traffic and is
+// well under the scheduler's own drain budget.
+const httpShutdownGrace = 10 * time.Second
+
+// shutdownUI implements the SPEC-SCHED2.0 R4 shutdown sequence:
+//  1. drain the HTTP server (bounded by httpShutdownGrace) so no new
+//     requests land while the scheduler is being torn down
+//  2. stop the scheduler runner (bounded by schedulerGrace, which
+//     includes the worker pool drain)
+//  3. return so runUI's deferred boot.Cleanup() closes the store
+//
+// A scheduler timeout logs a structured warning and returns anyway —
+// the orphaned in_progress scan rows are SCHED2.1's problem to reap
+// on next boot.
+func shutdownUI(srv *http.Server, runner *daemon.Runner, schedulerGrace time.Duration, p *Printer) {
+	httpCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	defer cancel()
+	if err := srv.Shutdown(httpCtx); err != nil {
+		slog.Warn("http server shutdown did not complete cleanly", "err", err)
+		if p != nil {
+			p.Muted("http drain exceeded %s; forcing close\n", httpShutdownGrace)
+		}
+	}
+	if runner == nil {
+		return
+	}
+	if err := runner.Stop(schedulerGrace); err != nil {
+		slog.Warn("scheduler shutdown timeout",
+			"grace", schedulerGrace,
+			"err", err,
+		)
+		if p != nil {
+			p.Muted("scheduler did not drain within %s; in-flight scans will be reaped on next boot\n", schedulerGrace)
+		}
 	}
 }
