@@ -143,6 +143,10 @@ func runUI(cmd *cobra.Command, args []string) error {
 			Logger:    logger,
 			Heartbeat: durationOr(boot.Config.Daemon.StateHeartbeat, 30*time.Second),
 			Version:   Version,
+			// Cancel the UI's top-level signal context on panic so the
+			// HTTP server begins its own shutdown before the supervisor
+			// terminates the process.
+			OnSchedulerPanic: stop,
 		})
 		if err := runner.Start(); err != nil {
 			return fmt.Errorf("starting scheduler: %w", err)
