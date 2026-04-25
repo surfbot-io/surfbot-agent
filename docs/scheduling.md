@@ -307,6 +307,40 @@ Template edits cascade asynchronously: the server triggers
 lands on the next tick. If you want to force it, pause+resume the
 affected schedule — that re-computes `next_run_at` immediately.
 
+## Crash recovery
+
+Si el agent muere a mitad de un scan (panic, OOM, `kill -9`, power
+loss, shutdown grace agotada), el siguiente boot del scheduler detecta
+los `scans` con `status='running'` y los marca como `failed` con
+`error='orphaned on scheduler restart'`, junto con un `finished_at`
+del momento de la recuperación. Mismo tratamiento para
+`ad_hoc_scan_runs` (filas en `pending`/`running` que apuntaban al
+scan huérfano) y `tool_runs` (filas en `running`).
+
+El reap es idempotente, atómico (single tx, rollback total ante
+error), y se ejecuta exactamente una vez al boot — después de
+adquirir el `scheduler_lock` para que dos schedulers en carrera nunca
+toquen el mismo state, antes de que el master ticker dispatche su
+primer scan. Aplica idéntico a `surfbot ui` y a `surfbot daemon run`.
+
+Findings ya persistidos del scan parcial se mantienen — están en una
+tabla aparte (`findings`) y son evidencia legítima de lo que el scan
+alcanzó a recolectar. El target lock (in-memory) se recompone
+limpiamente con cada boot, así que el target no queda bloqueado.
+
+Logs estructurados (`slog`):
+
+```
+INFO reaping orphaned scans count=3
+INFO scan reaped scan_id=abc-123
+INFO scan reaped scan_id=def-456
+INFO scan reaped scan_id=ghi-789
+INFO zombie reap complete scans=3 adhoc_runs=1 tool_runs=8 duration_ms=4
+```
+
+No hay paso manual: si reiniciás surfbot después de un crash, la
+limpieza ocurre antes de que veas la primera `tick`.
+
 ## Further reading
 
 - [`docs/api.md`](api.md) — endpoint reference with curl examples.

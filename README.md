@@ -133,6 +133,12 @@ Rules:
   `surfbot daemon status`.
 - Cursors persist across restarts in `schedule.state.json`, alongside
   `daemon.state.json`.
+- If the process dies mid-scan (panic, OOM, `kill -9`, power loss),
+  the next start automatically marks the orphaned `scans`/`tool_runs`/
+  `ad_hoc_scan_runs` rows as `failed` with `error="orphaned on
+  scheduler restart"`. No manual cleanup. See
+  [docs/scheduling.md → Crash recovery](docs/scheduling.md#crash-recovery)
+  for the details.
 
 ## Embedded UI
 
