@@ -4,6 +4,56 @@ This page explains how surfbot's scheduling subsystem fits together after
 the SPEC-SCHED1 rewrite (agent-spec 3.0). If you're coming from 2.x,
 read the [migration guide](agent-spec.md#migration-from-20) first.
 
+> **Topology decision:** Single-process by default — `surfbot ui` runs
+> the scheduler in-process. See
+> [ADR-003](../../surfbot-strategy/ADR-003-scheduler-topology.md)
+> for the rationale and trade-offs vs. the rejected split-daemon model.
+
+## Process topology
+
+There are two ways to run the scheduler. Default is single-process
+(ADR-003 Option A). Pick the shape that matches your deployment:
+
+### Single-process (default — recommended for laptops)
+
+```
+surfbot ui
+```
+
+That's it. `surfbot ui` boots the HTTP server on `:8470` and the master
+ticker in the same process. Schedules created in the dashboard fire,
+"Run scan now" buttons dispatch in-process, and a single Ctrl+C drains
+HTTP, stops the scheduler, and exits cleanly. This is the path the
+free-tier install assumes.
+
+If a second `surfbot ui` (or a separately-installed `surfbot daemon`)
+is already holding the scheduler lock, the new process logs
+`scheduler already running elsewhere; starting UI in --no-scheduler mode`
+and serves HTTP read-only.
+
+### Headless server
+
+```
+sudo surfbot daemon install
+sudo surfbot daemon start
+```
+
+For server installs that don't want a browser-facing UI on the same
+host, `surfbot daemon run` is the OS-managed entry point. The systemd
+unit / launchd plist / Windows service registration all delegate to it.
+You can still run `surfbot ui --no-scheduler` against the same DB to
+get a read-only dashboard; the UI process detects the daemon's
+scheduler lock and stands down.
+
+### Why two entry points?
+
+Different deployment shapes. A laptop running `surfbot ui` once a week
+doesn't want a system service installed; a fleet host running 24/7
+doesn't want an interactive process holding a port. Both paths build
+the scheduler the same way (`BuildSchedulerBootstrap` in
+`internal/cli/appcore.go`) so the behavior is identical — only the
+lifecycle owner differs.
+
 ## Overview
 
 Scheduling is built from four first-class resources, each with its own
@@ -163,7 +213,8 @@ They live at `POST /api/v1/scans/ad-hoc`:
 - Errors the operator will see often: `409 /problems/target-busy`
   (another scan already running on this target), `409 /problems/in-blackout`,
   `503 /problems/dispatcher-unreachable` (talking to a process that
-  isn't `surfbot daemon run`).
+  doesn't have the scheduler — e.g. `surfbot ui --no-scheduler` while
+  no daemon is running).
 
 The previous `POST /api/daemon/trigger` endpoint was removed with
 SPEC-SCHED1.4a. Integrators should migrate to `/api/v1/scans/ad-hoc`.
@@ -211,8 +262,11 @@ Check, in order:
    may not be running.
 3. Is a blackout active? `GET /api/v1/blackouts?active_at=<now>` tells
    you.
-4. `surfbot daemon status` — is the master ticker running? It lives
-   inside `surfbot daemon run`.
+4. Is *something* running the scheduler? Either a `surfbot ui` (default
+   topology) or `surfbot daemon run` must own the scheduler lock.
+   `surfbot daemon status` reads `daemon.state.json`, which both paths
+   write — if the heartbeat is stale or the file is missing, the
+   scheduler is not running anywhere.
 
 ### "I got 409 TARGET_BUSY"
 
@@ -222,9 +276,11 @@ Another scan is already running on this target. Wait for it to finish
 ### "I got 503 dispatcher-unreachable"
 
 You're talking to a process that doesn't have the master ticker
-attached. The UI web server, a read-only API process, or a CLI client
-will all return 503 on ad-hoc dispatch. Point your request at the
-process running `surfbot daemon run`.
+attached. In the default topology this means `surfbot ui` was started
+with `--no-scheduler` (or it lost the lock race to a daemon). Either
+restart `surfbot ui` without `--no-scheduler`, or send the request to
+the process that owns the scheduler lock — `surfbot daemon status`
+shows the holder PID.
 
 ### "Why was my scan canceled halfway?"
 

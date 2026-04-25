@@ -6,7 +6,17 @@ Local security scanner with pluggable detection and remediation. Open source und
 
 ## Quick Start
 
-(coming soon)
+```bash
+surfbot ui
+```
+
+That opens the dashboard at `http://127.0.0.1:8470` and starts the
+scheduler in the same process. Add a target, create a schedule, walk
+away — scans fire on the schedule until you Ctrl+C.
+
+If you want to run surfbot as a long-lived OS service instead (no
+browser-facing UI on the same host), see [Run as a service](#run-as-a-service)
+below.
 
 ## Build from Source
 
@@ -127,7 +137,12 @@ Rules:
 ## Embedded UI
 
 `surfbot ui` runs a localhost-only web dashboard at `http://127.0.0.1:8470`
-backed by the same SQLite database and config files as the CLI.
+backed by the same SQLite database and config files as the CLI. By
+default it also runs the scheduler in-process, so schedules created
+through the dashboard fire and "Run scan now" buttons work without a
+separate daemon. Pass `--no-scheduler` to opt out (useful when you've
+already installed `surfbot daemon` as a system service and want the UI
+process to stay read-only).
 
 ### Security model
 

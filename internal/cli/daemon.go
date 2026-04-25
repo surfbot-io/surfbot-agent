@@ -158,63 +158,38 @@ func buildDaemonService() (*daemon.Service, service.Service, daemon.Mode, error)
 	return s, svc, mode, nil
 }
 
-// buildDaemonRunService is invoked by `daemon run`. It loads the full
-// surfbot config, opens the database, builds the SCHED1.2b master ticker,
-// and hands the result to daemon.Build. The returned cleanup func closes
-// the database — the caller must defer it.
-func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
+// buildDaemonRunService is invoked by `daemon run`. It delegates the
+// config-load / store-open / legacy-migration / scheduler-construction
+// sequence to BuildSchedulerBootstrap (shared with `surfbot ui` under
+// SPEC-SCHED2.0) and then wraps the result in a kardianos service.
+// The returned bootstrap exposes the store so callers can take the
+// scheduler_lock; the cleanup func closes the database and must be
+// deferred by the caller.
+func buildDaemonRunService() (*daemon.Service, service.Service, *SchedulerBootstrap, error) {
 	mode, err := resolveMode()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	paths := daemon.Resolve(daemon.Default(mode))
-
-	cfg, err := config.Load(cfgFile)
+	boot, err := BuildSchedulerBootstrap(mode)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
-	}
-
-	runStore, err := storage.NewSQLiteStore(cfg.DBPath)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
-	}
-	cleanup := func() { _ = runStore.Close() }
-
-	report, err := intervalsched.MigrateLegacyScheduleConfig(
-		context.Background(), paths.StateDir, runStore, slog.Default())
-	if err != nil {
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("legacy schedule migration: %w", err)
-	}
-	if report.SkippedReason == "" {
-		slog.Default().Info("legacy schedule migrated",
-			"template_id", report.TemplateID,
-			"targets_migrated", report.TargetsMigrated,
-			"schedules_created", report.SchedulesCreated,
-		)
-	}
-
-	sched, err := buildScheduler(cfg.Daemon.Scheduler, paths, runStore)
-	if err != nil {
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("building scheduler: %w", err)
+		return nil, nil, nil, err
 	}
 
 	dcfg := daemon.Config{
 		Mode:           mode,
-		Paths:          paths,
+		Paths:          boot.Paths,
 		Version:        Version,
-		ShutdownGrace:  durationOr(cfg.Daemon.ShutdownGrace, 20*time.Second),
-		Heartbeat:      durationOr(cfg.Daemon.StateHeartbeat, 30*time.Second),
+		ShutdownGrace:  durationOr(boot.Config.Daemon.ShutdownGrace, 20*time.Second),
+		Heartbeat:      durationOr(boot.Config.Daemon.StateHeartbeat, 30*time.Second),
 		ConfigOverride: cfgFile,
-		Scheduler:      sched,
+		Scheduler:      boot.Scheduler,
 	}
 	s, svc, err := daemon.Build(dcfg)
 	if err != nil {
-		cleanup()
+		boot.Cleanup()
 		return nil, nil, nil, err
 	}
-	return s, svc, cleanup, nil
+	return s, svc, boot, nil
 }
 
 func durationOr(d, fallback time.Duration) time.Duration {
@@ -224,15 +199,16 @@ func durationOr(d, fallback time.Duration) time.Duration {
 	return d
 }
 
-// buildScheduler constructs the SCHED1.2b master ticker. The legacy
-// schedule.config.json migration runs separately in
-// runDaemonRunWithMigration so that boot can fail fatally on migration
-// errors before the scheduler starts.
+// buildSchedulerConcrete constructs the SCHED1.2b master ticker and
+// returns it as the concrete *intervalsched.Scheduler so callers that
+// need the DispatchAdHoc surface (webui AdHocDispatcher) can use it
+// directly without a type assertion. The value still satisfies
+// daemon.Scheduler so the Runner accepts it unchanged.
 //
 // config.SchedulerConfig.Enabled is no longer consulted: with first-class
 // schedules the daemon always runs the master ticker. An empty
 // scan_schedules table simply produces an idle tick loop.
-func buildScheduler(_ config.SchedulerConfig, _ daemon.Paths, store *storage.SQLiteStore) (daemon.Scheduler, error) {
+func buildSchedulerConcrete(_ config.SchedulerConfig, _ daemon.Paths, store *storage.SQLiteStore) (*intervalsched.Scheduler, error) {
 	registry := detection.NewRegistry()
 	runner := daemon.NewScanRunner(store, registry, slog.Default())
 
@@ -576,14 +552,34 @@ func runDaemonLogs(cmd *cobra.Command, _ []string) error {
 }
 
 // runDaemonRun is the entrypoint the OS service manager invokes. It loads
-// the surfbot config, opens the database, builds the master ticker, and
-// blocks inside service.Run until the service is asked to stop.
+// the surfbot config, opens the database, takes the SPEC-SCHED2.0
+// scheduler_lock, builds the master ticker, and blocks inside
+// service.Run until the service is asked to stop.
 func runDaemonRun(_ *cobra.Command, _ []string) error {
-	_, svc, cleanup, err := buildDaemonRunService()
+	_, svc, boot, err := buildDaemonRunService()
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer boot.Cleanup()
+
+	// The scheduler lock is taken AFTER the store is open but BEFORE
+	// service.Run starts the dispatch loop. If another process already
+	// owns the lock, exit non-zero so kardianos surfaces a failed start
+	// in `surfbot daemon status`.
+	lock, lerr := acquireSchedulerLock(context.Background(), boot.Store)
+	if lerr != nil {
+		if errors.Is(lerr, storage.ErrLockHeld) {
+			return fmt.Errorf("scheduler already running: %w", lerr)
+		}
+		return fmt.Errorf("acquiring scheduler lock: %w", lerr)
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lock.Close(releaseCtx); err != nil {
+			slog.Default().Warn("releasing scheduler_lock", "err", err)
+		}
+	}()
 	return svc.Run()
 }
 

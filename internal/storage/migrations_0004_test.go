@@ -50,14 +50,17 @@ func TestMigration0004_FreshDB(t *testing.T) {
 		require.NoError(t, err, "index %s should exist", idx)
 	}
 
+	// The newTestStore helper applies all embedded migrations, so the
+	// version reflects the latest (0005 adds scheduler_lock per
+	// SPEC-SCHED2.0).
 	v, err := s.GetMeta(ctx, "schema_version")
 	require.NoError(t, err)
-	assert.Equal(t, "4", v)
+	assert.Equal(t, "5", v)
 
 	var userVersion int
 	err = s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion)
 	require.NoError(t, err)
-	assert.Equal(t, 4, userVersion)
+	assert.Equal(t, 5, userVersion)
 
 	var defaultsCount int
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_defaults`).Scan(&defaultsCount)

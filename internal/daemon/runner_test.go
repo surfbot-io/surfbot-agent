@@ -104,3 +104,70 @@ func TestRunner_DoubleStart(t *testing.T) {
 	err := r.Start()
 	require.Error(t, err)
 }
+
+// panickingScheduler satisfies Scheduler but panics on first Run call.
+// Used to exercise the supervisor's recover path.
+type panickingScheduler struct{}
+
+func (panickingScheduler) Next() time.Time { return time.Time{} }
+func (panickingScheduler) Run(_ context.Context) error {
+	panic("boom from scheduler")
+}
+
+// TestRunner_SchedulerPanicIsSupervised asserts that a scheduler panic
+// is logged, written to state.last_error, fires OnSchedulerPanic, and
+// terminates via SchedulerPanicExit — all without taking the test
+// binary down (we swap in a recording exit function).
+func TestRunner_SchedulerPanicIsSupervised(t *testing.T) {
+	// Shorten the post-panic grace so the test finishes fast.
+	origGrace := SchedulerPanicGrace
+	SchedulerPanicGrace = 10 * time.Millisecond
+	t.Cleanup(func() { SchedulerPanicGrace = origGrace })
+
+	exitCh := make(chan int, 1)
+	origExit := SchedulerPanicExit
+	SchedulerPanicExit = func(code int) { exitCh <- code }
+	t.Cleanup(func() { SchedulerPanicExit = origExit })
+
+	dir := t.TempDir()
+	stateStore := NewStateStore(filepath.Join(dir, "state.json"))
+	logger := NewLogger(filepath.Join(dir, "test.log"), LoggerOptions{MaxSizeMB: 1})
+	t.Cleanup(func() { _ = logger.Close() })
+
+	panicCalled := make(chan struct{}, 1)
+	r := NewRunner(RunnerConfig{
+		Scheduler: panickingScheduler{},
+		State:     stateStore,
+		Logger:    logger,
+		Heartbeat: 50 * time.Millisecond,
+		Version:   "test",
+		OnSchedulerPanic: func() {
+			select {
+			case panicCalled <- struct{}{}:
+			default:
+			}
+		},
+	})
+	require.NoError(t, r.Start())
+
+	select {
+	case code := <-exitCh:
+		require.Equal(t, 1, code, "supervisor must exit non-zero on panic")
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not call SchedulerPanicExit")
+	}
+	select {
+	case <-panicCalled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("OnSchedulerPanic callback was not invoked")
+	}
+
+	st, err := stateStore.Load()
+	require.NoError(t, err)
+	require.Contains(t, st.LastError, "scheduler panic")
+	require.Contains(t, st.LastError, "boom from scheduler")
+
+	// Cleanup: the scheduler goroutine already exited via the panic path;
+	// Stop should be a safe no-op that cancels the context and returns.
+	_ = r.Stop(time.Second)
+}

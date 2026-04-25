@@ -23,11 +23,15 @@ var (
 var store *storage.SQLiteStore
 
 // Commands that don't need database access.
+// SPEC-SCHED2.0: `ui` is on this list because runUI owns its own
+// *storage.SQLiteStore via BuildSchedulerBootstrap so the HTTP server
+// and the in-process scheduler share a single store handle.
 var skipDBCommands = map[string]bool{
 	"version":    true,
 	"help":       true,
 	"completion": true,
 	"agent-spec": true,
+	"ui":         true,
 }
 
 // skipDB returns true if the given cobra command should NOT have the
