@@ -102,4 +102,3 @@ func TestSchedulerLock_RefreshAndRelease(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h2.Close(ctx) })
 }
-
