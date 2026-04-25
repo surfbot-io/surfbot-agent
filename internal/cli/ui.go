@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
+	"github.com/surfbot-io/surfbot-agent/internal/storage"
 	"github.com/surfbot-io/surfbot-agent/internal/webui"
 )
 
@@ -91,6 +93,28 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// SPEC-SCHED2.0 R5: only one process may own the scheduler against
+	// a given DB. If the lock is already held (typically by a separately
+	// installed `surfbot daemon`), fall back to UI-only mode and tell
+	// the operator. Their ad-hoc "Run scan now" buttons will return 503
+	// because the dispatcher in this process is the wrong one to wire,
+	// but read-only dashboard traffic still works.
+	var lock *schedulerLockHandle
+	if !noScheduler {
+		l, lerr := acquireSchedulerLock(context.Background(), boot.Store)
+		if lerr != nil {
+			if errors.Is(lerr, storage.ErrLockHeld) {
+				slog.Info("scheduler already running elsewhere; starting UI in --no-scheduler mode",
+					"holder", lerr.Error())
+				noScheduler = true
+			} else {
+				return fmt.Errorf("acquiring scheduler lock: %w", lerr)
+			}
+		} else {
+			lock = l
+		}
+	}
+
 	daemonView := buildUIDaemonView(boot)
 	if !noScheduler {
 		// Wire the master ticker through to /api/v1/scans/ad-hoc so the
@@ -164,13 +188,26 @@ func runUI(cmd *cobra.Command, args []string) error {
 
 	shutdownGrace := durationOr(boot.Config.Daemon.ShutdownGrace, 30*time.Second)
 
+	releaseLock := func() {
+		if lock == nil {
+			return
+		}
+		releaseCtx, cancelRelease := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelRelease()
+		if err := lock.Close(releaseCtx); err != nil {
+			slog.Warn("releasing scheduler_lock", "err", err)
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		p.Muted("\nShutting down...\n")
 		shutdownUI(srv, runner, shutdownGrace, p)
+		releaseLock()
 		return nil
 	case err := <-errCh:
 		shutdownUI(srv, runner, shutdownGrace, p)
+		releaseLock()
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}

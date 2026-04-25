@@ -213,6 +213,17 @@ func (s *SQLiteStore) runMigrations() error {
 		}
 	}
 
+	schemaVersion, _ = s.getSchemaVersion()
+	if schemaVersion < 5 {
+		m005, err := migrationsFS.ReadFile("migrations/0005_scheduler_lock.sql")
+		if err != nil {
+			return fmt.Errorf("reading migration 0005: %w", err)
+		}
+		if _, err = s.db.Exec(string(m005)); err != nil {
+			return fmt.Errorf("executing migration 0005: %w", err)
+		}
+	}
+
 	return nil
 }
 

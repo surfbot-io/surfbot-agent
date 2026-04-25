@@ -162,9 +162,10 @@ func buildDaemonService() (*daemon.Service, service.Service, daemon.Mode, error)
 // config-load / store-open / legacy-migration / scheduler-construction
 // sequence to BuildSchedulerBootstrap (shared with `surfbot ui` under
 // SPEC-SCHED2.0) and then wraps the result in a kardianos service.
-// The returned cleanup func closes the database — the caller must
-// defer it.
-func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
+// The returned bootstrap exposes the store so callers can take the
+// scheduler_lock; the cleanup func closes the database and must be
+// deferred by the caller.
+func buildDaemonRunService() (*daemon.Service, service.Service, *SchedulerBootstrap, error) {
 	mode, err := resolveMode()
 	if err != nil {
 		return nil, nil, nil, err
@@ -188,7 +189,7 @@ func buildDaemonRunService() (*daemon.Service, service.Service, func(), error) {
 		boot.Cleanup()
 		return nil, nil, nil, err
 	}
-	return s, svc, boot.Cleanup, nil
+	return s, svc, boot, nil
 }
 
 func durationOr(d, fallback time.Duration) time.Duration {
@@ -551,14 +552,34 @@ func runDaemonLogs(cmd *cobra.Command, _ []string) error {
 }
 
 // runDaemonRun is the entrypoint the OS service manager invokes. It loads
-// the surfbot config, opens the database, builds the master ticker, and
-// blocks inside service.Run until the service is asked to stop.
+// the surfbot config, opens the database, takes the SPEC-SCHED2.0
+// scheduler_lock, builds the master ticker, and blocks inside
+// service.Run until the service is asked to stop.
 func runDaemonRun(_ *cobra.Command, _ []string) error {
-	_, svc, cleanup, err := buildDaemonRunService()
+	_, svc, boot, err := buildDaemonRunService()
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer boot.Cleanup()
+
+	// The scheduler lock is taken AFTER the store is open but BEFORE
+	// service.Run starts the dispatch loop. If another process already
+	// owns the lock, exit non-zero so kardianos surfaces a failed start
+	// in `surfbot daemon status`.
+	lock, lerr := acquireSchedulerLock(context.Background(), boot.Store)
+	if lerr != nil {
+		if errors.Is(lerr, storage.ErrLockHeld) {
+			return fmt.Errorf("scheduler already running: %w", lerr)
+		}
+		return fmt.Errorf("acquiring scheduler lock: %w", lerr)
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lock.Close(releaseCtx); err != nil {
+			slog.Default().Warn("releasing scheduler_lock", "err", err)
+		}
+	}()
 	return svc.Run()
 }
 
