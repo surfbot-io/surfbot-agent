@@ -580,6 +580,27 @@ func runDaemonRun(_ *cobra.Command, _ []string) error {
 			slog.Default().Warn("releasing scheduler_lock", "err", err)
 		}
 	}()
+
+	// SPEC-SCHED2.1 (SUR-255): reap orphaned scans from a previous
+	// crash before the dispatch loop starts. Lock-then-reap order
+	// guarantees only the winning scheduler touches in-flight state.
+	report, err := intervalsched.ReapOrphanedScans(
+		context.Background(),
+		intervalsched.NewZombieReapBackend(boot.Store),
+		intervalsched.NewRealClock(),
+		slog.Default(),
+	)
+	if err != nil {
+		return fmt.Errorf("zombie reap on startup: %w", err)
+	}
+	if report.ScansReaped > 0 {
+		slog.Default().Info("recovered scans from previous crash",
+			"scans", report.ScansReaped,
+			"adhoc_runs", report.AdHocRunsReaped,
+			"tool_runs", report.ToolRunsReaped,
+			"duration_ms", report.Duration.Milliseconds(),
+		)
+	}
 	return svc.Run()
 }
 

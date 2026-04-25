@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/surfbot-io/surfbot-agent/internal/daemon"
+	"github.com/surfbot-io/surfbot-agent/internal/daemon/intervalsched"
 	"github.com/surfbot-io/surfbot-agent/internal/storage"
 	"github.com/surfbot-io/surfbot-agent/internal/webui"
 )
@@ -112,6 +113,37 @@ func runUI(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			lock = l
+		}
+	}
+
+	// SPEC-SCHED2.1 (SUR-255): once the scheduler_lock is ours, before
+	// the master ticker dispatches anything, reap any scans/tool_runs/
+	// ad_hoc_scan_runs left in 'running' from a previous process that
+	// crashed (panic, OOM, kill -9, power loss). Idempotent — no-op when
+	// there are no orphans. Runs after the lock so two competing UI
+	// processes never reap each other's in-flight state.
+	if lock != nil {
+		report, err := intervalsched.ReapOrphanedScans(
+			context.Background(),
+			intervalsched.NewZombieReapBackend(boot.Store),
+			intervalsched.NewRealClock(),
+			slog.Default(),
+		)
+		if err != nil {
+			releaseCtx, cancelRelease := context.WithTimeout(context.Background(), 5*time.Second)
+			if rerr := lock.Close(releaseCtx); rerr != nil {
+				slog.Warn("releasing scheduler_lock after reap failure", "err", rerr)
+			}
+			cancelRelease()
+			return fmt.Errorf("zombie reap on startup: %w", err)
+		}
+		if report.ScansReaped > 0 {
+			slog.Info("recovered scans from previous crash",
+				"scans", report.ScansReaped,
+				"adhoc_runs", report.AdHocRunsReaped,
+				"tool_runs", report.ToolRunsReaped,
+				"duration_ms", report.Duration.Milliseconds(),
+			)
 		}
 	}
 
