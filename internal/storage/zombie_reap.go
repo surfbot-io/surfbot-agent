@@ -109,7 +109,7 @@ func listOrphanedScanIDs(ctx context.Context, db dbtx) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing orphaned scans: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck // close errors on a deferred cursor are not actionable
 
 	ids := make([]string, 0)
 	for rows.Next() {
