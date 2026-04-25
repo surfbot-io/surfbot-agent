@@ -4,9 +4,15 @@ This page explains how surfbot's scheduling subsystem fits together after
 the SPEC-SCHED1 rewrite (agent-spec 3.0). If you're coming from 2.x,
 read the [migration guide](agent-spec.md#migration-from-20) first.
 
+> **Topology decision:** Single-process by default — `surfbot ui` runs
+> the scheduler in-process. See
+> [ADR-003](../../surfbot-strategy/ADR-003-scheduler-topology.md)
+> for the rationale and trade-offs vs. the rejected split-daemon model.
+
 ## Process topology
 
-There are two ways to run the scheduler. Pick **one**:
+There are two ways to run the scheduler. Default is single-process
+(ADR-003 Option A). Pick the shape that matches your deployment:
 
 ### Single-process (default — recommended for laptops)
 
