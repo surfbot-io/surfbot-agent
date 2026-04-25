@@ -74,7 +74,7 @@ func New(baseURL string, opts ...Option) *Client {
 		baseURL:    trimmed,
 		origin:     deriveOrigin(trimmed),
 		httpClient: &http.Client{Timeout: DefaultTimeout},
-		userAgent:  "surfbot-cli",
+		userAgent:  "surfbot-agent",
 	}
 	for _, o := range opts {
 		o(c)
