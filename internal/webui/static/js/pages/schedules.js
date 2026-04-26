@@ -327,7 +327,27 @@ const SchedulesPage = {
         },
       },
       secondaryAction: { label: 'Cancel' },
+      onClose: () => {
+        // SPEC-SCHED2.2: clear field values on unmount as a belt-and-
+        // suspenders measure against browser autofill carrying state
+        // from one open into the next. R1's hydrateScheduleForm is the
+        // load-bearing fix; this just makes sure stale values don't
+        // outlive the modal in any reference held elsewhere.
+        const form = m.root.querySelector('#schedule-form');
+        if (!form) return;
+        Array.from(form.elements).forEach(el => {
+          const tag = el.tagName;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+            el.value = '';
+          }
+        });
+      },
     });
+    // SPEC-SCHED2.2: explicit state hydration. Don't rely on the value=
+    // attribute alone — Chrome/Safari autofill can override it when the
+    // form is re-mounted with the same field names, leaking values from
+    // a previously-edited schedule into the next open.
+    hydrateScheduleForm(m.root.querySelector('#schedule-form'), s, mode);
     // Non-blocking RRULE syntax warning wires after the DOM is in place.
     Components.rruleAttachBlurCheck(m.root.querySelector('#schedule-form'), 'rrule');
   },
@@ -480,6 +500,37 @@ const SchedulesPage = {
     `;
   },
 };
+
+// hydrateScheduleForm sets each field's `.value` IDL property explicitly
+// from the schedule object after the modal mounts. Setting the property
+// (not the attribute) ensures the browser's autofill / form-restore
+// behavior cannot override us with cached values from a previous open
+// of the same form. Required for SPEC-SCHED2.2 — without this, editing
+// schedule A then closing and editing schedule B would re-display A's
+// values and silently overwrite B on save.
+function hydrateScheduleForm(form, schedule, mode) {
+  if (!form) return;
+  const s = schedule || {};
+  const isCreate = mode === 'create';
+
+  const setVal = (name, value) => {
+    const el = form.elements[name];
+    if (!el) return;
+    el.value = value == null ? '' : String(value);
+  };
+
+  setVal('name', isCreate ? '' : s.name);
+  setVal('target_id', isCreate ? '' : s.target_id);
+  setVal('template_id', isCreate ? '' : s.template_id);
+  setVal('rrule', isCreate ? '' : s.rrule);
+  // datetime-local needs "YYYY-MM-DDTHH:MM"; the API gives back ISO-8601.
+  setVal('dtstart', isCreate ? '' : toDatetimeLocal(s.dtstart));
+  setVal('timezone', s.timezone || 'UTC');
+  setVal('estimated_duration_seconds', '');
+  if (form.elements.status) {
+    setVal('status', s.status || 'active');
+  }
+}
 
 // readScheduleForm serializes the schedule form into the API shape.
 // DTSTART is converted from "datetime-local" ("YYYY-MM-DDTHH:MM") to a
