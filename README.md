@@ -11,8 +11,11 @@ surfbot ui
 ```
 
 That opens the dashboard at `http://127.0.0.1:8470` and starts the
-scheduler in the same process. Add a target, create a schedule, walk
-away — scans fire on the schedule until you Ctrl+C.
+scheduler in the same process. Add a target, pick one of the built-in
+templates (`Default`, `Fast`, or `Deep` — seeded automatically on
+first boot), create a schedule, walk away — scans fire on the
+schedule until you Ctrl+C. See [`docs/scheduling.md`](docs/scheduling.md#built-in-templates)
+for what each template runs.
 
 If you want to run surfbot as a long-lived OS service instead (no
 browser-facing UI on the same host), see [Run as a service](#run-as-a-service)

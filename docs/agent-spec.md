@@ -108,9 +108,23 @@ where the certificate CN/SANs provide the proof.
 - **minor** — additive (new commands, new optional fields)
 - **patch** — doc/description changes only
 
-Current: **3.0.0**.
+Current: **3.1.0**.
 
 ## Changelog
+
+### 3.1.0 — built-in scan templates (SPEC-SCHED2.3)
+
+Additive. The Spec envelope grows a top-level `builtin_templates`
+array describing the three templates the agent seeds into
+`scan_templates` on first boot (`Default`, `Fast`, `Deep`). Each entry
+carries `name`, `description`, `recommended_for`, `rrule`, `timezone`,
+and `tool_config` — the same shape an LLM consumer would otherwise
+have to retrieve via `GET /api/v1/templates`. Useful for cold-start
+orchestration: an LLM can call `--template Default` immediately
+without first listing.
+
+No removals or renames; pre-3.1 consumers that ignore unknown fields
+keep working unchanged.
 
 ### 3.0.0 — first-class schedules (SPEC-SCHED1)
 

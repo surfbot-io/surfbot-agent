@@ -9,11 +9,19 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/surfbot-io/surfbot-agent/internal/daemon"
 	"github.com/surfbot-io/surfbot-agent/internal/detection"
+	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
 
 // SpecVersion is the semver of the agent-spec document format itself.
 // Bump major for breaking changes to the envelope; minor for additive fields.
+//
+// 3.1.0 — additive: builtin_templates array. SPEC-SCHED2.3 seeds three
+//
+//	scan templates (Default/Fast/Deep) on first boot; this field
+//	exposes their names, RRULEs, and tool configs so LLM consumers
+//	can call `--template <name>` without first listing.
 //
 // 3.0.0 — first-class schedules. SPEC-SCHED1 replaces the config-driven
 //
@@ -40,19 +48,33 @@ import (
 // 1.1.0 — probe accepts the enriched "hostname|ip:port/tcp" input format
 //
 //	alongside the legacy bare ip:port/tcp. See SUR-242.
-const SpecVersion = "3.0.0"
+const SpecVersion = "3.1.0"
 
 // Spec is the top-level agent-spec document.
 type Spec struct {
-	SpecVersion  string            `json:"spec_version"`
-	AgentVersion string            `json:"agent_version"`
-	GeneratedAt  string            `json:"generated_at"`
-	Binary       string            `json:"binary"`
-	Description  string            `json:"description"`
-	GlobalFlags  []Flag            `json:"global_flags"`
-	Commands     []Command         `json:"commands"`
-	Types        map[string]Schema `json:"types"`
-	Composition  Composition       `json:"composition"`
+	SpecVersion      string                `json:"spec_version"`
+	AgentVersion     string                `json:"agent_version"`
+	GeneratedAt      string                `json:"generated_at"`
+	Binary           string                `json:"binary"`
+	Description      string                `json:"description"`
+	GlobalFlags      []Flag                `json:"global_flags"`
+	Commands         []Command             `json:"commands"`
+	Types            map[string]Schema     `json:"types"`
+	Composition      Composition           `json:"composition"`
+	BuiltinTemplates []BuiltinTemplateSpec `json:"builtin_templates"`
+}
+
+// BuiltinTemplateSpec is one entry in Spec.BuiltinTemplates. It mirrors
+// the catalog seeded into scan_templates on first boot (SPEC-SCHED2.3).
+// Field shapes match v1.TemplateResponse so an LLM consumer can pass
+// `--template <name>` directly without listing first.
+type BuiltinTemplateSpec struct {
+	Name           string           `json:"name"`
+	Description    string           `json:"description"`
+	RecommendedFor string           `json:"recommended_for,omitempty"`
+	RRule          string           `json:"rrule"`
+	Timezone       string           `json:"timezone"`
+	ToolConfig     model.ToolConfig `json:"tool_config"`
 }
 
 // Command describes a single Cobra command for an LLM consumer.
@@ -224,7 +246,28 @@ func BuildSpec(root *cobra.Command) Spec {
 			Pipes:   BuildPipeRules(detection.NewRegistry()),
 			Recipes: BuildRecipes(),
 		},
+		BuiltinTemplates: buildBuiltinTemplates(),
 	}
+}
+
+// buildBuiltinTemplates projects the daemon-package builtin catalog
+// into the agent-spec wire shape. The catalog is the source of truth
+// for both the seed transaction and this spec field, so an LLM
+// consumer sees exactly the names, RRULEs, and tool configs that will
+// land in the database on first boot.
+func buildBuiltinTemplates() []BuiltinTemplateSpec {
+	out := make([]BuiltinTemplateSpec, 0, len(daemon.BuiltinTemplates))
+	for _, b := range daemon.BuiltinTemplates {
+		out = append(out, BuiltinTemplateSpec{
+			Name:           b.Name,
+			Description:    b.Description,
+			RecommendedFor: b.RecommendedFor,
+			RRule:          b.RRule,
+			Timezone:       b.Timezone,
+			ToolConfig:     b.ToolConfig,
+		})
+	}
+	return out
 }
 
 func collectGlobalFlags(root *cobra.Command) []Flag {

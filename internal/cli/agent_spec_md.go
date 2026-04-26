@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -57,6 +58,25 @@ func renderMarkdown(w io.Writer, spec Spec) error {
 				fmt.Fprintf(&b, "- example: `%s` — %s\n", ex.Cmd, ex.Title)
 			}
 			b.WriteString("\n")
+		}
+	}
+
+	if len(spec.BuiltinTemplates) > 0 {
+		b.WriteString("## Built-in templates\n\n")
+		b.WriteString("These templates are seeded into `scan_templates` on first boot. Pass the name to `--template` directly.\n\n")
+		for _, bt := range spec.BuiltinTemplates {
+			fmt.Fprintf(&b, "### %s\n\n", bt.Name)
+			fmt.Fprintf(&b, "%s\n\n", bt.Description)
+			if bt.RecommendedFor != "" {
+				fmt.Fprintf(&b, "_Recommended for: %s_\n\n", bt.RecommendedFor)
+			}
+			fmt.Fprintf(&b, "- RRULE: `%s` (timezone `%s`)\n", bt.RRule, bt.Timezone)
+			tools := make([]string, 0, len(bt.ToolConfig))
+			for k := range bt.ToolConfig {
+				tools = append(tools, k)
+			}
+			sort.Strings(tools)
+			fmt.Fprintf(&b, "- Tools: %s\n\n", strings.Join(tools, ", "))
 		}
 	}
 

@@ -88,8 +88,10 @@ A template is a named, reusable configuration. It carries:
   for the JSON Schemas.
 - **`maintenance_window`** — optional embedded blackout-like window
   that applies only to this template's children.
-- **`is_system`** — templates that ship with the binary. Not editable
-  or deletable via the API; the Web UI hides the Edit / Delete buttons.
+- **`is_system`** — set on templates seeded by the agent on first
+  boot (see "Built-in templates" below). Edits are allowed and stick
+  across reboots; deletes are blocked at the storage layer with
+  `409 /problems/system-template-immutable`.
 
 Editing a template cascades: every schedule that references it recomputes
 its effective config on the next tick. Schedules that override
@@ -100,6 +102,39 @@ Deleting a template is hard. By default the API refuses with
 `409 /problems/template-in-use` if any schedule still references it.
 Pass `?force=true` (the UI does this after a second confirm) to cascade-
 delete the dependent schedules in the same transaction.
+
+### Built-in templates
+
+On first boot the agent seeds three baseline templates so a fresh
+install can schedule a scan without first authoring a template. The
+seed is idempotent — names that already exist are left alone — and the
+seeded rows carry `is_system=1`.
+
+| Name      | Cadence (UTC)                           | Tools                                       | When to pick |
+| --------- | --------------------------------------- | ------------------------------------------- | ------------ |
+| `Default` | daily at 02:00                          | subfinder + dnsx + naabu (top 100) + httpx + nuclei (`critical`, `high`) | general-purpose recurring scans |
+| `Fast`    | every 6h (`BYHOUR=0,6,12,18`)           | subfinder + dnsx + httpx                    | frequent surface-area monitoring without spending detection budget |
+| `Deep`    | weekly, Sunday 02:00                    | subfinder + dnsx + naabu (top 1000) + httpx + nuclei (all severities) | high-value targets on a weekly cadence |
+
+**Edits stick. Deletes don't.** Operators can change `rrule`,
+`tool_config`, or any other field on a built-in template; the seed
+only inserts when a name is absent, so customizations survive reboots.
+Delete is refused by `TemplateStore.Delete` itself, so the gate fires
+for every caller (REST API, CLI, future).
+
+**Recovery: regenerating a built-in.** If a customization went
+sideways and an operator wants the original back, the only path is a
+direct SQL delete followed by a reboot:
+
+```sh
+# Stop the agent.
+sqlite3 ~/.surfbot/surfbot.db "DELETE FROM scan_templates WHERE name='Default' AND is_system=1;"
+# Restart — the seed will recreate it on the next bootstrap.
+surfbot ui
+```
+
+This is intentionally manual. Free-mode is single-user; we don't ship
+a `factory-reset templates` subcommand until someone needs one.
 
 ## Schedules
 

@@ -246,6 +246,34 @@ func TestMarkdownRenders(t *testing.T) {
 	}
 }
 
+// TestSpecBuiltinTemplates enforces SPEC-SCHED2.3: the agent-spec
+// document exposes the three seeded builtin templates so an LLM can
+// call `--template <name>` without first listing.
+func TestSpecBuiltinTemplates(t *testing.T) {
+	spec := BuildSpec(rootCmd)
+	if len(spec.BuiltinTemplates) != 3 {
+		t.Fatalf("want 3 builtin templates, got %d", len(spec.BuiltinTemplates))
+	}
+	names := map[string]bool{}
+	for _, b := range spec.BuiltinTemplates {
+		names[b.Name] = true
+		if b.RRule == "" {
+			t.Errorf("builtin %q missing rrule", b.Name)
+		}
+		if len(b.ToolConfig) == 0 {
+			t.Errorf("builtin %q missing tool_config", b.Name)
+		}
+		if b.Description == "" {
+			t.Errorf("builtin %q missing description", b.Name)
+		}
+	}
+	for _, want := range []string{"Default", "Fast", "Deep"} {
+		if !names[want] {
+			t.Errorf("builtin %q missing from agent-spec output", want)
+		}
+	}
+}
+
 // TestSpecDeterministicOrdering enforces alphabetical ordering of
 // commands and global flags.
 func TestSpecDeterministicOrdering(t *testing.T) {
