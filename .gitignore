@@ -19,6 +19,7 @@ vendor/
 
 # Claude Code
 CLAUDE.md
+.claude/
 
 # Surfbot data
 *.db
