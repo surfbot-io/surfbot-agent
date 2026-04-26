@@ -257,8 +257,24 @@ func (h *handlers) updateTemplate(w http.ResponseWriter, r *http.Request, id str
 
 // deleteTemplate refuses to delete a template that any schedule still
 // references unless ?force=true, in which case the dependent schedules
-// are deleted atomically along with the template.
+// are deleted atomically along with the template. Builtin templates
+// (is_system=1, seeded by SCHED2.3) are immutable — DELETE returns 409
+// regardless of the ?force flag.
 func (h *handlers) deleteTemplate(w http.ResponseWriter, r *http.Request, id string) {
+	// SCHED2.3: pre-flight the system flag so the same problem type is
+	// returned whether or not the template has dependents. Doing it here
+	// (rather than only at the storage Delete call) means the operator
+	// gets the right error even when ?force=true would otherwise drag in
+	// a cascade.
+	if existing, err := h.deps.TemplateStore.Get(r.Context(), id); err == nil && existing.IsSystem {
+		writeProblem(w, http.StatusConflict, "/problems/system-template-immutable",
+			"Built-in template cannot be deleted",
+			"This template is part of the built-in defaults and cannot be deleted. "+
+				"You can edit it, or create a new template if you need a different configuration.",
+			nil)
+		return
+	}
+
 	dependents, err := h.deps.ScheduleStore.ListByTemplate(r.Context(), id)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "/problems/store",
@@ -301,6 +317,13 @@ func (h *handlers) deleteTemplate(w http.ResponseWriter, r *http.Request, id str
 					"Template not found", "", nil)
 				return
 			}
+			if errors.Is(err, storage.ErrSystemTemplateImmutable) {
+				writeProblem(w, http.StatusConflict, "/problems/system-template-immutable",
+					"Built-in template cannot be deleted",
+					"This template is part of the built-in defaults and cannot be deleted.",
+					nil)
+				return
+			}
 			writeProblem(w, http.StatusInternalServerError, "/problems/store",
 				"Cascade delete failed", err.Error(), nil)
 			return
@@ -313,6 +336,13 @@ func (h *handlers) deleteTemplate(w http.ResponseWriter, r *http.Request, id str
 		if errors.Is(err, storage.ErrNotFound) {
 			writeProblem(w, http.StatusNotFound, "/problems/not-found",
 				"Template not found", "", nil)
+			return
+		}
+		if errors.Is(err, storage.ErrSystemTemplateImmutable) {
+			writeProblem(w, http.StatusConflict, "/problems/system-template-immutable",
+				"Built-in template cannot be deleted",
+				"This template is part of the built-in defaults and cannot be deleted.",
+				nil)
 			return
 		}
 		writeProblem(w, http.StatusInternalServerError, "/problems/store",

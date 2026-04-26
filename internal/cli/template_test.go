@@ -163,6 +163,28 @@ func TestTemplateDeleteCascade(t *testing.T) {
 	}
 }
 
+// TestTemplateDeleteBuiltinSurfacesError covers the SCHED2.3 R3 CLI
+// gate: a 409 from /problems/system-template-immutable should exit 4
+// (ExitConflict) and surface the operator-readable title on stderr.
+func TestTemplateDeleteBuiltinSurfacesError(t *testing.T) {
+	withStubTemplateClient(t, &stubTemplateClient{
+		deleteErr: &apiclient.APIError{
+			StatusCode: http.StatusConflict,
+			Type:       "/problems/system-template-immutable",
+			Title:      "Built-in template cannot be deleted",
+			Detail:     "This template is part of the built-in defaults and cannot be deleted.",
+		},
+	})
+	_, errOut, err := runCLI(t, "template", "delete", "builtin-id", "--force")
+	var e errExit
+	if !errors.As(err, &e) || int(e) != 4 {
+		t.Fatalf("want exit 4, got %v", err)
+	}
+	if !strings.Contains(errOut, "Built-in template cannot be deleted") {
+		t.Fatalf("stderr missing title: %s", errOut)
+	}
+}
+
 func TestTemplateDeleteConflictExits4(t *testing.T) {
 	withStubTemplateClient(t, &stubTemplateClient{
 		deleteErr: &apiclient.APIError{

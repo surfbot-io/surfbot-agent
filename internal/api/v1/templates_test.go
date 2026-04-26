@@ -1,10 +1,13 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"testing"
 
+	"github.com/surfbot-io/surfbot-agent/internal/daemon"
 	"github.com/surfbot-io/surfbot-agent/internal/model"
 )
 
@@ -69,6 +72,50 @@ func TestTemplatesRejectMalformedToolPayload(t *testing.T) {
 	resp, raw := doJSON(t, srv, http.MethodPost, "/api/v1/templates", body)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("malformed should 422, got %d body=%s", resp.StatusCode, raw)
+	}
+}
+
+// TestTemplatesDeleteRefusesSystem covers SCHED2.3 R3: a builtin
+// template seeded by SeedBuiltinTemplates must surface as a 409 with
+// problem type /problems/system-template-immutable on DELETE, even when
+// ?force=true is passed.
+func TestTemplatesDeleteRefusesSystem(t *testing.T) {
+	store := newTestStore(t)
+	srv := newTestAPI(t, defaultAPIDeps(store))
+
+	_, err := daemon.SeedBuiltinTemplates(context.Background(), store, slog.Default())
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tmpl, err := store.Templates().GetByName(context.Background(), "Default")
+	if err != nil {
+		t.Fatalf("get builtin: %v", err)
+	}
+
+	for _, suffix := range []string{"", "?force=true"} {
+		t.Run("DELETE"+suffix, func(t *testing.T) {
+			resp, raw := doJSON(t, srv, http.MethodDelete,
+				"/api/v1/templates/"+tmpl.ID+suffix, nil)
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("delete builtin should 409, got %d body=%s",
+					resp.StatusCode, raw)
+			}
+			var p ProblemResponse
+			decode(t, raw, &p)
+			if p.Type != "/problems/system-template-immutable" {
+				t.Errorf("want type /problems/system-template-immutable, got %q",
+					p.Type)
+			}
+		})
+	}
+
+	// Builtin row must still be present after the refused deletes.
+	got, err := store.Templates().GetByName(context.Background(), "Default")
+	if err != nil {
+		t.Fatalf("builtin missing after refused delete: %v", err)
+	}
+	if !got.IsSystem {
+		t.Fatalf("is_system flipped after refused delete")
 	}
 }
 

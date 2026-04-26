@@ -99,7 +99,7 @@ const TemplatesPage = {
 
     const rows = items.map(t => {
       const toolCount = Object.keys(t.tool_config || {}).length;
-      const sysBadge = t.is_system ? '<span class="badge badge-muted">system</span>' : '';
+      const sysBadge = t.is_system ? '<span class="badge badge-muted" title="Built-in template — seeded on first boot.">built-in</span>' : '';
       return `
         <tr class="clickable" onclick="location.hash='#/templates/${encodeURIComponent(t.id)}'">
           <td class="mono">${Components.truncateID(t.id)}</td>
@@ -199,10 +199,12 @@ const TemplatesPage = {
         <div class="detail-panel">
           <div class="detail-header">
             <h2>${escapeHtml(t.name)}</h2>
-            ${t.is_system ? '<span class="badge badge-muted">system</span>' : ''}
+            ${t.is_system ? '<span class="badge badge-muted" title="Built-in template — seeded on first boot. Edits are allowed but the template cannot be deleted.">built-in</span>' : ''}
             <div style="margin-left:auto;display:flex;gap:8px">
-              ${t.is_system ? '' : '<button type="button" class="btn btn-ghost" id="template-edit-btn">Edit</button>'}
-              ${t.is_system ? '' : '<button type="button" class="btn btn-danger" id="template-delete-btn">Delete</button>'}
+              <button type="button" class="btn btn-ghost" id="template-edit-btn">Edit</button>
+              ${t.is_system
+                ? '<button type="button" class="btn btn-danger" disabled title="Built-in templates cannot be deleted.">Delete</button>'
+                : '<button type="button" class="btn btn-danger" id="template-delete-btn">Delete</button>'}
             </div>
           </div>
           <div id="template-action-error" style="margin-top:8px"></div>
