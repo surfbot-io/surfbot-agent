@@ -138,6 +138,21 @@ func (st *sqliteTemplateStore) Update(ctx context.Context, t *model.Template) er
 }
 
 func (st *sqliteTemplateStore) Delete(ctx context.Context, id string) error {
+	// SCHED2.3: builtin templates (is_system=1) are seeded at boot and
+	// must remain present in any installation; refuse the delete here so
+	// the same gate fires for API, CLI, and direct callers.
+	var isSystem int
+	err := st.db.QueryRowContext(ctx,
+		`SELECT is_system FROM scan_templates WHERE id = ?`, id).Scan(&isSystem)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("store.templates.Delete: lookup: %w", err)
+	}
+	if isSystem != 0 {
+		return ErrSystemTemplateImmutable
+	}
 	res, err := st.db.ExecContext(ctx, `DELETE FROM scan_templates WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store.templates.Delete: %w", err)

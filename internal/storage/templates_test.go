@@ -79,6 +79,36 @@ func TestTemplateStore_UniqueName(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrAlreadyExists))
 }
 
+func TestTemplateStore_DeleteRefusesSystem(t *testing.T) {
+	s := newTestStore(t)
+	store := s.Templates()
+	ctx := context.Background()
+
+	tmpl := newTemplate("builtin")
+	tmpl.IsSystem = true
+	require.NoError(t, store.Create(ctx, tmpl))
+
+	err := store.Delete(ctx, tmpl.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrSystemTemplateImmutable),
+		"want ErrSystemTemplateImmutable, got %v", err)
+
+	// Row must still be present after the refused delete.
+	got, err := store.Get(ctx, tmpl.ID)
+	require.NoError(t, err)
+	assert.True(t, got.IsSystem)
+}
+
+func TestTemplateStore_DeleteUnknownReturnsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	store := s.Templates()
+	ctx := context.Background()
+
+	err := store.Delete(ctx, "no-such-id")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrNotFound))
+}
+
 func TestTemplateStore_ValidatesOnCreate(t *testing.T) {
 	s := newTestStore(t)
 	store := s.Templates()
