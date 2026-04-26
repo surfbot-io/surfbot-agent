@@ -62,6 +62,21 @@ func BuildSchedulerBootstrap(mode daemon.Mode) (*SchedulerBootstrap, error) {
 		)
 	}
 
+	// SCHED2.3: seed the builtin templates (Default / Fast / Deep) so a
+	// fresh install's schedule create flow is non-empty out of the box.
+	// Idempotent on subsequent boots — operator edits to a builtin
+	// survive because we only insert rows whose name is absent.
+	// Ordered after legacy migration (which may itself create a
+	// historical "default" template) and before the scheduler is
+	// constructed so ad-hoc dispatch and the API see a populated
+	// catalog from tick zero.
+	if _, err := daemon.SeedBuiltinTemplates(
+		context.Background(), runStore, slog.Default(),
+	); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("seeding builtin templates: %w", err)
+	}
+
 	sched, err := buildSchedulerConcrete(cfg.Daemon.Scheduler, paths, runStore)
 	if err != nil {
 		cleanup()
