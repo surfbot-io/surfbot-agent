@@ -25,3 +25,6 @@ CLAUDE.md
 *.db
 *.db-wal
 *.db-shm
+
+# Local design scratch
+internal/webui/static/redesign-wireframes.html
