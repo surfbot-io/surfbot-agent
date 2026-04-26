@@ -2,8 +2,6 @@
 
 Local security scanner with pluggable detection and remediation. Open source under MIT license.
 
-> **Early development.** The agent is being built. See [ADR-001](../surfbot-strategy/ADR-001-surfbot-agent-architecture.md) for the architecture vision.
-
 ## Quick Start
 
 ```bash
@@ -32,16 +30,51 @@ make build
 
 ## Commands
 
+Reference for the CLI surface. Run `surfbot <command> --help` for flags
+and examples on each.
+
+**Scanning**
+
 ```
-surfbot scan [target]        Run detection pipeline
-surfbot target add/list/rm   Manage monitored targets
+surfbot scan [target]        Run a security scan against a target
+surfbot scan adhoc           Dispatch an ad-hoc scan via the daemon API
+surfbot discover             Discover subdomains for a target via passive sources
+surfbot resolve              Resolve domains to IP addresses (DNS)
+surfbot portscan             Scan hosts for open TCP ports
+surfbot probe                Probe host:port pairs for live HTTP services
+surfbot assess               Run vulnerability assessment with nuclei templates
+```
+
+**Scheduling**
+
+```
+surfbot schedule {create|list|show|update|delete|pause|resume}
+                             Manage first-class scan schedules
+surfbot blackout             Manage blackout windows (suppress scans)
+surfbot defaults             View and update schedule defaults
+```
+
+**Data and remediation**
+
+```
+surfbot target {add|list|remove}
+                             Manage monitored targets
 surfbot findings             List discovered vulnerabilities
 surfbot assets               List discovered assets
-surfbot fix <id>             Apply remediation
-surfbot score                Security score
-surfbot status               Agent status
-surfbot tools                Manage detection tools
-surfbot version              Version info
+surfbot fix <id>             Apply remediation for a finding
+surfbot score                Show security score
+surfbot status               Show agent status
+```
+
+**Operations**
+
+```
+surfbot daemon {install|uninstall|start|stop|restart|status|logs}
+                             Install and control the background service
+surfbot tools                Manage detection tools (enable/disable)
+surfbot connectors           Manage MCP connectors
+surfbot agent-spec           Emit machine-readable contract for LLM orchestration
+surfbot version              Print version info
 ```
 
 ## Run as a service
@@ -99,49 +132,41 @@ surfbot.exe daemon stop
 and the next scheduled scan. Use `--json` for machine-readable output.
 Exit codes: `0` running, `3` stopped, `4` unknown / not installed.
 
-### Scheduling
+## Scheduling
 
-The daemon runs full scans and lightweight quick checks on independent
-cadences, defined under `daemon.scheduler` in `~/.surfbot/config.yaml`:
+Surfbot uses **first-class schedules** — RRULE-based, target-anchored,
+template-driven. Manage them through the UI dashboard or the CLI:
 
-```yaml
-daemon:
-  scheduler:
-    enabled: true               # turn the scheduler off without uninstalling
-    full_scan_interval: 24h     # full pipeline (default: 24h)
-    quick_check_interval: 1h    # quick checks only (default: 1h)
-    jitter: 5m                  # +/- jitter applied to each tick (default: 5m)
-    run_on_start: false         # fire one full scan immediately on daemon start
-    quick_check_tools:          # tool whitelist for quick checks
-      - httpx
-      - nuclei
-    maintenance_window:         # optional: suppress new scans during this window
-      enabled: false
-      start: "02:00"            # HH:MM, may cross midnight (e.g. 22:00 → 06:00)
-      end:   "04:00"
-      timezone: "Europe/Madrid" # IANA tz; DST-correct
+```bash
+# Built-in templates are seeded on first boot — no setup required.
+surfbot template list
+
+# Create a schedule from a template (daily at 02:00 UTC):
+surfbot schedule create \
+  --target <target-id> \
+  --template Default \
+  --name "daily" \
+  --rrule "FREQ=DAILY;BYHOUR=2"
+
+# List, pause, resume, edit, delete:
+surfbot schedule list
+surfbot schedule pause   <id>
+surfbot schedule resume  <id>
+surfbot schedule update  <id>
+surfbot schedule delete  <id>
 ```
 
-Rules:
+Schedule data, blackouts, and template configs live in the SQLite
+database (`~/.surfbot/surfbot.db` by default), survive restarts, and
+are visible from both the UI and the CLI. See
+[`docs/scheduling.md`](docs/scheduling.md) for the full operator guide
+covering blackouts, the cascade resolver, pause-in-flight, and the
+maintenance window.
 
-- Intervals must be ≥ `1m`. If `quick_check_interval ≥ full_scan_interval`,
-  quick checks are disabled and a warning is logged.
-- `jitter` is capped at `min(interval) / 10` and only ever added (never
-  subtracted), so a fresh start is never pushed into the past.
-- Inside the maintenance window, new scans are deferred to the next close
-  time. In-flight scans are not killed.
-- A failed scan still advances the cursor — the scheduler never enters a
-  tight retry loop on a permanent failure. The error is recorded in
-  `last_full_status` / `last_quick_status` and surfaced by
-  `surfbot daemon status`.
-- Cursors persist across restarts in `schedule.state.json`, alongside
-  `daemon.state.json`.
-- If the process dies mid-scan (panic, OOM, `kill -9`, power loss),
-  the next start automatically marks the orphaned `scans`/`tool_runs`/
-  `ad_hoc_scan_runs` rows as `failed` with `error="orphaned on
-  scheduler restart"`. No manual cleanup. See
-  [docs/scheduling.md → Crash recovery](docs/scheduling.md#crash-recovery)
-  for the details.
+If the process dies mid-scan (panic, OOM, `kill -9`, power loss),
+the next start automatically marks orphaned `scans` rows as `failed`
+with `error="orphaned on scheduler restart"`. No manual cleanup. See
+[`docs/scheduling.md` → Crash recovery](docs/scheduling.md#crash-recovery).
 
 ## Embedded UI
 
@@ -270,23 +295,22 @@ inventing a `sudo` equivalent).
 
 ### Ad-hoc scans
 
-Target-anchored ad-hoc dispatch is served by `POST /api/v1/scans/ad-hoc`
-(RFC 7807 problem+json on errors). SPEC-SCHED1.4a removed the legacy
-profile-based `/api/daemon/trigger` endpoint and the Agent-card **Scan
-now** button; target-page dispatch lands in SPEC-SCHED1.4b alongside the
-rest of the write-flow UI. Until then, operators trigger ad-hoc scans
-via `surfbot scan ad-hoc --target <id>` or the REST endpoint directly.
+Trigger a one-off scan against a target you've already added:
 
-### Endpoints
+- **From the UI**: open the target page or the ad-hoc modal in the sidebar, click "Run scan now".
+- **From the CLI**: `surfbot scan adhoc --target <id>`
+- **Direct API**: `POST /api/v1/scans/ad-hoc` (RFC 7807 problem+json on errors).
 
-| Method     | Path                  | Notes                                              |
-| ---------- | --------------------- | -------------------------------------------------- |
-| GET / HEAD | `/api/daemon/status`  | always 200; status in body (HEAD has empty body)   |
+The dispatch is synchronous against the in-process scheduler — the API
+returns once the scan is queued and a `scan_id` is allocated. Findings
+are persisted to the same database the dashboard reads.
 
-`/api/daemon/status` sits behind the same loopback token and CSRF /
-Host / header defenses described in the [Security model](#security-model)
-section. The route lives outside `/api/v1/` because it describes the
-daemon process, not versioned domain data.
+### API reference
+
+Full REST endpoint reference with curl examples and Problem-response
+tables: [`docs/api.md`](docs/api.md). All endpoints sit behind the same
+loopback token and CSRF / Host / header defenses described in the
+[Security model](#security-model) section.
 
 ## LLM integration — `surfbot agent-spec`
 
@@ -298,27 +322,23 @@ give it a complete picture of Surfbot with zero prior knowledge:
 surfbot agent-spec --format json > surfbot.spec.json
 ```
 
-Current agent-spec version: **3.0** (see [docs/agent-spec.md](docs/agent-spec.md)
-for the changelog and migration guide from 2.0).
+Current agent-spec version: **3.1.0** (see [docs/agent-spec.md](docs/agent-spec.md)
+for the changelog).
 
 ## Documentation
 
 - [`docs/scheduling.md`](docs/scheduling.md) — operator concept guide
-  for the SPEC-SCHED1 first-class scheduling model (templates,
-  schedules, blackouts, defaults, cascade resolver, pause-in-flight).
+  for first-class scheduling (templates, schedules, blackouts, defaults,
+  cascade resolver, pause-in-flight, crash recovery, built-in templates).
 - [`docs/api.md`](docs/api.md) — REST endpoint reference with curl
   examples and Problem-response tables.
-- [`docs/agent-spec.md`](docs/agent-spec.md) — document shape,
-  stability guarantees, and the v3.0 changelog.
-- [`docs/examples/`](docs/examples/) — four copy-pasteable recipes
+- [`docs/agent-spec.md`](docs/agent-spec.md) — agent-spec document
+  shape, stability guarantees, and changelog.
+- [`docs/examples/`](docs/examples/) — copy-pasteable recipes
   (daily nuclei, weekly naabu + blackout, ad-hoc chain, bulk ops).
 - [`docs/schemas/tools/`](docs/schemas/tools/) — JSON Schemas for
   every tool's Params struct, also served at
   `/api/v1/schemas/tools/{tool}`.
-
-## Architecture
-
-See [ADR-001](../surfbot-strategy/ADR-001-surfbot-agent-architecture.md).
 
 ## License
 
