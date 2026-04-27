@@ -1772,8 +1772,6 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   flex-shrink: 0;
 }
 
-.topbar-spacer { flex: 1; }
-
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -1812,6 +1810,7 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   font-size: 13px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
 }
 
 .topbar-btn:hover {
@@ -1823,17 +1822,55 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   margin-left: 4px;
 }
 
-.topbar-new {
-  background: var(--accent);
-  color: #0d1117;
-  border-color: var(--accent);
-  font-weight: 600;
+/* "+ New" matches the wireframe ghost shape (dark + border, green
+ * tinted hover) instead of solid primary green so it doesn't compete
+ * visually with the active-scan pill. The real "+ New" affordance
+ * lands in PR3. */
+.topbar-new:hover {
+  border-color: rgba(0,229,153,0.6);
+  color: var(--text-primary);
 }
 
-.topbar-new:hover {
-  background: var(--accent-hover);
-  color: #0d1117;
-  border-color: var(--accent-hover);
+/* Topbar search opens the Cmd+K modal (PR9). Until then it's a stub
+ * that visually reads as a wide input field — placeholder text on the
+ * left, magnifier icon, ⌘K kbd anchored to the right edge. The
+ * flex:1 + max-width pair lets it absorb the topbar's empty middle
+ * without pushing the right-side controls off-screen on narrow
+ * viewports. */
+.topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  max-width: 576px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--ink-800, var(--bg-tertiary));
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.topbar-search:hover {
+  border-color: rgba(0,229,153,0.6);
+  color: var(--text-secondary);
+}
+
+.topbar-search-placeholder {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-search .kbd {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .topbar-icon-btn {
@@ -1855,17 +1892,28 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   border-color: var(--border);
 }
 
+/* Active-scan pill in the topbar. Reads "<target> · <tool> <pct>%"
+ * — the pulsing dot already conveys "running", so no redundant label.
+ * Anchored as <a href="#/scans"> so a click opens the scan list. */
 .scan-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 10px;
   border-radius: 9999px;
   background: rgba(0,229,153,0.1);
   border: 1px solid rgba(0,229,153,0.3);
-  color: var(--accent);
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.scan-indicator:hover {
+  border-color: rgba(0,229,153,0.6);
+  color: var(--text-primary);
 }
 
 .scan-indicator.hidden { display: none; }
@@ -1876,11 +1924,16 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   border-radius: 50%;
   background: var(--accent);
   animation: phase-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
-.scan-indicator-phase {
-  color: var(--text-secondary);
-  font-weight: 400;
+.scan-indicator-target { color: var(--text-secondary); }
+.scan-indicator-sep    { color: var(--text-muted); }
+.scan-indicator-tool   { color: var(--text-secondary); }
+
+.scan-indicator-pct {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* Compact agent status pinned in the sidebar footer. The big
@@ -1918,8 +1971,12 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   .topbar { padding: 8px 12px; gap: 6px; }
   .topbar-btn-label { display: none; }
   .topbar-btn .kbd { display: none; }
+  .topbar-search .kbd { display: none; }
+  .topbar-search-placeholder { display: none; }
   .breadcrumbs { font-size: 12px; }
-  .scan-indicator-phase { display: none; }
+  .scan-indicator-target,
+  .scan-indicator-sep,
+  .scan-indicator-tool { display: none; }
 }
 
 /* --- Bulk bar (UI v2 floating shape) -------------------------------

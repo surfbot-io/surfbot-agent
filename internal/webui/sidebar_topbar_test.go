@@ -92,7 +92,9 @@ func TestTopbarMarkup(t *testing.T) {
 		`class="topbar"`,
 		`id="breadcrumbs"`,
 		`id="scan-indicator"`,
-		`id="scan-indicator-phase"`,
+		`id="scan-indicator-target"`,
+		`id="scan-indicator-tool"`,
+		`id="scan-indicator-pct"`,
 		`id="topbar-cmdk-btn"`,
 		`id="topbar-new-btn"`,
 		`id="topbar-notif-btn"`,
@@ -139,9 +141,10 @@ func TestTopbarStyles(t *testing.T) {
 	classes := []string{
 		".nav-group", ".nav-group-label",
 		".main-area",
-		".topbar", ".topbar-btn", ".topbar-icon-btn",
+		".topbar", ".topbar-btn", ".topbar-icon-btn", ".topbar-search",
 		".breadcrumbs", ".breadcrumb-item", ".breadcrumb-sep",
-		".scan-indicator", ".scan-indicator-dot", ".scan-indicator-phase",
+		".scan-indicator", ".scan-indicator-dot",
+		".scan-indicator-target", ".scan-indicator-tool", ".scan-indicator-pct",
 		".agent-status-compact",
 	}
 	for _, cls := range classes {
@@ -201,7 +204,9 @@ func TestAppScanIndicatorWired(t *testing.T) {
 		"ScanIndicator",
 		"API.scanStatus()",
 		"scan-indicator",
-		"scan-indicator-phase",
+		"scan-indicator-target",
+		"scan-indicator-tool",
+		"scan-indicator-pct",
 	}
 	for _, h := range hooks {
 		assert.True(t, strings.Contains(js, h),

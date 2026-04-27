@@ -136,20 +136,23 @@ const ScanIndicator = {
 
   update(status) {
     const el = document.getElementById('scan-indicator');
-    const phaseEl = document.getElementById('scan-indicator-phase');
+    const targetEl = document.getElementById('scan-indicator-target');
+    const toolEl = document.getElementById('scan-indicator-tool');
+    const pctEl = document.getElementById('scan-indicator-pct');
     if (!el) return;
     const scanning = !!(status && status.scanning);
     if (!scanning) {
       el.classList.add('hidden');
-      if (phaseEl) phaseEl.textContent = '';
+      if (targetEl) targetEl.textContent = '';
+      if (toolEl) toolEl.textContent = '';
+      if (pctEl) pctEl.textContent = '';
       return;
     }
     el.classList.remove('hidden');
-    if (!phaseEl) return;
     const scan = status.scan || {};
-    const phase = scan.phase || '';
-    const pct = (scan.progress != null) ? Math.round(scan.progress) + '%' : '';
-    phaseEl.textContent = phase && pct ? phase + ' · ' + pct : (phase || pct);
+    if (targetEl) targetEl.textContent = scan.target || '';
+    if (toolEl) toolEl.textContent = scan.phase || '';
+    if (pctEl) pctEl.textContent = (scan.progress != null) ? Math.round(scan.progress) + '%' : '';
   },
 };
 
