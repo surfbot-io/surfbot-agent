@@ -559,7 +559,201 @@ const Components = {
       <span class="bulk-actions-buttons">${btns}</span>
     </div>`;
   },
+
+  // --- UI v2 foundation (PR1 #34) ---------------------------------
+  //
+  // The redesign introduces "pill" shapes for severity and finding
+  // status, a removable filter chip, kbd hints, a registry for inline
+  // SVG icons, an imperative slide-over panel, and a floating bulk-bar
+  // (distinct from the legacy bulkActionsBar). These helpers are
+  // additive; the older severityBadge/statusBadge/bulkActionsBar stay
+  // for the pages that haven't been migrated yet.
+
+  // severityPill renders a CRITICAL/HIGH/... pill with a leading dot
+  // colored from --sev-{level}. Unknown levels fall back to info.
+  severityPill(level) {
+    const lvl = SEVERITY_LEVELS[level] ? level : 'info';
+    const label = (level || 'info').toString().toUpperCase();
+    return `<span class="pill sev-pill-${lvl}"><span class="pill-dot"></span>${escapeHtml(label)}</span>`;
+  },
+
+  // statusPill renders a finding triage status (open/ack/resolved/fp/
+  // ignored) with the human label. Unknown statuses render as raw.
+  statusPill(status) {
+    const labels = {
+      open: 'Open',
+      ack: 'Acknowledged',
+      resolved: 'Resolved',
+      fp: 'False positive',
+      ignored: 'Ignored',
+    };
+    const cls = labels[status] ? `status-pill-${status}` : 'status-pill-fp';
+    const label = labels[status] || (status || '').toString();
+    return `<span class="pill ${cls}">${escapeHtml(label)}</span>`;
+  },
+
+  // filterChip returns an HTMLElement (not a string) so the caller can
+  // wire onRemove without setting up event delegation. Passing
+  // onRemove=null/undefined renders without the ✕ button — useful for
+  // read-only displays.
+  filterChip(label, onRemove) {
+    const el = document.createElement('span');
+    el.className = 'filter-chip';
+    const removeHtml = onRemove
+      ? `<button type="button" class="filter-chip-remove" aria-label="Remove ${escapeHtml(label)}">&times;</button>`
+      : '';
+    el.innerHTML = `<span class="filter-chip-label">${escapeHtml(label)}</span>${removeHtml}`;
+    if (onRemove) {
+      el.querySelector('.filter-chip-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        onRemove(e);
+      });
+    }
+    return el;
+  },
+
+  // kbd wraps a shortcut hint in a styled <kbd>. Used by Cmd+K,
+  // help overlays, and inline shortcuts.
+  kbd(label) {
+    return `<kbd class="kbd">${escapeHtml(label)}</kbd>`;
+  },
+
+  // icon looks up a name in ICONS and returns an inline <svg> string
+  // sized to 12/14/16px. Unknown names return ''. Keep ICONS as the
+  // single registry — adding a glyph here makes it available app-wide.
+  icon(name, size) {
+    const sz = size === 12 || size === 14 || size === 16 ? size : 16;
+    const path = ICONS[name];
+    if (!path) return '';
+    return `<svg class="icon icon-${sz}" width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+  },
+
+  // slideOver mounts a right-anchored panel as a sibling of <body>.
+  // body may be an HTML string or an HTMLElement; the latter is taken
+  // over (appendChild) so callers can wire up event listeners before
+  // mounting. actions is an array of { label, onClick, primary, danger }
+  // rendered as buttons in the footer.
+  //
+  // Returns { close, root, body } so the caller can refresh the body
+  // (e.g. after a status change) without closing the panel.
+  //
+  // Esc and backdrop click both invoke onClose with reason='dismiss'.
+  slideOver({ title, body, actions, onClose }) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'slide-over-backdrop';
+    const panel = document.createElement('aside');
+    panel.className = 'slide-over';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', title || 'Detail');
+
+    const actionsHtml = (actions || []).map((a, i) => {
+      const cls = a.danger ? 'btn btn-danger' : (a.primary ? 'btn btn-primary' : 'btn btn-ghost');
+      return `<button type="button" class="${cls}" data-slide-action="${i}">${escapeHtml(a.label)}</button>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div class="slide-over-header">
+        <h3 class="slide-over-title">${escapeHtml(title || '')}</h3>
+        <button type="button" class="slide-over-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="slide-over-body" data-slide-body></div>
+      ${actions && actions.length ? `<div class="slide-over-footer">${actionsHtml}</div>` : ''}
+    `;
+    const bodyEl = panel.querySelector('[data-slide-body]');
+    if (body instanceof HTMLElement) {
+      bodyEl.appendChild(body);
+    } else if (typeof body === 'string') {
+      bodyEl.innerHTML = body;
+    }
+
+    document.body.appendChild(backdrop);
+    document.body.appendChild(panel);
+    // Force a reflow so the .open class triggers the transition
+    // instead of being collapsed into the initial paint.
+    void panel.offsetWidth;
+    backdrop.classList.add('open');
+    panel.classList.add('open');
+    document.body.classList.add('modal-open');
+
+    let closed = false;
+    function close(reason) {
+      if (closed) return;
+      closed = true;
+      backdrop.classList.remove('open');
+      panel.classList.remove('open');
+      document.removeEventListener('keydown', onKey);
+      document.body.classList.remove('modal-open');
+      // Allow the slide-out transition to play before we yank the DOM.
+      setTimeout(() => {
+        backdrop.remove();
+        panel.remove();
+      }, 200);
+      if (typeof onClose === 'function') onClose(reason || 'close');
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close('dismiss');
+    }
+    document.addEventListener('keydown', onKey);
+    backdrop.addEventListener('click', () => close('dismiss'));
+    panel.querySelector('.slide-over-close').addEventListener('click', () => close('dismiss'));
+
+    panel.querySelectorAll('[data-slide-action]').forEach((btn) => {
+      const i = parseInt(btn.getAttribute('data-slide-action'), 10);
+      const a = (actions || [])[i];
+      if (!a || typeof a.onClick !== 'function') return;
+      btn.addEventListener('click', async () => {
+        const r = a.onClick({ close, root: panel, body: bodyEl });
+        if (r && typeof r.then === 'function') {
+          btn.disabled = true;
+          try { await r; } finally { btn.disabled = false; }
+        }
+      });
+    });
+
+    return { close, root: panel, body: bodyEl };
+  },
+
+  // bulkBar renders the floating, pill-shaped selection bar used by
+  // the redesigned findings list. Returns an HTML string with a hidden
+  // class when count is 0; pages toggle visibility by re-rendering or
+  // by flipping .hidden directly. action.danger styles as btn-danger,
+  // action.primary as btn-primary, otherwise ghost.
+  bulkBar({ count, actions }) {
+    const hidden = count > 0 ? '' : ' hidden';
+    const btns = (actions || []).map((a, i) => {
+      const cls = a.danger ? 'btn btn-danger' : (a.primary ? 'btn btn-primary' : 'btn btn-ghost');
+      return `<button type="button" class="${cls}" data-bulk-action="${i}">${escapeHtml(a.label)}</button>`;
+    }).join('');
+    return `<div class="bulk-bar${hidden}">
+      <span class="bulk-bar-count"><strong>${count || 0}</strong>selected</span>
+      <span class="bulk-bar-actions">${btns}</span>
+    </div>`;
+  },
 };
+
+// Severity level whitelist for severityPill. Kept as a frozen object
+// so an unknown level can short-circuit to 'info' without spelling out
+// the five branches in the helper.
+const SEVERITY_LEVELS = Object.freeze({
+  critical: true, high: true, medium: true, low: true, info: true,
+});
+
+// Inline SVG path data for the foundation icon set. Each entry is the
+// inner markup of a 24×24 viewBox <svg> with stroke=currentColor and
+// stroke-width=2 — Components.icon() wraps these into a sized <svg>.
+// Add new glyphs here, not at call sites.
+const ICONS = Object.freeze({
+  x:              '<line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/>',
+  search:         '<circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/>',
+  plus:           '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+  'chevron-right':'<polyline points="9 6 15 12 9 18"/>',
+  check:          '<polyline points="5 12 10 17 19 7"/>',
+  clock:          '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  alert:          '<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  copy:           '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>',
+});
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
