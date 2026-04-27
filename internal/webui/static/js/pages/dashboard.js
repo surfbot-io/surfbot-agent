@@ -8,10 +8,9 @@ const DashboardPage = {
       app.innerHTML = this.template(data);
       updateSidebarBadge(data.findings_by_severity);
       updateLastRefresh();
-      // SPEC-X3.1 — top-of-dashboard agent card. Mounts and starts its
-      // own poll loop, independent of the dashboard refresh.
-      const slot = document.getElementById('agent-card-slot');
-      if (slot && typeof AgentCard !== 'undefined') AgentCard.mount(slot);
+      // PR2 #35: the SPEC-X3.1 agent card is gone from the dashboard.
+      // It now lives compact in the sidebar footer (mounted by app.js)
+      // so the user sees agent state from every route.
 
       // SPEC-SCHED1.4c R5: restore the "Run scan now" button removed
       // with the /api/daemon/trigger endpoint in 1.4a. Opens the 1.4b
@@ -52,8 +51,6 @@ const DashboardPage = {
           <button type="button" class="btn btn-accent" id="dashboard-run-scan-btn" data-action="run-scan-now">Run scan now</button>
         </div>
       </div>
-
-      <div id="agent-card-slot"></div>
 
       <div class="refresh-bar">
         <span id="last-refresh"></span>
