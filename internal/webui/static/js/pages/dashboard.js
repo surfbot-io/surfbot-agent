@@ -1,6 +1,6 @@
 // Dashboard page — UI v2 (PR3 #36). KPI quad of clickable security-
 // posture cards above an activity feed composed client-side from
-// /scans + /findings + last_scan.delta, plus Top Targets and Próximos
+// /scans + /findings + last_scan.delta, plus Top Targets and Upcoming
 // scans panels. Agent diagnostics live in the sidebar footer (PR2 #35).
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
@@ -68,7 +68,7 @@ const DashboardPage = {
   },
 
   _header() {
-    return `<div class="page-header" style="display:flex;align-items:flex-end;gap:16px"><div style="flex:1"><h2>Dashboard</h2><p>Postura de seguridad — <span id="dash-subtitle"></span></p></div>
+    return `<div class="page-header" style="display:flex;align-items:flex-end;gap:16px"><div style="flex:1"><h2>Dashboard</h2><p>Security posture — <span id="dash-subtitle"></span></p></div>
       <div style="display:flex;gap:8px"><button type="button" class="btn btn-ghost" id="dash-refresh-btn" aria-label="Refresh dashboard">${Components.icon('refresh', 14)} Refresh</button>
       <button type="button" class="btn btn-accent" id="dash-runscan-btn">Run scan</button></div></div>`;
   },
@@ -80,7 +80,7 @@ const DashboardPage = {
     if (hist && hist.length > 0) {
       const max = Math.max(1, ...hist.map(h => h.score || 0));
       const bars = hist.slice(-16).map(h => `<span class="sparkline-bar" style="height:${Math.max(8, Math.round(((h.score || 0) / max) * 100))}%"></span>`).join('');
-      extras = `<div class="sparkline" aria-hidden="true">${bars}</div><div class="kpi-foot">últimos ${hist.length} días</div>`;
+      extras = `<div class="sparkline" aria-hidden="true">${bars}</div><div class="kpi-foot">last ${hist.length} days</div>`;
     }
     if (hist && hist.length >= 2) {
       const delta = (hist[hist.length - 1].score || 0) - (hist[hist.length - 2].score || 0);
@@ -166,7 +166,7 @@ const DashboardPage = {
     }).join('');
     return `<div class="dash-panel">
       <div class="dash-panel-header">
-        <div><h3>Activity</h3><div class="dash-panel-sub">eventos de los últimos 7 días</div></div>
+        <div><h3>Activity</h3><div class="dash-panel-sub">events from the last 7 days</div></div>
         <div class="dash-tabs" role="tablist">${tabsHtml}</div>
       </div>
       <div class="dash-panel-body" id="dash-activity-body">${this._activityList(d)}</div>
@@ -280,7 +280,7 @@ const DashboardPage = {
             </div>${action}</li>`;
         }).join('')}</ul>`;
     return `<div class="dash-panel">
-      <div class="dash-panel-header"><h3>Próximos scans</h3><a href="#/schedules" class="dash-panel-sub" style="color:var(--brand)">Schedules →</a></div>
+      <div class="dash-panel-header"><h3>Upcoming scans</h3><a href="#/schedules" class="dash-panel-sub" style="color:var(--brand)">Schedules →</a></div>
       <div class="dash-panel-body">${body}</div></div>`;
   },
 
@@ -320,7 +320,7 @@ const DashboardPage = {
     const update = () => {
       const el = document.getElementById('dash-subtitle');
       if (!el) { clearInterval(this._subtitleTimer); this._subtitleTimer = null; return; }
-      el.textContent = 'actualizado ' + Components.timeAgo(this._state.fetchedAt.toISOString());
+      el.textContent = 'updated ' + Components.timeAgo(this._state.fetchedAt.toISOString());
     };
     update();
     if (this._subtitleTimer) clearInterval(this._subtitleTimer);
