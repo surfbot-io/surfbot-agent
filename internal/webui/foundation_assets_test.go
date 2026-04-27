@@ -75,14 +75,90 @@ func TestFoundationComponentHelpers(t *testing.T) {
 	}
 
 	// The icon registry must list at least the seed glyphs so PR2 can
-	// rely on them without re-discovering whether they exist.
+	// rely on them without re-discovering whether they exist. PR3 #36
+	// added `refresh` for the dashboard header — listed here so the
+	// next maintainer doesn't strip it during a refactor.
 	icons := []string{
 		"x:", "search:", "plus:",
 		"'chevron-down':", "'chevron-right':",
 		"check:", "clock:", "alert:", "copy:",
+		"refresh:",
 	}
 	for _, ic := range icons {
 		assert.True(t, strings.Contains(js, ic),
 			"foundation icon %q missing from components.js ICONS registry", ic)
+	}
+}
+
+// PR3 #36 dashboard reframe. The new dashboard.js drops the agent-info
+// block and the .card-grid / .score-container / .detail-grid scaffolding
+// in favor of KPI buttons and the .dash-* + .kpi-* foundation. These
+// guards catch a partial migration where someone accidentally
+// re-introduces a legacy class while iterating on the page.
+
+func TestDashboardLegacyArtifactsRemoved(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/dashboard.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	legacy := []string{
+		// IDs / function names removed by PR3.
+		"dashboard-run-scan-btn",
+		"renderLastScanCard",
+		"renderChangesCard",
+		"formatAssetTypes",
+		// Legacy CSS classes — these still exist in style.css for
+		// unmigrated pages, but the dashboard must not reference them.
+		"card-grid",
+		"score-container",
+		"detail-grid",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"legacy artifact %q must not appear in dashboard.js after PR3 #36", s)
+	}
+}
+
+func TestDashboardUsesFoundationHelpers(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/dashboard.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.statusPill(",
+		"Components.icon(",
+		"Components.timeAgo(",
+		"Components.formatDuration(",
+		// New foundation classes the dashboard depends on.
+		"dash-grid",
+		"kpi-card",
+		"activity-list",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"dashboard.js must use foundation helper/class %q", s)
+	}
+}
+
+// TestDashboardCSSScaffolding gates the CSS classes the rewritten
+// dashboard page hard-codes. Lives next to the JS guard so a single
+// failed test makes the missing piece obvious.
+func TestDashboardCSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		".dash-grid", ".dash-col-3", ".dash-col-4", ".dash-col-8",
+		".kpi-card", ".kpi-label", ".kpi-number", ".kpi-stacked-bar",
+		".kpi-counts", ".kpi-mini-pill", ".kpi-trend",
+		".sparkline", ".sparkline-bar",
+		".dash-panel", ".dash-panel-header", ".dash-panel-body",
+		".dash-tab", ".activity-item", ".activity-icon",
+		".dash-list-item", ".dash-status-dot",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"dashboard CSS class %q missing from style.css", c)
 	}
 }
