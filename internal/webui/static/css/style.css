@@ -1833,17 +1833,16 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
 
 /* Topbar search opens the Cmd+K modal (PR9). Until then it's a stub
  * that visually reads as a wide input field — placeholder text on the
- * left, magnifier icon, ⌘K kbd anchored to the right edge. The
- * flex:1 + max-width pair lets it absorb the topbar's empty middle
- * without pushing the right-side controls off-screen on narrow
- * viewports. */
+ * left, magnifier icon, ⌘K kbd anchored to the right edge. With
+ * flex:1 and no max-width the search absorbs all the empty middle of
+ * the topbar so the right-side controls (+ New, scan indicator,
+ * notif/help) float to the right edge on every viewport width. */
 .topbar-search {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1;
   min-width: 0;
-  max-width: 576px;
   height: 32px;
   padding: 0 12px;
   border-radius: var(--radius);
