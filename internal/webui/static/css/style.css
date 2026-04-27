@@ -1707,6 +1707,221 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   flex-shrink: 0;
 }
 
+/* === UI v2 PR2 — sidebar grouping + topbar (#35) ====================
+ * 11 nav items split across 5 buckets (Insights / Discover / Detect /
+ * Triage / Configure). New topbar above .content carries breadcrumbs,
+ * a Cmd+K search stub, "+ New" stub, an active-scan indicator, and
+ * notif/help icons. The agent status moves out of the dashboard into a
+ * compact sidebar footer. Older .nav-link / .sidebar-footer styles in
+ * the SPEC-X3.1 block above still apply — these only fill in the new
+ * shapes.
+ * =================================================================== */
+
+.nav-groups {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-group {
+  padding: 0 8px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 8px;
+}
+
+.nav-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 6px 12px 4px;
+}
+
+/* The legacy .nav-links rule sets flex:1 / padding:8px which no longer
+ * applies inside .nav-group. Reset within groups. */
+.nav-group .nav-links {
+  list-style: none;
+  padding: 0;
+  flex: initial;
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  flex-shrink: 0;
+}
+
+.topbar-spacer { flex: 1; }
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breadcrumb-item {
+  color: var(--text-secondary);
+}
+
+.breadcrumb-item.breadcrumb-current {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.breadcrumb-sep {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.topbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.topbar-btn .kbd {
+  margin-left: 4px;
+}
+
+.topbar-new {
+  background: var(--accent);
+  color: #0d1117;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.topbar-new:hover {
+  background: var(--accent-hover);
+  color: #0d1117;
+  border-color: var(--accent-hover);
+}
+
+.topbar-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.topbar-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.scan-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(0,229,153,0.1);
+  border: 1px solid rgba(0,229,153,0.3);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.scan-indicator.hidden { display: none; }
+
+.scan-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: phase-pulse 2s ease-in-out infinite;
+}
+
+.scan-indicator-phase {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* Compact agent status pinned in the sidebar footer. The big
+ * dashboard card from SPEC-X3.1 is gone — the status now lives next to
+ * "Run scan now" so it's visible from every page without taking
+ * dashboard real estate. Full audit deferred to #45. */
+.agent-status-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-status-compact .agent-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.agent-status-version {
+  color: var(--text-secondary);
+}
+
+.agent-status-uptime { font-size: 10px; }
+
+@media (max-width: 768px) {
+  .nav-group-label { display: none; }
+  .nav-group { padding: 0 4px; }
+  .agent-status-compact .agent-status-version,
+  .agent-status-compact .agent-status-uptime { display: none; }
+  .topbar { padding: 8px 12px; gap: 6px; }
+  .topbar-btn-label { display: none; }
+  .topbar-btn .kbd { display: none; }
+  .breadcrumbs { font-size: 12px; }
+  .scan-indicator-phase { display: none; }
+}
+
 /* --- Bulk bar (UI v2 floating shape) -------------------------------
  * Distinct from the legacy .bulk-actions-bar (rectangular sticky
  * bottom). This one is a pill-shaped floater meant for the findings

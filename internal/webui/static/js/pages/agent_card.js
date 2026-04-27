@@ -12,6 +12,7 @@
 const AgentCard = {
   POLL_MS: 8000,
   _timer: null,
+  _compactTimer: null,
   // "Scan now" was removed with SPEC-SCHED1.4a; target-anchored ad-hoc
   // dispatch via /api/v1/scans/ad-hoc lands on target pages in 1.4b.
 
@@ -23,13 +24,61 @@ const AgentCard = {
     this._timer = setInterval(() => this.refresh(el), this.POLL_MS);
   },
 
-  // unmount() stops the poll loop. Called by the dashboard route on
-  // navigation away. Idempotent.
+  // unmount() stops the dashboard poll loop. Called by the router on
+  // navigation away. Idempotent. Does not stop the compact sidebar
+  // loop — that one stays alive across routes.
   unmount() {
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
     }
+  },
+
+  // mountCompact(el) renders the sidebar footer status — just a status
+  // dot + version + uptime. PR2 #35 moved the agent status out of the
+  // dashboard so it's visible from every route. Polls on its own
+  // schedule and is not unmounted by route changes.
+  mountCompact(el) {
+    if (this._compactTimer) clearInterval(this._compactTimer);
+    this.refreshCompact(el);
+    this._compactTimer = setInterval(() => this.refreshCompact(el), this.POLL_MS);
+  },
+
+  async refreshCompact(el) {
+    if (!el) return;
+    try {
+      const data = await API.daemonStatus();
+      el.innerHTML = this.compactTemplate(data);
+    } catch (err) {
+      el.innerHTML = this.compactErrorTemplate();
+    }
+  },
+
+  compactTemplate(d) {
+    let dotCls = 'agent-dot-err';
+    let label = 'stopped';
+    if (d.installed && d.running) {
+      dotCls = 'agent-dot-ok';
+      label = 'running';
+    } else if (!d.installed) {
+      dotCls = 'agent-dot-warn';
+      label = 'not installed';
+    }
+    const version = d.version ? 'v' + d.version : '—';
+    const uptime = (d.installed && d.running)
+      ? this.formatUptime(d.uptime_seconds || 0)
+      : '';
+    const uptimeHtml = uptime
+      ? `<span class="agent-status-uptime" title="Uptime">${escapeHtml(uptime)}</span>`
+      : '';
+    return `<span class="agent-dot ${dotCls}" title="${escapeHtml(label)}" aria-label="Agent ${escapeHtml(label)}"></span>
+      <span class="agent-status-version" id="agent-version">${escapeHtml(version)}</span>
+      ${uptimeHtml}`;
+  },
+
+  compactErrorTemplate() {
+    return `<span class="agent-dot agent-dot-err" title="UI can't read agent state" aria-label="Agent state unknown"></span>
+      <span class="agent-status-version" id="agent-version">—</span>`;
   },
 
   skeleton() {
