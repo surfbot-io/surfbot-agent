@@ -56,14 +56,26 @@ const FindingsPage = {
       `;
     }
 
+    // Single-finding groups skip the raw-filtered drill: the row opens
+    // the slide-over directly using finding_ids[0]. Multi-asset groups
+    // still drill — picking which port/asset is meaningful when N>1.
     const rows = data.groups.map(g => {
       const badge = g.affected_assets_count > 1
         ? `<span class="port-badge">${g.affected_assets_count} ports</span>`
         : '';
-      const drillHref = '#/findings?view=raw&host=' + encodeURIComponent(g.host)
-        + '&template_id=' + encodeURIComponent(g.template_id);
+      const single = g.affected_assets_count === 1
+        && Array.isArray(g.finding_ids) && g.finding_ids.length === 1;
+      let onclick;
+      if (single) {
+        onclick = `FindingsPage.handleGroupedRowClick(event, '${escapeHtml(g.finding_ids[0])}')`;
+      } else {
+        const drillHref = '#/findings?view=raw&host=' + encodeURIComponent(g.host)
+          + '&template_id=' + encodeURIComponent(g.template_id);
+        onclick = `location.hash='${drillHref}'`;
+      }
+      const dataAttr = single ? ` data-finding-id="${escapeHtml(g.finding_ids[0])}"` : '';
       return `
-        <tr class="clickable" onclick="location.hash='${drillHref}'">
+        <tr class="clickable"${dataAttr} onclick="${onclick}">
           <td>${Components.severityBadge(g.severity)}</td>
           <td class="text-truncate">${escapeHtml(g.title)} ${badge}</td>
           <td class="mono">${escapeHtml(g.host)}</td>
@@ -285,6 +297,15 @@ const FindingsPage = {
     this._lastTrigger = evt.currentTarget;
     // Setting hash drives the open via Router's findings transition
     // detector — keeps Back-button semantics aligned with the panel.
+    location.hash = '#/findings/' + encodeURIComponent(id);
+  },
+
+  // handleGroupedRowClick is the equivalent for the grouped view when
+  // the group has a single underlying finding. Multi-asset groups keep
+  // the drill-through to the raw-filtered list because picking the
+  // port/asset is the meaningful next step there.
+  handleGroupedRowClick(evt, id) {
+    this._lastTrigger = evt.currentTarget;
     location.hash = '#/findings/' + encodeURIComponent(id);
   },
 
