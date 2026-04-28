@@ -193,7 +193,12 @@ func TestCascade_ScanDeletePrunesLogs(t *testing.T) {
 	assert.Equal(t, 0, n2, "FK CASCADE: deleting scan must drop scan_logs rows")
 }
 
-func TestCascade_ToolRunDeleteSetsNull(t *testing.T) {
+func TestToolRunDeletePreservesLogs(t *testing.T) {
+	// scan_logs.tool_run_id is a plain TEXT column without an FK
+	// reference (see 0006_scan_logs.sql comment). Deleting the
+	// referenced tool_runs row must NOT touch scan_logs — the log
+	// stays as-is with its now-dangling but harmless pointer. This
+	// guards against a future "let's add the FK back" reflex.
 	s := newTestStore(t)
 	ctx := context.Background()
 	scanID, trID := seedScanForLogs(t, s)
@@ -205,7 +210,8 @@ func TestCascade_ToolRunDeleteSetsNull(t *testing.T) {
 	got, err := s.ListScanLogs(ctx, ScanLogListOptions{ScanID: scanID})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, "", got[0].ToolRunID, "FK SET NULL: deleting tool_run preserves log line, nulls its tool_run_id")
+	assert.Equal(t, trID, got[0].ToolRunID,
+		"deleting tool_run does not touch scan_logs (no FK on tool_run_id)")
 }
 
 func TestListScanLogs_RequiresScanID(t *testing.T) {

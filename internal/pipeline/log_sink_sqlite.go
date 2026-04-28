@@ -224,10 +224,10 @@ func (s *SQLiteLogSink) ScanFailed(ctx context.Context, scanID, errMsg string) {
 }
 
 func (s *SQLiteLogSink) ScanCancelled(ctx context.Context, scanID, reason string) {
-	// US spelling here (vs. the British "cancelled" used elsewhere in
-	// this codebase, e.g. model.ScanStatusCancelled) to satisfy the
-	// US-locale misspell linter on these new strings. Operators see
-	// the model status name in the UI badge, not these log lines.
+	// US spelling here to satisfy the US-locale misspell linter on
+	// these new strings. The model status constant uses the British
+	// form for backwards compatibility with the rest of the codebase;
+	// operators see the badge label, not these log lines.
 	text := "scan canceled"
 	if reason != "" {
 		text = "scan canceled: " + reason

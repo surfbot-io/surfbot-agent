@@ -14,13 +14,20 @@
 --   - created_at separate from ts because retention queries scan by row
 --     creation time, not by event time (which can be backfilled).
 --   - FK CASCADE on scans: deleting a scan reaps its logs cleanly.
---   - FK SET NULL on tool_runs: a tool_run delete preserves the scan's
---     log history; the line just loses its tool linkage.
+--   - tool_run_id intentionally has NO FK reference. The pipeline emits
+--     ToolStarted log lines BEFORE the matching tool_runs row is
+--     persisted (the start log fires at tool.Run() entry; the row is
+--     INSERTed after the run completes). An FK with deferred enforcement
+--     would close the gap, but SQLite only deferred-checks at COMMIT and
+--     the sink batches across multiple scan/tool boundaries — easier to
+--     drop the constraint than to thread DEFERRABLE through every code
+--     path. Dangling tool_run_id pointers are harmless: the column is
+--     opaque text used only for client-side grouping in the UI.
 
 CREATE TABLE IF NOT EXISTS scan_logs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id      TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
-    tool_run_id  TEXT          REFERENCES tool_runs(id) ON DELETE SET NULL,
+    tool_run_id  TEXT,
     ts           INTEGER NOT NULL,
     source       TEXT NOT NULL,
     level        TEXT NOT NULL DEFAULT 'info'
