@@ -101,7 +101,7 @@ func (s *SQLiteStore) ListScanLogs(ctx context.Context, opts ScanLogListOptions)
 	if err != nil {
 		return nil, fmt.Errorf("query scan_logs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]model.ScanLog, 0, opts.Limit)
 	for rows.Next() {
 		var l model.ScanLog

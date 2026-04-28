@@ -54,7 +54,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// webui can show CLI-parity live log streaming. Terminal output
 	// (pp.muted/success/etc.) is unaffected — sink is additive.
 	sink := pipeline.NewSQLiteLogSink(store, pipeline.SQLiteLogSinkOptions{})
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 	pipe.SetSink(sink)
 
 	scanType, _ := cmd.Flags().GetString("type")

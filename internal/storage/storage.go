@@ -180,6 +180,17 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
+	// :memory: SQLite databases are per-connection — modernc.org/sqlite
+	// allocates a fresh in-memory DB for each pooled connection, so
+	// migrations applied on connection A are invisible to a query on
+	// connection B. Issue #52 exposed this when the SQLiteLogSink's
+	// background goroutine grabbed a different connection than the
+	// migration runner. Pinning the pool to 1 connection eliminates the
+	// race for tests; production paths use a real file and are unaffected.
+	if dbPath == ":memory:" {
+		db.SetMaxOpenConns(1)
+	}
+
 	// Restrict DB file permissions — it may contain sensitive scan data.
 	if dbPath != ":memory:" {
 		_ = os.Chmod(dbPath, 0o600)

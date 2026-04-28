@@ -1035,7 +1035,7 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	h.scanMu.Unlock()
 
 	go func() {
-		defer sink.Close()
+		defer func() { _ = sink.Close() }()
 		result, err := pipe.Run(scanCtx, target.ID, opts)
 
 		h.scanMu.Lock()

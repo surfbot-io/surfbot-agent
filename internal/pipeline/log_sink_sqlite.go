@@ -86,7 +86,7 @@ func (s *SQLiteLogSink) run() {
 		if len(batch) == 0 {
 			return
 		}
-		// Use a fresh background context so a cancelled scan ctx
+		// Use a fresh background context so a canceled scan ctx
 		// doesn't bin the final flush. The persistence path is fast
 		// enough that we don't need a timeout — the main scan flow has
 		// already returned by the time Close() blocks here.
@@ -224,9 +224,12 @@ func (s *SQLiteLogSink) ScanFailed(ctx context.Context, scanID, errMsg string) {
 }
 
 func (s *SQLiteLogSink) ScanCancelled(ctx context.Context, scanID, reason string) {
-	text := "scan cancelled"
+	// "cancelled" is the project-wide spelling (model.ScanStatusCancelled,
+	// the existing pp.warn lines, scan.Phase values). Keep it here for
+	// codebase consistency even though the linter prefers US spelling.
+	text := "scan cancelled" //nolint:misspell
 	if reason != "" {
-		text = "scan cancelled: " + reason
+		text = "scan cancelled: " + reason //nolint:misspell
 	}
 	s.enqueue(model.ScanLog{
 		ScanID: scanID, Source: "scanner", Level: model.LogLevelWarn, Text: text,
