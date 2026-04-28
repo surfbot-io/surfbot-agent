@@ -50,12 +50,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	pipe := pipeline.New(store, registry)
-	// Issue #52: tee structured pipeline events into scan_logs so the
-	// webui can show CLI-parity live log streaming. Terminal output
-	// (pp.muted/success/etc.) is unaffected — sink is additive.
-	sink := pipeline.NewSQLiteLogSink(store, pipeline.SQLiteLogSinkOptions{})
-	defer func() { _ = sink.Close() }()
-	pipe.SetSink(sink)
 
 	scanType, _ := cmd.Flags().GetString("type")
 	tools, _ := cmd.Flags().GetStringSlice("tools")
