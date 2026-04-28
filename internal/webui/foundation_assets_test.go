@@ -244,3 +244,121 @@ func TestDashboardCSSScaffolding(t *testing.T) {
 			"dashboard CSS class %q missing from style.css", c)
 	}
 }
+
+// PR5 #38 — filter chips persistentes + bulk actions. The findings,
+// targets, and scans list pages migrate to the chip + tab vocabulary
+// (and bulk-bar on findings/targets). These guards catch a partial
+// migration: legacy <select id="filter-..."> dropdowns or the legacy
+// inline status-select must be gone, and the foundation helpers (PR1
+// filterChip, bulkBar, severityPill, statusPill) must be wired in.
+
+func TestFindingsLegacyFiltersRemoved(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/findings.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	legacy := []string{
+		"groupedFiltersHtml",
+		"rawFiltersHtml",
+		"id=\"filter-severity\"",
+		"id=\"filter-status\"",
+		"id=\"filter-host\"",
+		"class=\"status-select",
+		"changeStatus(",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"legacy filter artifact %q must not appear in findings.js after PR5 #38", s)
+	}
+}
+
+func TestFindingsUsesChipsAndBulkBar(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/findings.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.filterChip(",
+		"Components.bulkBar(",
+		"Components.severityPill(",
+		"Components.statusPill(",
+		"Components.confirmDialog(",
+		"surfbot_findings_filters",
+		"_selectedIds",
+		"bulkApplyStatus",
+		"updateFindingStatus",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"findings.js must reference %q after PR5 #38", s)
+	}
+}
+
+func TestTargetsUsesChipsAndBulkBar(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/targets.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.bulkBar(",
+		"Components.confirmDialog(",
+		"_selectedIds",
+		"surfbot_targets_filters",
+		"bulkRunScan",
+		"bulkDelete",
+		"tgt-checkbox",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"targets.js must reference %q after PR5 #38", s)
+	}
+}
+
+func TestScansUsesChipsNoBulkBar(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/scans.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.filterChip(",
+		"surfbot_scans_filters",
+		"_chipStripHtml",
+		"_statusTabsHtml",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"scans.js must reference %q after PR5 #38", s)
+	}
+
+	// Scans explicitly does NOT add the floating bulk-bar (P0/non-goal #1).
+	// The page may still inherit components.js helper definitions, but the
+	// page module must not invoke Components.bulkBar(.
+	assert.False(t, strings.Contains(js, "Components.bulkBar("),
+		"scans.js must NOT mount Components.bulkBar after PR5 #38 (bulk explicitly out of scope)")
+}
+
+// TestPR5CSSScaffolding gates the CSS classes the new layout hard-codes:
+// severity tabs, filter strip, filter menu (popup + submenu), save-view
+// pill, and the table checkbox column.
+func TestPR5CSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		".sev-tabs", ".sev-tab", ".sev-tab-active",
+		".sev-tab-critical", ".sev-tab-high", ".sev-tab-medium",
+		".sev-tab-low", ".sev-tab-info",
+		".filter-strip", ".filter-strip-chips", ".filter-add-btn",
+		".filter-menu", ".filter-menu-item", ".filter-menu-divider",
+		".filter-menu-search", ".filter-menu-list",
+		".save-view-pill",
+		".fnd-cb-col", ".fnd-checkbox",
+		".fnd-row-selected",
+		".tgt-checkbox", ".tgt-row-selected",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"PR5 CSS class %q missing from style.css", c)
+	}
+}

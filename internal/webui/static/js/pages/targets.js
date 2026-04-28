@@ -1,5 +1,26 @@
-// Targets page (list + detail)
+// Targets page (list + detail).
+//
+// PR5 (#38) adds:
+//   - type tabs (All / Domain / IPv4 / IPv6 / CIDR / etc.) as pills
+//   - live name search (client-side over target.value)
+//   - bulk select with two actions: Run scan, Delete (with confirm)
+//   - row click still navigates to detail; checkbox click stops propagation
 const TargetsPage = {
+  // Persisted across re-renders so paginating or refetching doesn't drop
+  // the operator's selection.
+  _selectedIds: new Set(),
+
+  // Last-fetched data — needed by the bulk handlers + filter handlers
+  // without a re-fetch (no pagination on this page yet).
+  _allTargets: [],
+
+  // Type tab + search filter state. Persisted on every change.
+  _typeFilter: '',
+  _searchTerm: '',
+
+  STORAGE_KEY: 'surfbot_targets_filters',
+  STORAGE_VERSION: 1,
+
   async render(app, params) {
     if (params && params.id) {
       return this.renderDetail(app, params.id);
@@ -9,15 +30,17 @@ const TargetsPage = {
 
     try {
       const data = await API.targets();
-      app.innerHTML = this.template(data);
+      this._allTargets = data.targets || [];
+      this._restoreFilters();
+      app.innerHTML = this.template();
       this.bindEvents(app);
     } catch (err) {
       app.innerHTML = Components.emptyState('Error', 'Failed to load targets: ' + err.message);
     }
   },
 
-  template(data) {
-    const targets = data.targets || [];
+  template() {
+    const targets = this._allTargets || [];
 
     const addForm = `
       <div class="add-form">
@@ -42,73 +65,325 @@ const TargetsPage = {
       `;
     }
 
-    // Rows navigate to the detail view on click. The actions cell stops
-    // propagation per-button so the row-level handler doesn't swallow the
-    // scan/findings/delete clicks.
-    const rows = targets.map(t => `
-      <tr class="clickable" onclick="location.hash='#/targets/${t.id}'">
-        <td class="mono">${escapeHtml(t.value)}</td>
-        <td><span class="badge badge-info">${t.type}</span></td>
-        <td>${t.scope}</td>
-        <td>${t.finding_count}</td>
-        <td>${t.asset_count}</td>
-        <td>${t.scan_count}</td>
-        <td class="text-muted">${t.last_scan_at ? Components.timeAgo(t.last_scan_at) : 'never'}</td>
-        <td>${t.enabled ? '<span style="color:var(--success)">active</span>' : '<span class="text-muted">disabled</span>'}</td>
-        <td class="actions-cell" onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-accent" onclick="TargetsPage.scanTarget('${t.id}', '${escapeHtml(t.value)}')" title="Scan">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
-          </button>
-          <button class="btn btn-sm btn-ghost" onclick="TargetsPage.viewFindings('${t.id}')" title="Findings">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-          </button>
-          <button class="btn btn-sm btn-danger" onclick="TargetsPage.deleteTarget('${t.id}', '${escapeHtml(t.value)}')" title="Remove">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-          </button>
-        </td>
-      </tr>
-    `).join('');
+    const filtered = this._filteredTargets();
+    const typeTabs = this._typeTabsHtml(targets);
+    const searchInput = `<input type="text" class="form-input tgt-search" id="tgt-search-input" placeholder="Filter by name…" value="${escapeHtml(this._searchTerm)}" aria-label="Filter targets by name" />`;
+
+    const rows = filtered.map(t => {
+      const sel = this._selectedIds.has(t.id);
+      const selCls = sel ? ' tgt-row-selected' : '';
+      return `
+        <tr class="tgt-row clickable${selCls}" data-target-id="${escapeHtml(t.id)}" onclick="TargetsPage.handleRowClick(event, '${t.id}')">
+          <td class="fnd-cb-col" onclick="event.stopPropagation()">
+            <input type="checkbox" class="tgt-checkbox" value="${escapeHtml(t.id)}" ${sel ? 'checked' : ''}
+              aria-label="Select target ${escapeHtml(t.value)}"
+              onclick="event.stopPropagation(); TargetsPage.onCheckboxChange(this)" />
+          </td>
+          <td class="mono">${escapeHtml(t.value)}</td>
+          <td><span class="badge badge-info">${escapeHtml(t.type || '')}</span></td>
+          <td>${escapeHtml(t.scope || '')}</td>
+          <td>${t.finding_count}</td>
+          <td>${t.asset_count}</td>
+          <td>${t.scan_count}</td>
+          <td class="text-muted">${t.last_scan_at ? Components.timeAgo(t.last_scan_at) : 'never'}</td>
+          <td>${t.enabled ? '<span style="color:var(--success)">active</span>' : '<span class="text-muted">disabled</span>'}</td>
+          <td class="actions-cell" onclick="event.stopPropagation()">
+            <button class="btn btn-sm btn-accent" onclick="TargetsPage.scanTarget('${t.id}', '${escapeHtml(t.value)}')" title="Scan">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+            </button>
+            <button class="btn btn-sm btn-ghost" onclick="TargetsPage.viewFindings('${t.id}')" title="Findings">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+            </button>
+            <button class="btn btn-sm btn-danger" onclick="TargetsPage.deleteTarget('${t.id}', '${escapeHtml(t.value)}')" title="Remove">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const tableHtml = filtered.length > 0
+      ? `<div class="table-container"><table>
+          <thead><tr>
+            <th class="fnd-cb-col"><input type="checkbox" id="targets-select-all" aria-label="Select all visible targets" /></th>
+            <th scope="col">Target</th>
+            <th scope="col">Type</th>
+            <th scope="col">Scope</th>
+            <th scope="col">Findings</th>
+            <th scope="col">Assets</th>
+            <th scope="col">Scans</th>
+            <th scope="col">Last Scan</th>
+            <th scope="col">Status</th>
+            <th scope="col" aria-label="actions"></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`
+      : `<div class="table-container"><table>
+          <thead><tr><th class="fnd-cb-col"></th><th>Target</th></tr></thead>
+          <tbody><tr><td colspan="2" class="empty-state">No targets match the current filter.</td></tr></tbody>
+        </table></div>`;
 
     return `
       <div class="page-header">
         <h2>Targets</h2>
-        <p>${targets.length} configured target${targets.length !== 1 ? 's' : ''}</p>
+        <p>${targets.length} configured target${targets.length !== 1 ? 's' : ''}${this._typeFilter || this._searchTerm ? ` · ${filtered.length} shown` : ''}</p>
       </div>
       ${addForm}
-      ${Components.table(
-        ['Target', 'Type', 'Scope', 'Findings', 'Assets', 'Scans', 'Last Scan', 'Status', ''],
-        [rows]
-      )}
+      ${typeTabs}
+      <div class="filter-strip" role="group" aria-label="Targets filter">
+        ${searchInput}
+        <span class="filter-strip-spacer"></span>
+      </div>
+      <div data-bulk-slot>${Components.bulkBar({ count: this._selectedIds.size, actions: this._bulkActionDescriptors() })}</div>
+      ${tableHtml}
     `;
+  },
+
+  // _typeTabsHtml builds the pill-strip with one tab per distinct
+  // target.type plus an "All" leader. Counts come from the full list.
+  _typeTabsHtml(allTargets) {
+    const counts = {};
+    allTargets.forEach(t => {
+      const k = (t.type || '').trim() || 'unknown';
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    const types = Object.keys(counts).sort();
+    const tabs = [{ key: '', label: 'All', count: allTargets.length }]
+      .concat(types.map(t => ({ key: t, label: this._humanType(t), count: counts[t] })));
+    const html = tabs.map(t => {
+      const active = t.key === this._typeFilter;
+      const cls = 'sev-tab' + (active ? ' sev-tab-active' : '');
+      return `<button type="button" class="${cls}" role="tab" aria-selected="${active}" data-tgt-type="${escapeHtml(t.key)}">
+        ${escapeHtml(t.label)}<span class="sev-tab-count">${t.count}</span>
+      </button>`;
+    }).join('');
+    return `<div class="sev-tabs" role="tablist" aria-label="Filter targets by type">${html}</div>`;
+  },
+
+  _humanType(t) {
+    const map = { domain: 'Domain', ipv4: 'IPv4', ipv6: 'IPv6', cidr: 'CIDR', external: 'External', internal: 'Internal' };
+    return map[t] || t.charAt(0).toUpperCase() + t.slice(1);
+  },
+
+  _filteredTargets() {
+    const all = this._allTargets || [];
+    const term = (this._searchTerm || '').toLowerCase();
+    return all.filter(t => {
+      if (this._typeFilter && (t.type || '') !== this._typeFilter) return false;
+      if (term && !(t.value || '').toLowerCase().includes(term)) return false;
+      return true;
+    });
+  },
+
+  _restoreFilters() {
+    try {
+      const raw = localStorage.getItem(this.STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== this.STORAGE_VERSION) return;
+      this._typeFilter = parsed.type || '';
+      this._searchTerm = parsed.search || '';
+    } catch (_) {}
+  },
+
+  _persistFilters() {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
+        version: this.STORAGE_VERSION,
+        type: this._typeFilter,
+        search: this._searchTerm,
+        savedAt: new Date().toISOString(),
+      }));
+    } catch (_) {}
   },
 
   bindEvents(app) {
     const form = document.getElementById('add-target-form');
-    if (!form) return;
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const value = document.getElementById('target-value').value.trim();
+        const scope = document.getElementById('target-scope').value;
+        const errorEl = document.getElementById('add-target-error');
+        const btn = form.querySelector('button[type="submit"]');
+        if (!value) return;
+        btn.disabled = true;
+        btn.textContent = 'Adding...';
+        errorEl.style.display = 'none';
+        try {
+          await API.createTarget(value, '', scope);
+          TargetsPage.render(app);
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Add Target';
+        }
+      });
+    }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const value = document.getElementById('target-value').value.trim();
-      const scope = document.getElementById('target-scope').value;
-      const errorEl = document.getElementById('add-target-error');
-      const btn = form.querySelector('button[type="submit"]');
-
-      if (!value) return;
-
-      btn.disabled = true;
-      btn.textContent = 'Adding...';
-      errorEl.style.display = 'none';
-
-      try {
-        await API.createTarget(value, '', scope);
-        TargetsPage.render(app);
-      } catch (err) {
-        errorEl.textContent = err.message;
-        errorEl.style.display = 'block';
-        btn.disabled = false;
-        btn.textContent = 'Add Target';
-      }
+    // Type-tab clicks. Filter change resets selection because the
+    // visible row set is changing under the operator.
+    app.querySelectorAll('[data-tgt-type]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._typeFilter = btn.getAttribute('data-tgt-type') || '';
+        this._selectedIds.clear();
+        this._persistFilters();
+        app.innerHTML = this.template();
+        this.bindEvents(app);
+      });
     });
+
+    // Live search.
+    const search = document.getElementById('tgt-search-input');
+    if (search) {
+      search.addEventListener('input', () => {
+        this._searchTerm = search.value;
+        this._selectedIds.clear();
+        this._persistFilters();
+        // Re-render the table only — keep input focus.
+        const cur = document.activeElement === search ? search.selectionStart : null;
+        app.innerHTML = this.template();
+        this.bindEvents(app);
+        const next = document.getElementById('tgt-search-input');
+        if (next) {
+          next.focus();
+          if (cur != null) next.setSelectionRange(cur, cur);
+        }
+      });
+    }
+
+    // Header select-all.
+    const selAll = document.getElementById('targets-select-all');
+    if (selAll) {
+      this._syncSelectAllState(selAll);
+      selAll.addEventListener('click', () => this.toggleAll(selAll.checked));
+    }
+
+    this._wireBulkBarActions(app);
+  },
+
+  // --- Bulk select & actions --------------------------------------
+
+  _bulkActionDescriptors() {
+    return [
+      { label: 'Run scan', primary: true, onClick: () => this.bulkRunScan() },
+      { label: 'Delete',   danger: true,  onClick: () => this.bulkDelete() },
+      { label: 'Clear',    onClick: () => this.clearSelection() },
+    ];
+  },
+
+  _wireBulkBarActions(app) {
+    const bar = app.querySelector('[data-bulk-slot] .bulk-bar');
+    if (!bar) return;
+    const descriptors = this._bulkActionDescriptors();
+    bar.querySelectorAll('[data-bulk-action]').forEach(btn => {
+      const i = parseInt(btn.getAttribute('data-bulk-action'), 10);
+      const a = descriptors[i];
+      if (!a || typeof a.onClick !== 'function') return;
+      btn.addEventListener('click', () => a.onClick());
+    });
+  },
+
+  onCheckboxChange(input) {
+    const id = input.value;
+    if (input.checked) this._selectedIds.add(id);
+    else this._selectedIds.delete(id);
+    this._refreshBulkBar();
+    const row = document.querySelector(`tr.tgt-row[data-target-id="${cssAttrEscape(id)}"]`);
+    if (row) row.classList.toggle('tgt-row-selected', input.checked);
+    const selAll = document.getElementById('targets-select-all');
+    if (selAll) this._syncSelectAllState(selAll);
+  },
+
+  toggleAll(checked) {
+    document.querySelectorAll('.tgt-checkbox').forEach(cb => {
+      cb.checked = checked;
+      const id = cb.value;
+      if (checked) this._selectedIds.add(id);
+      else this._selectedIds.delete(id);
+      const row = document.querySelector(`tr.tgt-row[data-target-id="${cssAttrEscape(id)}"]`);
+      if (row) row.classList.toggle('tgt-row-selected', checked);
+    });
+    this._refreshBulkBar();
+  },
+
+  clearSelection() {
+    this._selectedIds.clear();
+    document.querySelectorAll('.tgt-checkbox').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('.tgt-row').forEach(r => r.classList.remove('tgt-row-selected'));
+    this._refreshBulkBar();
+    const selAll = document.getElementById('targets-select-all');
+    if (selAll) this._syncSelectAllState(selAll);
+  },
+
+  _syncSelectAllState(el) {
+    const visible = Array.from(document.querySelectorAll('.tgt-checkbox'));
+    if (visible.length === 0) { el.checked = false; el.indeterminate = false; return; }
+    const checkedCount = visible.filter(cb => cb.checked).length;
+    if (checkedCount === 0) { el.checked = false; el.indeterminate = false; }
+    else if (checkedCount === visible.length) { el.checked = true; el.indeterminate = false; }
+    else { el.checked = false; el.indeterminate = true; }
+  },
+
+  _refreshBulkBar() {
+    const slot = document.querySelector('[data-bulk-slot]');
+    if (!slot) return;
+    slot.innerHTML = Components.bulkBar({
+      count: this._selectedIds.size,
+      actions: this._bulkActionDescriptors(),
+    });
+    this._wireBulkBarActions(document);
+  },
+
+  async bulkRunScan() {
+    const ids = Array.from(this._selectedIds);
+    if (ids.length === 0) return;
+    const ok = await Components.confirmDialog({
+      title: 'Start ' + ids.length + ' scan' + (ids.length !== 1 ? 's' : '') + '?',
+      message: 'A full scan will be queued for each selected target.',
+      confirmLabel: 'Start scans',
+    });
+    if (!ok) return;
+    const results = await Promise.allSettled(ids.map(id => API.startScan(id, 'full')));
+    const failed = results.filter(r => r.status === 'rejected').length;
+    const ok2 = results.length - failed;
+    if (failed === 0) {
+      Components.toast.success(`${ok2} scan${ok2 !== 1 ? 's' : ''} started`);
+    } else {
+      Components.toast.error(`${ok2}/${results.length} started · ${failed} failed`);
+    }
+    this.clearSelection();
+  },
+
+  async bulkDelete() {
+    const ids = Array.from(this._selectedIds);
+    if (ids.length === 0) return;
+    const ok = await Components.confirmDialog({
+      title: 'Delete ' + ids.length + ' target' + (ids.length !== 1 ? 's' : '') + '?',
+      message: 'This removes their associated assets and findings. Cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    const results = await Promise.allSettled(ids.map(id => API.deleteTarget(id)));
+    const failed = results.filter(r => r.status === 'rejected').length;
+    const ok2 = results.length - failed;
+    if (failed === 0) {
+      Components.toast.success(`${ok2} target${ok2 !== 1 ? 's' : ''} deleted`);
+    } else {
+      Components.toast.error(`${ok2}/${results.length} deleted · ${failed} failed`);
+    }
+    this._selectedIds.clear();
+    TargetsPage.render(document.getElementById('app'));
+  },
+
+  // handleRowClick navigates to the detail view but ignores clicks that
+  // originated on the checkbox column or any per-row action button.
+  handleRowClick(evt, id) {
+    const t = evt.target;
+    if (t && t.closest && t.closest('input, button, a, .actions-cell, .fnd-cb-col')) return;
+    location.hash = '#/targets/' + id;
   },
 
   // --- Target Detail View ---

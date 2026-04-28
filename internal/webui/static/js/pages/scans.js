@@ -2,6 +2,24 @@
 const ScansPage = {
   pollTimer: null,
 
+  // Set of tool_run.id values whose pipeline-detail accordion is open.
+  // Survives the 3s polling re-render of the scan detail page so the
+  // user's expansion stays put. Keyed by id (not idx) because the sort
+  // by started_at can re-order running tools as new started_at values
+  // come in.
+  _openToolRunIds: new Set(),
+
+  // PR5 (#38): scans list adds status tabs + filter chips (target /
+  // template / range). Bulk actions are explicitly out of scope; the
+  // backend doesn't yet accept template_id or range params either, so
+  // those filters are applied client-side over the fetched page.
+  STORAGE_KEY: 'surfbot_scans_filters',
+  STORAGE_VERSION: 1,
+  _filterMenu: null,
+  _filters: { status: '', target_id: '', template_id: '', range: '' },
+  _allScans: [],
+  _allTargets: [],
+
   async render(app, params) {
     if (params && params.id) {
       return this.renderDetail(app, params.id);
@@ -10,11 +28,20 @@ const ScansPage = {
     app.innerHTML = '<div class="loading">Loading scans...</div>';
 
     try {
+      this._restoreFilters();
+      // Apply URL params on top of stored — deep links win.
+      if (params) {
+        ['status', 'target_id', 'template_id', 'range'].forEach(k => {
+          if (params[k]) this._filters[k] = params[k];
+        });
+      }
       const [scansData, statusData, targetsData] = await Promise.all([
-        API.scans({ limit: 50 }),
+        API.scans(this._backendParamsForScans()),
         API.scanStatus(),
         API.targets(),
       ]);
+      this._allScans = scansData.scans || [];
+      this._allTargets = (targetsData && targetsData.targets) || [];
       app.innerHTML = this.template(scansData, statusData, targetsData);
       this.bindEvents(app, targetsData);
 
@@ -24,6 +51,63 @@ const ScansPage = {
       }
     } catch (err) {
       app.innerHTML = Components.emptyState('Error', 'Failed to load scans: ' + err.message);
+    }
+  },
+
+  // _backendParamsForScans returns only the params the /scans endpoint
+  // actually accepts. template_id and range are filtered client-side
+  // (P0.7 backend gap noted in #38).
+  _backendParamsForScans() {
+    const p = { limit: 50 };
+    if (this._filters.target_id) p.target_id = this._filters.target_id;
+    return p;
+  },
+
+  _restoreFilters() {
+    try {
+      const raw = localStorage.getItem(this.STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== this.STORAGE_VERSION) return;
+      Object.assign(this._filters, parsed.filters || {});
+    } catch (_) {}
+  },
+
+  _persistFilters() {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
+        version: this.STORAGE_VERSION,
+        filters: this._filters,
+        savedAt: new Date().toISOString(),
+      }));
+    } catch (_) {}
+  },
+
+  // _applyClientFilters narrows the backend response by the chips that
+  // /scans doesn't natively support: status (tab), template_id, range.
+  _applyClientFilters(scans) {
+    let out = scans || [];
+    if (this._filters.status) out = out.filter(s => s.status === this._filters.status);
+    if (this._filters.template_id) out = out.filter(s => s.template_id === this._filters.template_id);
+    if (this._filters.range) {
+      const since = this._rangeToSinceMs(this._filters.range);
+      if (since != null) {
+        out = out.filter(s => {
+          const t = new Date(s.started_at || s.created_at).getTime();
+          return !isNaN(t) && t >= since;
+        });
+      }
+    }
+    return out;
+  },
+
+  _rangeToSinceMs(range) {
+    const now = Date.now();
+    switch (range) {
+      case '24h': return now - 24 * 3600 * 1000;
+      case '7d':  return now - 7 * 24 * 3600 * 1000;
+      case '30d': return now - 30 * 24 * 3600 * 1000;
+      default:    return null;
     }
   },
 
@@ -94,7 +178,11 @@ const ScansPage = {
       `;
     }
 
-    const rows = data.scans.map(s => {
+    const filtered = this._applyClientFilters(data.scans);
+    const tabsHtml = this._statusTabsHtml(data.scans);
+    const stripHtml = this._chipStripHtml();
+
+    const rows = filtered.map(s => {
       let dur = '-';
       if (s.started_at && s.finished_at) {
         dur = Components.formatDuration(Math.floor((new Date(s.finished_at) - new Date(s.started_at)) / 1000));
@@ -112,18 +200,80 @@ const ScansPage = {
       `;
     }).join('');
 
+    const filteredCount = filtered.length;
+    const totalCount = data.scans.length;
+    const counterText = (filteredCount === totalCount)
+      ? `${data.total} total scans`
+      : `${filteredCount} shown of ${totalCount} loaded · ${data.total} total`;
+
     return `
       <div class="page-header">
         <h2>Scans</h2>
-        <p>${data.total} total scans</p>
+        <p>${counterText}</p>
       </div>
       ${scanForm}
       ${activeBanner}
-      ${Components.table(['ID', 'Target', 'Status', 'Type', 'Duration', 'Results', 'Date'], [rows])}
+      ${tabsHtml}
+      ${stripHtml}
+      ${filteredCount === 0
+        ? `<div class="table-container"><table>
+            <thead><tr><th>ID</th><th>Target</th><th>Status</th><th>Type</th><th>Duration</th><th>Results</th><th>Date</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty-state">No scans match the current filters.</td></tr></tbody>
+          </table></div>`
+        : Components.table(['ID', 'Target', 'Status', 'Type', 'Duration', 'Results', 'Date'], [rows])}
     `;
   },
 
+  _statusTabsHtml(allScans) {
+    const counts = { running: 0, completed: 0, cancelled: 0, failed: 0 };
+    (allScans || []).forEach(s => { if (counts[s.status] != null) counts[s.status]++; });
+    const total = (allScans || []).length;
+    const tabs = [
+      { key: '',          label: 'All',       count: total },
+      { key: 'running',   label: 'Running',   count: counts.running },
+      { key: 'completed', label: 'Completed', count: counts.completed },
+      { key: 'cancelled', label: 'Cancelled', count: counts.cancelled },
+      { key: 'failed',    label: 'Failed',    count: counts.failed },
+    ];
+    const active = this._filters.status || '';
+    return `<div class="sev-tabs" role="tablist" aria-label="Filter by status">
+      ${tabs.map(t => {
+        const isActive = t.key === active;
+        const cls = 'sev-tab' + (isActive ? ' sev-tab-active' : '');
+        return `<button type="button" class="${cls}" role="tab" aria-selected="${isActive}" data-scan-status="${escapeHtml(t.key)}">
+          ${escapeHtml(t.label)}<span class="sev-tab-count">${t.count}</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+  },
+
+  _chipStripHtml() {
+    const f = this._filters;
+    const chips = [];
+    if (f.target_id) {
+      const t = this._allTargets.find(x => x.id === f.target_id);
+      chips.push({ key: 'target_id', label: 'Target: ' + (t ? t.value : f.target_id) });
+    }
+    if (f.template_id) chips.push({ key: 'template_id', label: 'Template: ' + f.template_id });
+    if (f.range) chips.push({ key: 'range', label: 'Range: ' + f.range });
+
+    const chipMounts = chips.map((c, i) =>
+      `<span class="filter-chip-mount" data-chip-idx="${i}" data-chip-key="${c.key}" data-chip-label="${escapeHtml(c.label)}"></span>`
+    ).join('');
+
+    return `<div class="filter-strip" role="group" aria-label="Active scan filters">
+      <div class="filter-strip-chips">${chipMounts}</div>
+      <button type="button" class="filter-add-btn" data-add-filter>
+        ${Components.icon('plus', 14)}<span>Filter</span>
+      </button>
+    </div>`;
+  },
+
   bindEvents(app, targetsData) {
+    // Status tabs + filter chips first — these must wire even when the
+    // page renders without #new-scan-form (no targets configured).
+    this._wireFilterUI(app);
+
     const form = document.getElementById('new-scan-form');
     if (!form) return;
 
@@ -165,6 +315,159 @@ const ScansPage = {
         btn.textContent = 'Start Scan';
       }
     });
+  },
+
+  // _wireFilterUI binds status tab clicks, chip removal, and the
+  // "+ Filter" menu. Mounted via bindEvents so it runs after every
+  // template re-render.
+  _wireFilterUI(app) {
+    app.querySelectorAll('[data-scan-status]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._filters.status = btn.getAttribute('data-scan-status') || '';
+        this._persistFilters();
+        ScansPage.render(app);
+      });
+    });
+
+    app.querySelectorAll('.filter-chip-mount').forEach(slot => {
+      const key = slot.getAttribute('data-chip-key');
+      const label = slot.getAttribute('data-chip-label');
+      const chip = Components.filterChip(label, () => {
+        this._filters[key] = '';
+        this._persistFilters();
+        ScansPage.render(app);
+      });
+      slot.replaceWith(chip);
+    });
+
+    const addBtn = app.querySelector('[data-add-filter]');
+    if (addBtn) {
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._openFilterMenu(addBtn, app);
+      });
+    }
+  },
+
+  _openFilterMenu(anchor, app) {
+    this._closeFilterMenu();
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu';
+    menu.setAttribute('role', 'menu');
+    const items = [];
+    if (!this._filters.target_id)   items.push({ key: 'target_id',   label: 'Target' });
+    if (!this._filters.template_id) items.push({ key: 'template_id', label: 'Template' });
+    if (!this._filters.range)       items.push({ key: 'range',       label: 'Range' });
+    items.push({ key: '__reset__', label: 'Reset filters', divider: true });
+    menu.innerHTML = items.map(it => {
+      if (it.divider) return `<div class="filter-menu-divider"></div>
+        <button type="button" class="filter-menu-item filter-menu-reset" data-mi-key="${it.key}" role="menuitem">${escapeHtml(it.label)}</button>`;
+      return `<button type="button" class="filter-menu-item" data-mi-key="${it.key}" role="menuitem">${escapeHtml(it.label)}</button>`;
+    }).join('');
+    document.body.appendChild(menu);
+    this._positionMenu(menu, anchor);
+    this._filterMenu = menu;
+    menu.querySelectorAll('[data-mi-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const k = btn.getAttribute('data-mi-key');
+        this._closeFilterMenu();
+        if (k === '__reset__') {
+          this._filters = { status: '', target_id: '', template_id: '', range: '' };
+          try { localStorage.removeItem(this.STORAGE_KEY); } catch (_) {}
+          ScansPage.render(app);
+          return;
+        }
+        this._openFilterSubmenu(anchor, k, app);
+      });
+    });
+    setTimeout(() => {
+      document.addEventListener('click', this._onMenuOutside);
+      document.addEventListener('keydown', this._onMenuKey);
+    }, 0);
+  },
+
+  _openFilterSubmenu(anchor, key, app) {
+    this._closeFilterMenu();
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu filter-submenu';
+    menu.setAttribute('role', 'menu');
+
+    if (key === 'target_id') {
+      const targets = this._allTargets || [];
+      menu.innerHTML = `<input type="text" class="filter-menu-search" placeholder="Search targets…" aria-label="Search targets" />
+        <div class="filter-menu-list">
+          ${targets.map(t => `<button type="button" class="filter-menu-item" data-mi-pick="${escapeHtml(t.id)}" data-mi-text="${escapeHtml(t.value)}" role="menuitem">${escapeHtml(t.value)}</button>`).join('')}
+        </div>`;
+    } else if (key === 'template_id') {
+      const tmpls = Array.from(new Set((this._allScans || []).map(s => s.template_id).filter(Boolean))).sort();
+      menu.innerHTML = tmpls.length
+        ? tmpls.map(t => `<button type="button" class="filter-menu-item" data-mi-pick="${escapeHtml(t)}" role="menuitem">${escapeHtml(t)}</button>`).join('')
+        : `<div class="filter-menu-empty">No template IDs in current view.</div>`;
+    } else if (key === 'range') {
+      const opts = [['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']];
+      menu.innerHTML = opts.map(([v, l]) =>
+        `<button type="button" class="filter-menu-item" data-mi-pick="${v}" role="menuitem">${escapeHtml(l)}</button>`
+      ).join('');
+    }
+
+    document.body.appendChild(menu);
+    this._positionMenu(menu, anchor);
+    this._filterMenu = menu;
+
+    menu.querySelectorAll('[data-mi-pick]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._closeFilterMenu();
+        this._filters[key] = btn.getAttribute('data-mi-pick');
+        this._persistFilters();
+        ScansPage.render(app);
+      });
+    });
+
+    const search = menu.querySelector('.filter-menu-search');
+    if (search) {
+      search.focus();
+      if (key === 'target_id') {
+        search.addEventListener('input', () => {
+          const q = search.value.toLowerCase();
+          menu.querySelectorAll('[data-mi-pick]').forEach(btn => {
+            const txt = (btn.getAttribute('data-mi-text') || '').toLowerCase();
+            btn.style.display = (!q || txt.includes(q)) ? '' : 'none';
+          });
+        });
+      }
+    }
+    setTimeout(() => {
+      document.addEventListener('click', this._onMenuOutside);
+      document.addEventListener('keydown', this._onMenuKey);
+    }, 0);
+  },
+
+  _onMenuOutside: (e) => {
+    const menu = ScansPage._filterMenu;
+    if (!menu) return;
+    if (menu.contains(e.target)) return;
+    ScansPage._closeFilterMenu();
+  },
+
+  _onMenuKey: (e) => {
+    if (e.key === 'Escape') ScansPage._closeFilterMenu();
+  },
+
+  _closeFilterMenu() {
+    if (this._filterMenu) {
+      this._filterMenu.remove();
+      this._filterMenu = null;
+    }
+    document.removeEventListener('click', this._onMenuOutside);
+    document.removeEventListener('keydown', this._onMenuKey);
+  },
+
+  _positionMenu(menu, anchor) {
+    const r = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = (r.bottom + 4) + 'px';
+    menu.style.left = r.left + 'px';
+    menu.style.zIndex = 100;
   },
 
   async loadToolCheckboxes() {
@@ -388,7 +691,10 @@ const ScansPage = {
       // Providing a hint chevron makes the affordance discoverable.
       const hasLogs = this.toolRunHasLogs(tr);
 
-      return `<div class="pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}" data-tr-idx="${i}"${hasLogs ? ' title="Click to view logs"' : ''}>
+      const trID = tr.id || '';
+      const isOpen = hasLogs && trID && this._openToolRunIds.has(trID);
+      const nodeClasses = `pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}${isOpen ? ' pipeline-node-open' : ''}`;
+      return `<div class="${nodeClasses}" data-tr-idx="${i}" data-tr-id="${escapeHtml(trID)}"${hasLogs ? ' title="Click to view logs"' : ''}>
         <div class="pipeline-connector">
           <div class="pipeline-dot"></div>
           ${isLast ? '' : '<div class="pipeline-vline"></div>'}
@@ -402,7 +708,7 @@ const ScansPage = {
             ${hasLogs ? '<span class="pipeline-chevron text-muted" aria-hidden="true">▸</span>' : ''}
           </div>
           ${stats.length > 0 ? `<div class="pipeline-stats">${stats.join('')}</div>` : ''}
-          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" hidden>${this.renderToolRunDetail(tr)}</div>` : ''}
+          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" data-tr-id="${escapeHtml(trID)}"${isOpen ? '' : ' hidden'}>${this.renderToolRunDetail(tr)}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -493,21 +799,27 @@ const ScansPage = {
 
   // bindPipelineAccordion wires click handlers on pipeline nodes.
   // Re-invoked after every render (polling re-renders the whole detail)
-  // so listeners are always fresh.
+  // so listeners are always fresh. Open state is persisted in
+  // _openToolRunIds so the accordion stays expanded across re-renders;
+  // the renderPipeline template applies the persisted state during
+  // render, this handler only mutates the Set on click.
   bindPipelineAccordion() {
     document.querySelectorAll('.pipeline-node-clickable').forEach(node => {
       node.addEventListener('click', (e) => {
         if (e.target.closest('a, button')) return;
         const idx = node.dataset.trIdx;
+        const trID = node.dataset.trId || '';
         const detail = node.querySelector(`.pipeline-detail[data-tr-idx="${idx}"]`);
         if (!detail) return;
         const isOpen = !detail.hasAttribute('hidden');
         if (isOpen) {
           detail.setAttribute('hidden', '');
           node.classList.remove('pipeline-node-open');
+          if (trID) this._openToolRunIds.delete(trID);
         } else {
           detail.removeAttribute('hidden');
           node.classList.add('pipeline-node-open');
+          if (trID) this._openToolRunIds.add(trID);
         }
       });
     });
@@ -999,6 +1311,12 @@ const ScansPage = {
 
   async renderDetail(app, id) {
     this.stopPolling();
+    // New scan: reset accordion open-state so we don't carry stale
+    // tool_run.ids from a different scan into the new render.
+    if (this._openScanID !== id) {
+      this._openToolRunIds.clear();
+      this._openScanID = id;
+    }
     app.innerHTML = '<div class="loading">Loading scan...</div>';
 
     // Reset the main scroll container so navigating between scan details
