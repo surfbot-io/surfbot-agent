@@ -2798,3 +2798,304 @@ button.kpi-card:focus-visible {
     max-width: calc(100% - 16px);
   }
 }
+
+/* ============================================================
+   PR7 #40 — Scan detail page (scan_detail.js).
+   ============================================================ */
+
+/* Marquee animation for in-progress bars (the spec calls it out from
+   PR1 wireframes; PR1 ships the foundation tokens but the keyframes
+   landed here with the first consumer that actually needed them). */
+.marquee {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.18) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: marquee-slide 1.6s linear infinite;
+}
+@keyframes marquee-slide {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.text-danger { color: var(--sev-critical); }
+
+.dash-col-12 { grid-column: span 12; }
+
+/* Header */
+.scan-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.scan-detail-titleblock { flex: 1 1 auto; min-width: 0; }
+.scan-detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  flex-wrap: wrap;
+}
+.scan-detail-subtitle {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.scan-detail-sep { color: var(--text-muted); }
+.scan-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Tabs are sev-tabs with 8px top spacing — the strip lives directly
+   under the page header and otherwise looks identical. */
+.scan-detail-tabs { margin-top: 4px; }
+.scan-detail-panel { margin-top: 8px; }
+.scan-detail-overview { margin-top: 0; }
+
+/* Progress card */
+.scan-progress-card { padding: 16px; }
+.scan-progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.scan-progress-pct {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.scan-progress-meta { font-size: 12px; color: var(--text-secondary); }
+
+/* Phase tracker */
+.scan-phase-card { padding: 16px; }
+.phase-tracker {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.phase-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  padding: 10px 0;
+}
+.phase-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 14px;
+  flex-shrink: 0;
+}
+.phase-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  flex-shrink: 0;
+}
+.phase-dot-pending { background: var(--ink-700); border-color: var(--ink-600); }
+.phase-dot-done    { background: var(--success, #00e599); border-color: var(--success, #00e599); }
+.phase-dot-running { background: var(--brand); border-color: var(--brand); animation: phase-pulse 1.4s ease-in-out infinite; }
+.phase-dot-failed  { background: var(--sev-critical); border-color: var(--sev-critical); }
+.phase-stem {
+  flex: 1;
+  width: 1px;
+  background: var(--ink-700);
+  margin-top: 4px;
+}
+.phase-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto auto;
+  gap: 12px;
+  align-items: center;
+}
+.phase-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.phase-tool { font-size: 11px; }
+.phase-duration, .phase-summary {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.phase-bar, .phase-bar-track {
+  height: 6px;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+.phase-bar-track { background: var(--ink-700); }
+.phase-bar-fill { height: 100%; background: var(--brand); }
+.phase-bar-pending { background: var(--ink-700); }
+.phase-bar-done    { background: var(--success, #00e599); opacity: 0.55; }
+.phase-bar-failed  { background: var(--sev-critical); opacity: 0.55; }
+@media (max-width: 900px) {
+  .phase-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .phase-duration, .phase-summary { text-align: left; }
+}
+
+/* Phases tab grouped pipeline */
+.phase-group { margin-top: 16px; }
+.phase-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+/* Findings discovered panel */
+.findings-panel {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+}
+.findings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.findings-panel-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--ink-700);
+  border-radius: 9999px;
+  padding: 2px 8px;
+}
+.findings-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 80px;
+}
+.findings-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.12s;
+}
+.findings-panel-row:hover { background: var(--ink-800); }
+.findings-panel-text { min-width: 0; flex: 1; }
+.findings-panel-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.findings-panel-asset {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.findings-panel-empty {
+  font-size: 12px;
+  text-align: center;
+  padding: 24px 0;
+}
+.findings-panel-cta {
+  font-size: 12px;
+  color: var(--brand);
+  text-decoration: none;
+  margin-top: auto;
+}
+.findings-panel-cta:hover { text-decoration: underline; }
+
+/* Logs placeholder */
+.scan-logs-card { padding: 16px; }
+.scan-logs-placeholder { background: var(--ink-900); }
+.scan-log-preview-slot { margin-top: 0; }
+
+/* Error card */
+.scan-error-card {
+  border-color: rgba(248,81,73,0.3);
+}
+
+/* Config tab */
+.scan-config-card { padding: 16px; }
+.config-phase + .config-phase { margin-top: 18px; }
+.config-phase-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.config-run + .config-run { margin-top: 8px; }
+.config-run-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  font-family: var(--font-mono, monospace);
+}
+.config-list {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 0 0 0 12px;
+  font-size: 12px;
+}
+.config-list dt { color: var(--text-muted); }
+.config-list dd { margin: 0; color: var(--text-primary); word-break: break-all; }
+
+/* Scans list — running pill + progress column */
+.scan-running-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.scan-running-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: phase-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.scan-row-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.scan-row-progress-track {
+  width: 96px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--ink-700);
+  overflow: hidden;
+}
+.scan-row-progress-fill {
+  height: 100%;
+  background: var(--brand);
+}
+.scan-row-progress-pct {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
