@@ -451,6 +451,116 @@ func TestPR7CSSScaffolding(t *testing.T) {
 	}
 }
 
+// Issue #52 — scan_logs frontend integration. The HEAD probe + log
+// rendering now have a real backend behind them. Guard that the
+// frontend wires the polling helpers, color-coded line renderer, and
+// toolbar controls (pause/wrap/download/level chips) against silent
+// regression. Also guards the B2/B4/B7 UI fixes baked into the
+// re-implementation.
+
+func TestScanDetailWiresLogStream(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/scan_detail.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"_fetchLogs(",
+		"_startLogsPolling(",
+		"_renderLogLine(",
+		"_renderLogToolbar(",
+		"_filteredLogs(",
+		"_downloadLogs(",
+		"_bindLogControls(",
+		"data-log-level=",
+		"data-log-source=",
+		"data-log-pause",
+		"data-log-wrap",
+		"data-log-download",
+		"API.scanLogs(",
+		"_logsPaused",
+		"_logsWrap",
+		// B2 fix: indeterminate track class instead of width:100% fallback.
+		"progress-bar-track-indeterminate",
+		// B7 fix: completed-with-warnings badge variant.
+		"_statusBadgeWithWarnings(",
+		"badge-completed-warn",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"scan_detail.js must reference %q after #52", s)
+	}
+}
+
+func TestAPIWiresScanLogs(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/api.js")
+	require.NoError(t, err)
+	js := string(data)
+	assert.True(t, strings.Contains(js, "scanLogs(id, params)"),
+		"api.js must expose scanLogs() helper after #52")
+}
+
+func TestScanLogsCSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+	classes := []string{
+		// Live log card.
+		".scan-log-header", ".scan-log-toolbar",
+		".scan-log-chips", ".scan-log-chip",
+		".scan-log-chip-error", ".scan-log-chip-warn",
+		".scan-log-actions", ".scan-log-pre",
+		".scan-log-pre-preview", ".scan-log-pre-full",
+		".scan-log-wrap",
+		".scan-log-line", ".scan-log-line-error",
+		".scan-log-line-warn", ".scan-log-line-debug",
+		".scan-log-ts", ".scan-log-src",
+		".scan-log-empty", ".scan-log-cta",
+		".scan-log-count",
+		// B2 fix: indeterminate track shimmer.
+		".progress-bar-track-indeterminate",
+		// B7 fix: completed-with-warnings badge.
+		".badge-completed-warn",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"scan_logs CSS class %q missing from style.css", c)
+	}
+}
+
+// B3 fix (#52): the phase tracker grid must use FIXED widths for the
+// duration and summary columns so the progress bar column is uniform
+// across phases. The previous `auto auto` declaration squeezed bars
+// unevenly when summary text length varied.
+func TestPhaseTrackerHasFixedColumns(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+	// Reject the legacy `auto auto` columns and require explicit
+	// pixel widths instead.
+	assert.False(t,
+		strings.Contains(css, "minmax(0, 2fr) minmax(0, 3fr) auto auto"),
+		"phase-body must not use auto-sized duration/summary columns (B3 #52)")
+	assert.True(t,
+		strings.Contains(css, "minmax(0, 2fr) minmax(0, 3fr) 64px 160px"),
+		"phase-body must declare fixed-width duration/summary columns (B3 #52)")
+}
+
+// B4 fix (#52): the highlighted background on an open pipeline node
+// must wrap the WHOLE node so the connector dot lives inside the
+// visible card. The legacy CSS only highlighted .pipeline-content,
+// which left the dot floating outside. Either an exact-match selector
+// or a grouped form (e.g. ":hover, .pipeline-node-open {") satisfies.
+func TestPipelineOpenWrapsWholeNode(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+	exact := strings.Contains(css, ".pipeline-node.pipeline-node-open {")
+	grouped := strings.Contains(css, ".pipeline-node.pipeline-node-open,") ||
+		strings.Contains(css, ".pipeline-node-clickable:hover,\n.pipeline-node.pipeline-node-open")
+	assert.True(t, exact || grouped,
+		"pipeline-node-open must apply background to the whole node (B4 #52)")
+}
+
 func TestIndexHTMLLoadsScanDetail(t *testing.T) {
 	data, err := staticFS.ReadFile("static/index.html")
 	require.NoError(t, err)

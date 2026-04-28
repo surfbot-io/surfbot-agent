@@ -1,9 +1,7 @@
-// PR7 (#40): scan-detail page extracted from scans.js. Owns the
-// /#/scans/:id route. 4-tab view (Overview / Phases / Logs / Config),
-// 5-phase tracker, live findings panel, polling lifecycle scoped to
-// running scans. Cancel scan + topbar deep link integrate here. The
-// Logs tab degrades to a placeholder until the backend endpoint exists
-// — the HEAD probe primes a flip-on path for when it ships.
+// PR7 (#40) + #52: scan-detail page with live log streaming. Owns
+// the /#/scans/:id route. 4-tab view (Overview / Phases / Logs /
+// Config), 5-phase tracker, live findings panel, polling lifecycle
+// scoped to running scans. Cancel + topbar deep link integrate here.
 const ScanDetailPage = {
   POLL_MS: 2000,
   ELAPSED_MS: 1000,
@@ -14,18 +12,23 @@ const ScanDetailPage = {
     { key: 'http_probe', label: 'HTTP probe', defaultTool: 'httpx' },
     { key: 'assess',     label: 'Assessment', defaultTool: 'nuclei' },
   ],
-  // Backend uses `assessment` historically; tracker normalizes both.
   PHASE_ALIASES: { assess: 'assessment', assessment: 'assess' },
   TOOL_ICONS: {
     subfinder: '\u{1F50D}', dnsx: '\u{1F4CB}', naabu: '\u{1F4E1}',
-    httpx: '\u{1F310}', subjack: '\u{26A0}\uFE0F', nuclei: '\u{1F6E1}\uFE0F',
+    httpx: '\u{1F310}', subjack: '\u{26A0}️', nuclei: '\u{1F6E1}️',
   },
 
   _pollTimer: null, _elapsedTimer: null, _abort: null,
   _activeTab: 'overview',
-  _openToolRunIds: new Set(),  // preserves PR5 fix c3802e47
+  _openToolRunIds: new Set(),
   _scanID: null, _data: null, _findings: [],
   _logsEnabled: null, _failStreak: 0, _onHashChange: null,
+  // #52 live log state. _logs is the in-memory line buffer (used for
+  // download); _logSince is the cursor for the next fetch; _logsPaused
+  // freezes the renderer; _logFilters are client-side multi-select chips.
+  _logs: [], _logSince: 0, _logsPaused: false, _logsWrap: false,
+  _logFilters: { levels: new Set(), sources: new Set() },
+  _logsTimer: null, _logsFailStreak: 0,
 
   async render(app, id) {
     if (this._scanID !== id) {
@@ -33,6 +36,10 @@ const ScanDetailPage = {
       this._activeTab = 'overview';
       this._failStreak = 0;
       this._logsEnabled = null;
+      this._logs = [];
+      this._logSince = 0;
+      this._logsPaused = false;
+      this._logFilters = { levels: new Set(), sources: new Set() };
     }
     this._scanID = id;
     this._destroy();
@@ -48,7 +55,16 @@ const ScanDetailPage = {
         this._probeLogsEndpoint(id).then(enabled => {
           if (this._scanID !== id) return;
           this._logsEnabled = enabled;
-          if (this._activeTab === 'logs' || this._activeTab === 'overview') this._renderActivePanel(app);
+          if (enabled) {
+            this._fetchLogs(id, /*reset*/ true).then(() => {
+              if (this._activeTab === 'logs' || this._activeTab === 'overview') {
+                this._renderActivePanel(app);
+              }
+              if (data.scan.status === 'running') this._startLogsPolling(id, app);
+            });
+          } else if (this._activeTab === 'logs' || this._activeTab === 'overview') {
+            this._renderActivePanel(app);
+          }
         });
       }
       if (data.scan.status === 'running') this.startPolling(app, id);
@@ -56,7 +72,6 @@ const ScanDetailPage = {
       app.innerHTML = Components.emptyState('Not found', 'Scan not found.');
     }
 
-    // Tear down on route change so polling/AbortController don't leak.
     this._onHashChange = () => {
       if ((location.hash || '').indexOf('#/scans/' + id) !== 0) {
         this._destroy();
@@ -77,8 +92,6 @@ const ScanDetailPage = {
       if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
       return r.json();
     };
-    // scan_scope (not scan_id) so findings discovered by this scan but
-    // later re-observed by a newer scan still show up — see SUR-244.
     const [data, findingsResp] = await Promise.all([
       get('/scans/' + encodeURIComponent(id)),
       get('/findings?scan_scope=' + encodeURIComponent(id) + '&limit=100'),
@@ -199,14 +212,22 @@ const ScanDetailPage = {
     </div>`;
   },
 
+  // B2 fix (#52): the previous version forced width:100% when pct===0
+  // to make the marquee animation visible. That visually read as
+  // "completed". Now the fill width matches the actual percentage.
+  // When pct is exactly 0 AND running, we add a track-level
+  // "indeterminate" class so the user sees a sliding shimmer on the
+  // empty track without a misleading full-width fill.
   _renderProgressCard(s) {
     const isRunning = s.status === 'running';
     const pct = Math.round(s.progress || 0);
     const elapsedTxt = (s.started_at)
       ? this._fmtElapsed(Math.round(((s.finished_at ? new Date(s.finished_at) : Date.now()) - new Date(s.started_at).getTime()) / 1000))
       : '—';
+    const trackCls = (isRunning && pct === 0)
+      ? 'progress-bar-track progress-bar-track-indeterminate'
+      : 'progress-bar-track';
     const fillCls = isRunning ? 'progress-bar-fill marquee' : 'progress-bar-fill';
-    const fillStyle = isRunning && pct === 0 ? 'width:100%' : 'width:' + pct + '%';
     return `<div class="card scan-progress-card">
       <div class="scan-progress-row">
         <div class="scan-progress-pct">${pct}%</div>
@@ -215,8 +236,8 @@ const ScanDetailPage = {
           ${isRunning ? '<span class="text-muted"> · phase ' + escapeHtml(s.phase || 'initializing') + '</span>' : ''}
         </div>
       </div>
-      <div class="progress-bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
-        <div class="${fillCls}" style="${fillStyle}"></div>
+      <div class="${trackCls}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+        <div class="${fillCls}" style="width:${pct}%"></div>
       </div>
     </div>`;
   },
@@ -242,7 +263,7 @@ const ScanDetailPage = {
           </div>
           <div class="phase-progress">${this._renderPhaseBar(status, pct)}</div>
           <div class="phase-duration text-muted">${escapeHtml(dur || '—')}</div>
-          <div class="phase-summary text-muted">${summary}</div>
+          <div class="phase-summary text-muted" title="${escapeHtml(summary || '')}">${summary}</div>
         </div>
       </li>`;
     }).join('');
@@ -262,8 +283,6 @@ const ScanDetailPage = {
   _derivePhaseStatus(phaseKey, toolRuns, scan) {
     const runs = this._toolRunsForPhase(phaseKey, toolRuns);
     if (runs.length === 0) {
-      // Active phase with no tool runs yet still reads "running" so the
-      // tracker shows motion before the first ToolRun row materializes.
       if (scan && scan.status === 'running' && this._matchesPhase(phaseKey, scan.phase)) return 'running';
       return 'pending';
     }
@@ -344,7 +363,11 @@ const ScanDetailPage = {
   },
 
   // ---- Phases tab --------------------------------------------------
-
+  // B4 fix (#52): phase groups are now wrapped in `.card` containers
+  // with their own padding so the pipeline-node connector dot lives
+  // inside the card boundary. Previously the dot floated at the left
+  // edge of the bare `.phase-group` and looked orphaned, especially
+  // when the accordion was expanded.
   _renderPhases(data) {
     const tracker = this._renderPhaseTracker(data.scan, data.tool_runs || []);
     const groups = this.PHASES.map(p => {
@@ -355,7 +378,7 @@ const ScanDetailPage = {
         return 0;
       });
       const nodes = sorted.map((tr, i) => this._renderPipelineNode(tr, i, sorted.length)).join('');
-      return `<div class="phase-group">
+      return `<div class="card phase-group">
         <div class="phase-group-label">${escapeHtml(p.label)}</div>
         <div class="pipeline-view">${nodes}</div>
       </div>`;
@@ -392,7 +415,7 @@ const ScanDetailPage = {
         <div class="pipeline-header">
           <span class="tool-icon">${icon}</span>
           <span class="tool-name">${escapeHtml(tr.tool_name)}</span>
-          ${Components.statusBadge(tr.status)}
+          ${this._statusBadgeWithWarnings(tr)}
           ${duration}
           ${hasLogs ? '<span class="pipeline-chevron text-muted" aria-hidden="true">▸</span>' : ''}
         </div>
@@ -400,6 +423,19 @@ const ScanDetailPage = {
         ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" data-tr-id="${escapeHtml(trID)}"${isOpen ? '' : ' hidden'}>${this._renderToolRunDetail(tr)}</div>` : ''}
       </div>
     </div>`;
+  },
+
+  // B7 fix (#52): tool runs that report status=completed but with a
+  // non-empty error_message (e.g. nuclei after `context deadline
+  // exceeded`) get a yellow "completed (warnings)" pill instead of
+  // the all-green "completed" badge so operators don't think every-
+  // thing went perfectly. Falls through to the standard badge in all
+  // other cases.
+  _statusBadgeWithWarnings(tr) {
+    if (tr.status === 'completed' && tr.error_message) {
+      return `<span class="badge-status badge-completed-warn" title="Completed with warnings: ${escapeHtml(tr.error_message)}">completed (warnings)</span>`;
+    }
+    return Components.statusBadge(tr.status);
   },
 
   _toolRunHasLogs(tr) {
@@ -438,21 +474,207 @@ const ScanDetailPage = {
     return `<div class="pipeline-detail-body">${parts.join('')}</div>`;
   },
 
-  // ---- Logs tab + preview -----------------------------------------
+  // ---- Logs tab + preview (#52) -----------------------------------
 
   _renderLogs(data, full) {
-    if (this._logsEnabled === true) {
-      return `<div class="card scan-logs-card" role="log" aria-live="polite">
-        <div class="card-label">Live log</div>
-        <div class="text-muted">${full ? 'Awaiting log lines…' : 'Live log preview will stream here.'}</div>
+    if (this._logsEnabled !== true) {
+      const detail = full
+        ? '<p class="text-muted">Live log streaming requires backend support. The page is wired to consume <span class="mono">/api/v1/scans/' + escapeHtml(data.scan.id) + '/logs?since=N</span> as soon as it ships.</p>'
+        : '<p class="text-muted">Live log preview will appear here once the backend logs endpoint ships.</p>';
+      return `<div class="card scan-logs-card scan-logs-placeholder" role="log" aria-live="polite">
+        <div class="card-label">Live log</div>${detail}
       </div>`;
     }
-    const detail = full
-      ? '<p class="text-muted">Live log streaming requires backend support. The page is wired to consume <span class="mono">/api/v1/scans/' + escapeHtml(data.scan.id) + '/logs?since=N</span> as soon as it ships.</p>'
-      : '<p class="text-muted">Live log preview will appear here once the backend logs endpoint ships.</p>';
-    return `<div class="card scan-logs-card scan-logs-placeholder" role="log" aria-live="polite">
-      <div class="card-label">Live log</div>${detail}
+    const filtered = this._filteredLogs();
+    if (!full) {
+      const tail = filtered.slice(-8);
+      const lines = tail.length === 0
+        ? '<div class="scan-log-empty text-muted">No log lines yet — scan is starting.</div>'
+        : tail.map(l => this._renderLogLine(l)).join('');
+      return `<div class="card scan-logs-card" role="log" aria-live="polite">
+        <div class="card-label scan-log-header">
+          <span>Live log</span>
+          <span class="scan-log-count text-muted">${filtered.length}/${this._logs.length}</span>
+        </div>
+        <pre class="scan-log-pre scan-log-pre-preview${this._logsWrap ? ' scan-log-wrap' : ''}">${lines}</pre>
+        <a class="scan-log-cta" href="javascript:void(0)" data-log-open-tab>Open Logs →</a>
+      </div>`;
+    }
+    const allLines = filtered.length === 0
+      ? '<div class="scan-log-empty text-muted">No log lines match the current filters.</div>'
+      : filtered.map(l => this._renderLogLine(l)).join('');
+    return `<div class="card scan-logs-card" role="log" aria-live="polite">
+      <div class="card-label scan-log-header">
+        <span>Live log</span>
+        <span class="scan-log-count text-muted">${filtered.length}/${this._logs.length}</span>
+      </div>
+      ${this._renderLogToolbar()}
+      <pre class="scan-log-pre scan-log-pre-full${this._logsWrap ? ' scan-log-wrap' : ''}" data-log-pre>${allLines}</pre>
     </div>`;
+  },
+
+  _renderLogLine(l) {
+    const ts = l.ts ? this._fmtLogTime(l.ts) : '';
+    const lvl = l.level || 'info';
+    const src = l.source || 'scanner';
+    return `<span class="scan-log-line scan-log-line-${escapeHtml(lvl)}">`
+      + `<span class="scan-log-ts text-muted">[${escapeHtml(ts)}]</span> `
+      + `<span class="scan-log-src">${escapeHtml(src)}</span> `
+      + `<span class="scan-log-text">${escapeHtml(l.text || '')}</span>`
+      + `\n</span>`;
+  },
+
+  _renderLogToolbar() {
+    const sources = Array.from(new Set(this._logs.map(l => l.source))).sort();
+    const levels = ['info', 'warn', 'error'];
+    const levelChips = levels.map(lv => {
+      const active = this._logFilters.levels.has(lv);
+      return `<button type="button" class="scan-log-chip scan-log-chip-${lv}${active ? ' active' : ''}" data-log-level="${lv}">${lv}</button>`;
+    }).join('');
+    const sourceChips = sources.map(src => {
+      const active = this._logFilters.sources.has(src);
+      return `<button type="button" class="scan-log-chip${active ? ' active' : ''}" data-log-source="${escapeHtml(src)}">${escapeHtml(src)}</button>`;
+    }).join('');
+    return `<div class="scan-log-toolbar">
+      <div class="scan-log-chips">
+        <span class="scan-log-chips-label text-muted">level:</span>${levelChips}
+        ${sources.length > 0 ? '<span class="scan-log-chips-sep" aria-hidden="true">·</span>' : ''}
+        ${sources.length > 0 ? '<span class="scan-log-chips-label text-muted">tool:</span>' + sourceChips : ''}
+      </div>
+      <div class="scan-log-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-log-pause aria-pressed="${this._logsPaused}">${this._logsPaused ? 'Resume' : 'Pause'}</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-log-wrap aria-pressed="${this._logsWrap}">${this._logsWrap ? 'No wrap' : 'Wrap'}</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-log-download>Download</button>
+      </div>
+    </div>`;
+  },
+
+  _filteredLogs() {
+    const lv = this._logFilters.levels;
+    const src = this._logFilters.sources;
+    if (lv.size === 0 && src.size === 0) return this._logs;
+    return this._logs.filter(l => {
+      if (lv.size > 0 && !lv.has(l.level)) return false;
+      if (src.size > 0 && !src.has(l.source)) return false;
+      return true;
+    });
+  },
+
+  async _fetchLogs(id, reset) {
+    if (reset) {
+      this._logs = [];
+      this._logSince = 0;
+    }
+    try {
+      for (let i = 0; i < 5; i++) {
+        const resp = await API.scanLogs(id, { since: this._logSince, limit: 200 });
+        const lines = (resp && resp.lines) || [];
+        if (lines.length === 0) break;
+        this._appendLogs(lines);
+        if (resp && resp.next != null) this._logSince = resp.next;
+        if (!resp.has_more) break;
+      }
+      this._logsFailStreak = 0;
+      return true;
+    } catch (err) {
+      this._logsFailStreak++;
+      return false;
+    }
+  },
+
+  _appendLogs(lines) {
+    if (!lines || lines.length === 0) return;
+    for (const l of lines) this._logs.push(l);
+  },
+
+  _startLogsPolling(id, app) {
+    if (this._logsTimer) clearInterval(this._logsTimer);
+    this._logsTimer = setInterval(async () => {
+      if (document.visibilityState === 'hidden') return;
+      const ok = await this._fetchLogs(id, /*reset*/ false);
+      if (!ok) return;
+      if (this._activeTab === 'overview' || this._activeTab === 'logs') {
+        this._renderActivePanel(app);
+        if (!this._logsPaused) this._scrollLogsToBottom(app);
+      }
+      const s = this._data && this._data.scan;
+      if (s && s.status !== 'running') {
+        clearInterval(this._logsTimer);
+        this._logsTimer = null;
+      }
+    }, this.POLL_MS);
+  },
+
+  _scrollLogsToBottom(app) {
+    const pre = app.querySelector('[data-log-pre]');
+    if (pre) pre.scrollTop = pre.scrollHeight;
+  },
+
+  _bindLogControls(app, id) {
+    const opener = app.querySelector('[data-log-open-tab]');
+    if (opener) opener.addEventListener('click', () => {
+      this._activeTab = 'logs';
+      const tablist = app.querySelector('.scan-detail-tabs');
+      if (tablist) {
+        tablist.outerHTML = this._renderTabs();
+        this._wireTabClicks(app, id);
+      }
+      this._renderActivePanel(app);
+    });
+
+    app.querySelectorAll('[data-log-level]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const lv = btn.getAttribute('data-log-level');
+        if (this._logFilters.levels.has(lv)) this._logFilters.levels.delete(lv);
+        else this._logFilters.levels.add(lv);
+        this._renderActivePanel(app);
+      });
+    });
+    app.querySelectorAll('[data-log-source]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const src = btn.getAttribute('data-log-source');
+        if (this._logFilters.sources.has(src)) this._logFilters.sources.delete(src);
+        else this._logFilters.sources.add(src);
+        this._renderActivePanel(app);
+      });
+    });
+    const pauseBtn = app.querySelector('[data-log-pause]');
+    if (pauseBtn) pauseBtn.addEventListener('click', () => {
+      this._logsPaused = !this._logsPaused;
+      this._renderActivePanel(app);
+      if (!this._logsPaused) this._scrollLogsToBottom(app);
+    });
+    const wrapBtn = app.querySelector('[data-log-wrap]');
+    if (wrapBtn) wrapBtn.addEventListener('click', () => {
+      this._logsWrap = !this._logsWrap;
+      this._renderActivePanel(app);
+    });
+    const dlBtn = app.querySelector('[data-log-download]');
+    if (dlBtn) dlBtn.addEventListener('click', () => this._downloadLogs(id));
+  },
+
+  _downloadLogs(id) {
+    const txt = this._logs.map(l => {
+      const ts = l.ts ? this._fmtLogTime(l.ts) : '';
+      return `[${ts}] [${l.level || 'info'}] [${l.source || 'scanner'}] ${l.text || ''}`;
+    }).join('\n');
+    const blob = new Blob([txt], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'scan-' + id.slice(0, 8) + '-logs.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  },
+
+  _fmtLogTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   },
 
   // ---- Config tab --------------------------------------------------
@@ -492,6 +714,7 @@ const ScanDetailPage = {
     const cancelBtn = app.querySelector('[data-cancel-scan]');
     if (cancelBtn) cancelBtn.addEventListener('click', () => this.cancelScan(app, id));
     this._bindAccordion();
+    this._bindLogControls(app, id);
   },
 
   _wireTabClicks(app, id) {
@@ -515,10 +738,9 @@ const ScanDetailPage = {
     if (!slot) return;
     slot.innerHTML = this._renderTabContent(this._activeTab, this._data, this._findings);
     this._bindAccordion();
+    this._bindLogControls(app, this._scanID);
   },
 
-  // Pipeline accordion. _openToolRunIds persists open state across
-  // re-renders (PR5 fix c3802e47); this handler only mutates the Set.
   _bindAccordion() {
     document.querySelectorAll('.pipeline-node-clickable').forEach(node => {
       if (node.dataset.bound === '1') return;
@@ -561,7 +783,6 @@ const ScanDetailPage = {
         if (data.scan.status !== 'running') this.stopPolling();
       } catch (_) {}
     } catch (err) {
-      // 404 = scan vanished mid-cancel; 409/400 = it terminated first.
       if (err && err.status === 404) Components.toast.info('Scan already completed.');
       else if (err && err.status === 409) Components.toast.info('Scan finished before cancel could apply.');
       else if (err && err.status === 400) Components.toast.info('Scan is no longer running.');
@@ -603,6 +824,7 @@ const ScanDetailPage = {
   stopPolling() {
     if (this._pollTimer)    { clearInterval(this._pollTimer);    this._pollTimer = null; }
     if (this._elapsedTimer) { clearInterval(this._elapsedTimer); this._elapsedTimer = null; }
+    if (this._logsTimer)    { clearInterval(this._logsTimer);    this._logsTimer = null; }
     if (this._abort)        { try { this._abort.abort(); } catch (_) {} this._abort = null; }
   },
 
@@ -661,7 +883,6 @@ const ScanDetailPage = {
   },
 };
 
-// Pause polling when the tab is hidden, resume when it returns.
 document.addEventListener('visibilitychange', () => {
   if (typeof ScanDetailPage === 'undefined') return;
   const sd = ScanDetailPage;

@@ -38,19 +38,38 @@ type scanOrchestrator interface {
 // subtyping does the wiring at the dependency-injection site.
 type ScanRunner struct {
 	orchestrator scanOrchestrator
+	sink         *pipeline.SQLiteLogSink
 	log          *slog.Logger
 }
 
 // NewScanRunner wires a ScanRunner around the production pipeline. The
 // store and registry are the same ones the rest of the daemon uses.
+//
+// Issue #52: scheduler-driven scans get the same SQLite log tee as
+// CLI / webui-triggered scans. The sink is per-runner (long-lived for
+// the daemon process) so its background goroutine survives across
+// scans; it's closed when the daemon shuts down via Close().
 func NewScanRunner(store storage.Store, registry *detection.Registry, log *slog.Logger) *ScanRunner {
 	if log == nil {
 		log = slog.Default()
 	}
+	pipe := pipeline.New(store, registry)
+	sink := pipeline.NewSQLiteLogSink(store, pipeline.SQLiteLogSinkOptions{})
+	pipe.SetSink(sink)
 	return &ScanRunner{
-		orchestrator: pipeline.New(store, registry),
+		orchestrator: pipe,
+		sink:         sink,
 		log:          log,
 	}
+}
+
+// Close shuts down the underlying log sink. Daemon shutdown calls this
+// to flush outstanding scan_logs writes.
+func (r *ScanRunner) Close() error {
+	if r.sink != nil {
+		return r.sink.Close()
+	}
+	return nil
 }
 
 // Run executes a full scan for the target, threading EffectiveConfig.
