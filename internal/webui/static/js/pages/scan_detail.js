@@ -427,12 +427,17 @@ const ScanDetailPage = {
 
   // B7 fix (#52): tool runs that report status=completed but with a
   // non-empty error_message (e.g. nuclei after `context deadline
-  // exceeded`) get a yellow "completed (warnings)" pill instead of
-  // the all-green "completed" badge so operators don't think every-
-  // thing went perfectly. Falls through to the standard badge in all
-  // other cases.
+  // exceeded`) get a yellow pill instead of the all-green "completed"
+  // badge so operators don't think everything went perfectly.
+  // Proposal B refines this: if the error is specifically a deadline
+  // timeout, label it "partial" — that's what actually happened, and
+  // it matches the Notice copy in _renderToolRunDetail. Other
+  // warnings keep the generic "completed (warnings)" label.
   _statusBadgeWithWarnings(tr) {
     if (tr.status === 'completed' && tr.error_message) {
+      if (this._isTimeoutError(tr.error_message)) {
+        return `<span class="badge-status badge-completed-warn" title="Partial run: tool hit its time limit before finishing">partial</span>`;
+      }
       return `<span class="badge-status badge-completed-warn" title="Completed with warnings: ${escapeHtml(tr.error_message)}">completed (warnings)</span>`;
     }
     return Components.statusBadge(tr.status);
@@ -445,6 +450,25 @@ const ScanDetailPage = {
     return !!(cfg.command || cfg.stderr_tail || (cfg.input_preview && cfg.input_preview.length > 0));
   },
 
+  // Proposal B (#52 follow-up): when a tool returns status=completed
+  // but with a deadline-exceeded error, the operator sees something
+  // confusing — Summary says "23 findings persisted" while Stderr tail
+  // and Error both say "context deadline exceeded". The result reads
+  // as both a success and a failure simultaneously.
+  //
+  // We special-case the deadline-exceeded pattern: instead of rendering
+  // generic "Stderr tail" + "Error" sections (red, alarmist), we
+  // render a single "Partial run" notice in amber tone explaining
+  // what happened in plain language. The raw technical output stays
+  // accessible via a <details> toggle for operators who want to dig
+  // in. Real errors (network failure, binary missing, etc.) keep the
+  // red Error treatment.
+  _isTimeoutError(msg) {
+    if (!msg) return false;
+    const m = String(msg).toLowerCase();
+    return m.includes('deadline exceeded') || m.includes('context canceled');
+  },
+
   _renderToolRunDetail(tr) {
     const cfg = tr.config || {};
     const parts = [];
@@ -453,6 +477,39 @@ const ScanDetailPage = {
         <div class="pipeline-detail-heading${extraCls || ''}">${heading}</div>${body}
       </div>`);
     if (tr.output_summary) section('Summary', `<div class="pipeline-detail-text">${escapeHtml(tr.output_summary)}</div>`);
+
+    // Notice section (Proposal B): if this run timed out but still
+    // completed with results, frame it as a partial run. The notice
+    // sits between Summary and Config so it's the second thing the
+    // operator reads, right after "what worked".
+    const isTimeout = this._isTimeoutError(tr.error_message) || this._isTimeoutError(cfg.stderr_tail);
+    const isPartial = isTimeout && tr.status === 'completed';
+    if (isPartial) {
+      // De-dup: stderr_tail is often the same string as error_message
+      // for SDK-based tools (subfinder, nuclei). Show technical detail
+      // once, behind a collapsible <details>.
+      const tech = [];
+      if (cfg.stderr_tail && cfg.stderr_tail !== tr.error_message) {
+        tech.push(`<div class="pipeline-detail-heading">Stderr tail</div>
+          <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(cfg.stderr_tail)}</pre>`);
+      }
+      if (tr.error_message) {
+        tech.push(`<div class="pipeline-detail-heading">Raw error</div>
+          <pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(tr.error_message)}</pre>`);
+      }
+      const techBlock = tech.length > 0
+        ? `<details class="pipeline-detail-tech"><summary>Show technical details</summary>${tech.join('')}</details>`
+        : '';
+      parts.push(`<div class="pipeline-detail-section pipeline-detail-notice">
+        <div class="pipeline-detail-notice-heading">⚠ Partial run — time limit reached</div>
+        <div class="pipeline-detail-notice-body">
+          <p><strong>${escapeHtml(tr.tool_name)}</strong> hit its phase deadline before finishing all work. The findings above were captured up to that point; remaining work didn't run.</p>
+          <p class="text-muted">To capture more, re-run this scan against the same target — or raise the assessment phase timeout.</p>
+        </div>
+        ${techBlock}
+      </div>`);
+    }
+
     if (cfg.command) section('Command', `<pre class="pipeline-detail-pre">${escapeHtml(cfg.command)}</pre>`);
     const generic = new Set(['command', 'stderr_tail', 'exit_code', 'input_preview', 'inputs_truncated']);
     const toolKeys = Object.keys(cfg).filter(k => !generic.has(k));
@@ -465,8 +522,15 @@ const ScanDetailPage = {
       const truncated = cfg.inputs_truncated ? ' <span class="text-muted">(truncated)</span>' : '';
       section('Inputs' + truncated, `<pre class="pipeline-detail-pre">${cfg.input_preview.map(escapeHtml).join('\n')}</pre>`);
     }
-    if (cfg.stderr_tail) section('Stderr tail', `<pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(cfg.stderr_tail)}</pre>`);
-    if (tr.error_message) section('Error', `<pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(tr.error_message)}</pre>`, ' pipeline-detail-heading-error');
+    // Stderr / Error sections only render when NOT already covered by
+    // the Notice block above. Real (non-timeout) errors keep their red
+    // treatment because the operator should look at them.
+    if (!isPartial && cfg.stderr_tail) {
+      section('Stderr tail', `<pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(cfg.stderr_tail)}</pre>`);
+    }
+    if (!isPartial && tr.error_message) {
+      section('Error', `<pre class="pipeline-detail-pre pipeline-detail-stderr">${escapeHtml(tr.error_message)}</pre>`, ' pipeline-detail-heading-error');
+    }
     const meta = [];
     if (tr.started_at) meta.push(`started ${Components.timeAgo(tr.started_at)}`);
     if (typeof cfg.exit_code === 'number') meta.push(`exit ${cfg.exit_code}`);

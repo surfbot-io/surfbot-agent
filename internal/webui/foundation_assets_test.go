@@ -484,6 +484,10 @@ func TestScanDetailWiresLogStream(t *testing.T) {
 		// B7 fix: completed-with-warnings badge variant.
 		"_statusBadgeWithWarnings(",
 		"badge-completed-warn",
+		// Proposal B (#52 follow-up): timeout-aware "Partial run" notice.
+		"_isTimeoutError(",
+		"pipeline-detail-notice",
+		"Partial run",
 	}
 	for _, s := range required {
 		assert.True(t, strings.Contains(js, s),
@@ -520,6 +524,11 @@ func TestScanLogsCSSScaffolding(t *testing.T) {
 		".progress-bar-track-indeterminate",
 		// B7 fix: completed-with-warnings badge.
 		".badge-completed-warn",
+		// Proposal B: partial-run notice block.
+		".pipeline-detail-notice",
+		".pipeline-detail-notice-heading",
+		".pipeline-detail-notice-body",
+		".pipeline-detail-tech",
 	}
 	for _, c := range classes {
 		assert.True(t, strings.Contains(css, c),
