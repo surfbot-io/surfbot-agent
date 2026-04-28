@@ -2593,3 +2593,208 @@ button.kpi-card:focus-visible {
 .toast-leaving { opacity: 0; transform: translateX(8px); transition: opacity 0.16s, transform 0.16s; }
 @keyframes toast-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
 
+/* === UI v2 PR5 (#38) — chips persistentes + bulk actions ============
+ * Severity tabs, filter strip, filter menu (popup + submenu), save-view
+ * pill, table checkbox column, and the "selected row" highlight.
+ * The .filter-chip / .bulk-bar foundations come from PR1; PR5 adds the
+ * containers around them and the new affordances unique to this layout.
+ * =================================================================== */
+
+/* --- Severity tabs ------------------------------------------------- */
+.sev-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.sev-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sev-tab:hover { color: var(--text-primary); background: var(--ink-700); }
+.sev-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.sev-tab-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+.sev-tab-active .sev-tab-count { color: inherit; }
+.sev-tab-critical { color: var(--sev-critical); }
+.sev-tab-high     { color: var(--sev-high); }
+.sev-tab-medium   { color: var(--sev-medium); }
+.sev-tab-low      { color: var(--sev-low); }
+.sev-tab-info     { color: var(--sev-info); }
+.sev-tab-active {
+  background: rgba(0,229,153,0.10);
+  border-color: rgba(0,229,153,0.4);
+  color: var(--brand);
+}
+.sev-tab-active.sev-tab-critical { background: var(--sev-critical-bg); border-color: rgba(248,81,73,0.4); color: var(--sev-critical); }
+.sev-tab-active.sev-tab-high     { background: var(--sev-high-bg);     border-color: rgba(219,109,40,0.4); color: var(--sev-high); }
+.sev-tab-active.sev-tab-medium   { background: var(--sev-medium-bg);   border-color: rgba(210,153,34,0.4); color: var(--sev-medium); }
+.sev-tab-active.sev-tab-low      { background: var(--sev-low-bg);      border-color: rgba(88,166,255,0.4); color: var(--sev-low); }
+.sev-tab-active.sev-tab-info     { background: var(--sev-info-bg);     border-color: rgba(139,148,158,0.4); color: var(--sev-info); }
+
+/* --- Filter strip (chips + add + save-view) ----------------------- */
+.filter-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ink-700);
+}
+.filter-strip-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.filter-strip-chips:empty + .filter-add-btn { margin-left: 0; }
+.filter-strip-spacer { flex: 1; }
+.filter-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: transparent;
+  border: 1px dashed var(--ink-600);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.filter-add-btn:hover { color: var(--text-primary); border-color: var(--brand); }
+
+.save-view-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.save-view-pill.empty { color: var(--text-muted); cursor: default; }
+.save-view-pill.saved { color: var(--brand); border-color: rgba(0,229,153,0.4); }
+.save-view-pill:hover.saved { background: rgba(0,229,153,0.08); }
+
+/* --- Filter menu / submenu (popup) -------------------------------- */
+.filter-menu {
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  padding: 4px;
+  min-width: 180px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.filter-submenu { min-width: 220px; }
+.filter-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.filter-menu-item:hover { background: var(--ink-700); }
+.filter-menu-divider { height: 1px; margin: 4px 0; background: var(--ink-700); }
+.filter-menu-reset { color: var(--text-muted); }
+.filter-menu-reset:hover { color: var(--text-primary); }
+.filter-menu-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.filter-menu-search {
+  display: block;
+  width: calc(100% - 8px);
+  margin: 4px;
+  padding: 6px 8px;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.filter-menu-list { max-height: 220px; overflow-y: auto; }
+.filter-menu-apply {
+  margin-top: 4px;
+  background: rgba(0,229,153,0.10);
+  color: var(--brand);
+  text-align: center;
+}
+
+/* --- Findings table — checkbox column + selected row highlight --- */
+.fnd-cb-col {
+  width: 32px;
+  padding-left: 8px !important;
+  padding-right: 4px !important;
+}
+.fnd-checkbox, #findings-select-all,
+.tgt-checkbox, #targets-select-all {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--brand);
+}
+.fnd-row-selected { background: rgba(0,229,153,0.06); }
+.fnd-row-selected:hover { background: rgba(0,229,153,0.14); }
+.tgt-row-selected { background: rgba(0,229,153,0.06); }
+.tgt-row-selected:hover { background: rgba(0,229,153,0.14); }
+
+/* --- Pagination (light) ------------------------------------------- */
+.pagination {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 16px;
+}
+.pagination .text-muted { padding: 0 8px; font-size: 12px; }
+
+/* --- Mobile / small viewports ------------------------------------- */
+@media (max-width: 768px) {
+  .sev-tabs,
+  .filter-strip-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .fnd-cb-col { width: 24px; padding-left: 4px !important; }
+  .bulk-bar {
+    overflow-x: auto;
+    max-width: calc(100% - 16px);
+  }
+}

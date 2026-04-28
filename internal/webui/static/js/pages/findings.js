@@ -1,322 +1,745 @@
-// Findings page — grouped-by-host default, toggle to raw per-asset view.
-// PR4 (#37): rows open a slide-over instead of a detail page. The deep
-// link #/findings/{id} renders the list and opens the panel on top.
+// Findings page — UI v2 (PR5 #38).
+//
+// Layout above the list (raw view):
+//   1. Severity tabs (pills, single-select including "All").
+//   2. Filter chip strip — every active non-severity filter is a chip with
+//      a ✕ button. "+ Filter" opens a popup menu to add one. "Save view"
+//      is a status pill (decorative + Reset).
+//   3. Bulk-bar (Components.bulkBar) — visible when selectedIds.size > 0.
+//   4. Table with a leading checkbox column.
+//
+// Filters auto-persist to localStorage (key `surfbot_findings_filters`).
+// URL hash params win over storage so deep links from dashboard chips
+// stay deterministic.
+//
+// Slide-over (PR4 #37) is preserved verbatim — row click still opens the
+// detail panel; checkbox stops propagation so it doesn't trigger.
 const FindingsPage = {
-  // _slide is the live slide-over handle while open, null otherwise.
-  // _lastTrigger is the row element that opened it — focus returns there
-  // on close so keyboard operators don't lose their place.
+  STORAGE_KEY: 'surfbot_findings_filters',
+  STORAGE_VERSION: 1,
+
+  // Selection state. Persists across pagination but resets on filter change.
+  // Module-level Set so #_renderList() can read/write across re-renders.
+  _selectedIds: new Set(),
+
+  // Slide-over state (PR4).
   _slide: null,
   _lastTrigger: null,
   _abortCtrl: null,
   _statusToPill: { open: 'open', acknowledged: 'ack', resolved: 'resolved', false_positive: 'fp', ignored: 'ignored' },
 
+  // Active "+ Filter" menu element (so we close on outside click before
+  // mounting a new one).
+  _filterMenu: null,
+
+  // Cache of /overview severity counts for the tab labels. Refreshed
+  // whenever the list re-renders; falls back to 0 on fetch failure.
+  _sevCounts: null,
+
+  // Targets & list data — kept on the page so submenu/bulk handlers
+  // can reach the most recent fetch without threading them through every
+  // helper.
+  _lastFindings: [],
+  _lastTargets: [],
+
   async render(app, params) {
-    // PR4: deep link #/findings/{id} renders the list, then opens the
-    // panel. Legacy ?view=raw&host=…&template_id=… still routes to the
-    // raw list (no slide-over auto-open).
-    const view = params?.view || 'grouped';
-    let listPromise;
-    if (view === 'grouped') {
-      listPromise = this.renderGrouped(app, params);
-    } else {
-      listPromise = this.renderRaw(app, params);
-    }
-    await listPromise;
+    // PR5: list always uses the "raw" data shape — chips and bulk
+    // operations need per-finding rows. The legacy grouped view is
+    // removed in favor of the new layout. Deep link #/findings/{id}
+    // still renders the list and opens the panel on top.
+    const merged = this._mergeFiltersWithStorage(params);
+    await this._renderList(app, merged);
     if (params && params.id) {
-      // After the list paints, open the slide-over on top.
       this.openSlideoverFor(params.id);
     }
   },
 
-  // --- Grouped view (default) ---
+  // Merge URL params with localStorage. URL wins so deep links
+  // (`#/findings?status=open` from dashboard chips) override prior state.
+  // When the URL has no filter params at all, restore from storage and
+  // rewrite the hash so refreshes are stable.
+  _mergeFiltersWithStorage(params) {
+    const p = Object.assign({}, params || {});
+    const filterKeys = ['severity', 'status', 'host', 'tool', 'target_id', 'template_id'];
+    const hasURLFilter = filterKeys.some(k => p[k]);
+    if (hasURLFilter) return p;
 
-  async renderGrouped(app, params) {
+    const stored = this._loadStored();
+    if (!stored) return p;
+    let restored = false;
+    for (const k of filterKeys) {
+      if (stored[k]) { p[k] = stored[k]; restored = true; }
+    }
+    if (restored) {
+      const q = filterKeys.filter(k => p[k]).map(k => k + '=' + encodeURIComponent(p[k]));
+      if (p.page) q.push('page=' + p.page);
+      const newHash = '#/findings' + (q.length ? '?' + q.join('&') : '');
+      if (location.hash !== newHash) {
+        history.replaceState(null, '', newHash);
+      }
+    }
+    return p;
+  },
+
+  _loadStored() {
+    try {
+      const raw = localStorage.getItem(this.STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== this.STORAGE_VERSION) return null;
+      return parsed.filters || {};
+    } catch (_) { return null; }
+  },
+
+  _saveStored(filters) {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
+        version: this.STORAGE_VERSION,
+        filters: filters,
+        savedAt: new Date().toISOString(),
+      }));
+    } catch (_) { /* quota / private mode — silently ignore */ }
+  },
+
+  _clearStored() {
+    try { localStorage.removeItem(this.STORAGE_KEY); } catch (_) {}
+  },
+
+  // _persistFromParams writes the canonical filter set to storage. Called
+  // after every filter mutation so a refresh reapplies the last state.
+  _persistFromParams(params) {
+    const filterKeys = ['severity', 'status', 'host', 'tool', 'target_id', 'template_id'];
+    const filters = {};
+    for (const k of filterKeys) if (params[k]) filters[k] = params[k];
+    this._saveStored(filters);
+  },
+
+  // --- List render ------------------------------------------------
+
+  async _renderList(app, params) {
     app.innerHTML = '<div class="loading">Loading findings...</div>';
     try {
-      const data = await API.findingsGrouped({
-        severity: params?.severity,
-        tool: params?.tool,
-        host: params?.host,
-        sort: params?.sort || 'last_seen',
-        page: params?.page || 1,
-        limit: 50,
-      });
-      app.innerHTML = this.groupedTemplate(data, params);
+      const [data, overview, targetsResp] = await Promise.all([
+        API.findings({
+          severity: params.severity,
+          tool: params.tool,
+          status: params.status,
+          target_id: params.target_id,
+          host: params.host,
+          template_id: params.template_id,
+          page: params.page || 1,
+          limit: 50,
+        }),
+        API.overview().catch(() => null),
+        API.targets().catch(() => ({ targets: [] })),
+      ]);
+      this._sevCounts = (overview && overview.findings_by_severity) || {};
+      this._lastFindings = data.findings || [];
+      this._lastTargets = (targetsResp && targetsResp.targets) || [];
+      app.innerHTML = this._listTemplate(data, params);
+      this._wireListInteractions(app, params);
     } catch (err) {
       app.innerHTML = Components.emptyState('Error', 'Failed to load findings: ' + err.message);
     }
   },
 
-  groupedTemplate(data, params) {
-    if (data.groups.length === 0 && !params?.severity && !params?.host) {
+  _listTemplate(data, params) {
+    if (data.findings.length === 0 && !this._anyFilter(params)) {
       return `
         <div class="page-header"><h2>Findings</h2></div>
-        ${this.viewToggle('grouped')}
         ${Components.emptyState('No findings', 'No vulnerabilities detected. Run a scan to discover findings.')}
       `;
     }
 
-    // Single-finding groups skip the raw-filtered drill: the row opens
-    // the slide-over directly using finding_ids[0]. Multi-asset groups
-    // still drill — picking which port/asset is meaningful when N>1.
-    const rows = data.groups.map(g => {
-      const badge = g.affected_assets_count > 1
-        ? `<span class="port-badge">${g.affected_assets_count} ports</span>`
-        : '';
-      const single = g.affected_assets_count === 1
-        && Array.isArray(g.finding_ids) && g.finding_ids.length === 1;
-      let onclick;
-      if (single) {
-        onclick = `FindingsPage.handleGroupedRowClick(event, '${escapeHtml(g.finding_ids[0])}')`;
-      } else {
-        const drillHref = '#/findings?view=raw&host=' + encodeURIComponent(g.host)
-          + '&template_id=' + encodeURIComponent(g.template_id);
-        onclick = `location.hash='${drillHref}'`;
-      }
-      const dataAttr = single ? ` data-finding-id="${escapeHtml(g.finding_ids[0])}"` : '';
+    const totalPages = Math.ceil(data.total / data.limit);
+    const page = data.page;
+
+    return `
+      <div class="page-header">
+        <h2>Findings</h2>
+        <p>${data.total} finding${data.total !== 1 ? 's' : ''}${params.severity ? ' (' + params.severity + ')' : ''}</p>
+      </div>
+      ${this._severityTabsHtml(params)}
+      ${this._chipStripHtml(params)}
+      <div data-bulk-slot>${Components.bulkBar({ count: this._selectedIds.size, actions: this._bulkActionDescriptors() })}</div>
+      ${this._tableHtml(data.findings)}
+      ${totalPages > 1 ? this._paginationHtml(page, totalPages, params) : ''}
+    `;
+  },
+
+  _anyFilter(params) {
+    return !!(params.severity || params.status || params.host || params.tool || params.target_id || params.template_id);
+  },
+
+  _severityTabsHtml(params) {
+    const counts = this._sevCounts || {};
+    const total = Object.values(counts).reduce((a, b) => a + (b || 0), 0);
+    const levels = [
+      { key: '',         label: 'All',  count: total },
+      { key: 'critical', label: 'Crit', count: counts.critical || 0 },
+      { key: 'high',     label: 'High', count: counts.high || 0 },
+      { key: 'medium',   label: 'Med',  count: counts.medium || 0 },
+      { key: 'low',      label: 'Low',  count: counts.low || 0 },
+      { key: 'info',     label: 'Info', count: counts.info || 0 },
+    ];
+    const active = params.severity || '';
+    const tabs = levels.map(l => {
+      const isActive = (l.key === active);
+      const cls = 'sev-tab' + (l.key ? ' sev-tab-' + l.key : ' sev-tab-all') + (isActive ? ' sev-tab-active' : '');
+      return `<button type="button" class="${cls}" role="tab" aria-selected="${isActive}" data-sev="${escapeHtml(l.key)}">
+        ${l.key ? '<span class="sev-tab-dot"></span>' : ''}${escapeHtml(l.label)}<span class="sev-tab-count">${l.count}</span>
+      </button>`;
+    }).join('');
+    return `<div class="sev-tabs" role="tablist" aria-label="Filter by severity">${tabs}</div>`;
+  },
+
+  _chipStripHtml(params) {
+    const chips = [];
+    const labels = {
+      status: { Open: 'open', Acknowledged: 'acknowledged', Resolved: 'resolved', 'False positive': 'false_positive', Ignored: 'ignored' },
+    };
+    if (params.status) chips.push({ key: 'status', label: 'Status: ' + this._humanStatus(params.status) });
+    if (params.target_id) {
+      const t = this._lastTargets.find(t => t.id === params.target_id);
+      chips.push({ key: 'target_id', label: 'Target: ' + (t ? t.value : params.target_id) });
+    }
+    if (params.tool) chips.push({ key: 'tool', label: 'Tool: ' + params.tool });
+    if (params.host) chips.push({ key: 'host', label: 'Host: ' + params.host });
+    if (params.template_id) chips.push({ key: 'template_id', label: 'Template: ' + params.template_id });
+
+    const chipMounts = chips.map((c, i) =>
+      `<span class="filter-chip-mount" data-chip-idx="${i}" data-chip-key="${c.key}" data-chip-label="${escapeHtml(c.label)}"></span>`
+    ).join('');
+
+    const saveLabel = chips.length || params.severity ? 'View saved' : 'Save view';
+    const saveCls = 'save-view-pill' + (chips.length || params.severity ? ' saved' : ' empty');
+    const checkIcon = chips.length || params.severity ? Components.icon('check', 14) : '';
+    void labels;
+
+    return `<div class="filter-strip" role="group" aria-label="Active filters">
+      <div class="filter-strip-chips" data-chip-strip>${chipMounts}</div>
+      <button type="button" class="filter-add-btn" data-add-filter>
+        ${Components.icon('plus', 14)}<span>Filter</span>
+      </button>
+      <span class="filter-strip-spacer"></span>
+      <button type="button" class="${saveCls}" data-save-view>${checkIcon}<span>${saveLabel}</span></button>
+    </div>`;
+  },
+
+  _tableHtml(findings) {
+    if (!findings || findings.length === 0) {
+      return `<div class="table-container"><table>
+        <thead><tr>
+          <th class="fnd-cb-col"><input type="checkbox" disabled aria-label="Select all (no findings)" /></th>
+          <th>Severity</th><th>Title</th><th>Asset</th><th>Tool</th><th>Status</th><th>Last Seen</th>
+        </tr></thead>
+        <tbody><tr><td colspan="7" class="empty-state">No findings match the current filters.</td></tr></tbody>
+      </table></div>`;
+    }
+
+    const rows = findings.map(f => {
+      const sel = this._selectedIds.has(f.id);
+      const selCls = sel ? ' fnd-row-selected' : '';
       return `
-        <tr class="clickable"${dataAttr} onclick="${onclick}">
-          <td>${Components.severityBadge(g.severity)}</td>
-          <td class="text-truncate">${escapeHtml(g.title)} ${badge}</td>
-          <td class="mono">${escapeHtml(g.host)}</td>
-          <td class="mono">${escapeHtml(g.source_tool)}</td>
-          <td class="mono text-muted">${Components.timeAgo(g.last_seen)}</td>
+        <tr class="fnd-row clickable${selCls}" data-finding-id="${escapeHtml(f.id)}" onclick="FindingsPage.handleRowClick(event, '${escapeHtml(f.id)}')">
+          <td class="fnd-cb-col" onclick="event.stopPropagation()">
+            <input type="checkbox" class="fnd-checkbox" value="${escapeHtml(f.id)}" ${sel ? 'checked' : ''}
+              aria-label="Select finding ${escapeHtml(f.title || f.id)}"
+              onclick="event.stopPropagation(); FindingsPage.onCheckboxChange(this)" />
+          </td>
+          <td>${Components.severityPill(f.severity)}</td>
+          <td class="text-truncate">${escapeHtml(f.title)}</td>
+          <td class="mono text-truncate">${escapeHtml(f.asset_value || f.evidence || '')}</td>
+          <td class="mono">${escapeHtml(f.source_tool)}</td>
+          <td data-row-status>${Components.statusPill(this._statusToPill[f.status] || 'open')}</td>
+          <td class="mono text-muted">${Components.timeAgo(f.last_seen)}</td>
         </tr>
       `;
     }).join('');
 
-    const totalPages = Math.ceil(data.total / data.limit);
-    const page = data.page;
-
-    return `
-      <div class="page-header">
-        <h2>Findings</h2>
-        <p>${data.total} unique finding${data.total !== 1 ? 's' : ''}${params?.severity ? ' (' + params.severity + ')' : ''}</p>
-      </div>
-      ${this.viewToggle('grouped')}
-      ${this.groupedFiltersHtml(params)}
-      ${Components.table(['Severity', 'Title', 'Host', 'Tool', 'Last Seen'], [rows])}
-      ${totalPages > 1 ? this.paginationHtml(page, totalPages, params) : ''}
-    `;
+    return `<div class="table-container"><table>
+      <thead><tr>
+        <th class="fnd-cb-col">
+          <input type="checkbox" id="findings-select-all" aria-label="Select all visible findings" />
+        </th>
+        <th scope="col">Severity</th>
+        <th scope="col">Title</th>
+        <th scope="col">Asset</th>
+        <th scope="col">Tool</th>
+        <th scope="col">Status</th>
+        <th scope="col">Last Seen</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
   },
 
-  groupedFiltersHtml(params) {
-    const sev = params?.severity || '';
-    const host = params?.host || '';
-    return `<div class="filters">
-      <select class="filter-select" id="filter-severity" onchange="FindingsPage.applyFilters()">
-        <option value="">All severities</option>
-        <option value="critical" ${sev==='critical'?'selected':''}>Critical</option>
-        <option value="high" ${sev==='high'?'selected':''}>High</option>
-        <option value="medium" ${sev==='medium'?'selected':''}>Medium</option>
-        <option value="low" ${sev==='low'?'selected':''}>Low</option>
-        <option value="info" ${sev==='info'?'selected':''}>Info</option>
-      </select>
-      <input class="filter-input" id="filter-host" placeholder="Filter by host..." value="${escapeHtml(host)}"
-        onkeydown="if(event.key==='Enter')FindingsPage.applyFilters()" />
-    </div>`;
-  },
-
-  // --- Raw view (per-asset findings) ---
-
-  async renderRaw(app, params) {
-    app.innerHTML = '<div class="loading">Loading findings...</div>';
-    try {
-      const data = await API.findings({
-        severity: params?.severity,
-        tool: params?.tool,
-        status: params?.status,
-        target_id: params?.target_id,
-        scan_id: params?.scan_id,
-        host: params?.host,
-        template_id: params?.template_id,
-        page: params?.page || 1,
-        limit: 50,
-      });
-      app.innerHTML = this.rawTemplate(data, params);
-    } catch (err) {
-      app.innerHTML = Components.emptyState('Error', 'Failed to load findings: ' + err.message);
-    }
-  },
-
-  rawTemplate(data, params) {
-    if (data.findings.length === 0 && !params?.severity && !params?.status) {
-      return `
-        <div class="page-header"><h2>Findings</h2></div>
-        ${this.viewToggle('raw')}
-        ${Components.emptyState('No findings', 'No vulnerabilities detected. Run a scan to discover findings.')}
-      `;
-    }
-
-    // PR4: row click opens slide-over. Inline event.target check stops
-    // the click from firing when the operator is clicking the inline
-    // status <select>. data-finding-id lets the row stash its id without
-    // re-encoding the string into the onclick attribute.
-    const rows = data.findings.map(f => `
-      <tr class="clickable" data-finding-id="${escapeHtml(f.id)}" onclick="FindingsPage.handleRowClick(event, '${escapeHtml(f.id)}')">
-        <td>${Components.severityBadge(f.severity)}</td>
-        <td class="text-truncate">${escapeHtml(f.title)}</td>
-        <td class="mono text-truncate">${escapeHtml(f.evidence || '')}</td>
-        <td class="mono">${escapeHtml(f.source_tool)}</td>
-        <td>
-          <select class="status-select status-${f.status}" onchange="FindingsPage.changeStatus('${f.id}', this.value, this)" data-original="${f.status}">
-            <option value="open" ${f.status==='open'?'selected':''}>open</option>
-            <option value="acknowledged" ${f.status==='acknowledged'?'selected':''}>acknowledged</option>
-            <option value="resolved" ${f.status==='resolved'?'selected':''}>resolved</option>
-            <option value="false_positive" ${f.status==='false_positive'?'selected':''}>false positive</option>
-            <option value="ignored" ${f.status==='ignored'?'selected':''}>ignored</option>
-          </select>
-        </td>
-        <td class="mono text-muted">${Components.timeAgo(f.last_seen)}</td>
-      </tr>
-    `).join('');
-
-    const totalPages = Math.ceil(data.total / data.limit);
-    const page = data.page;
-
-    return `
-      <div class="page-header">
-        <h2>Findings</h2>
-        <p>${data.total} finding${data.total !== 1 ? 's' : ''}${params?.severity ? ' (' + params.severity + ')' : ''}</p>
-      </div>
-      ${this.viewToggle('raw')}
-      ${this.rawFiltersHtml(params)}
-      ${Components.table(['Severity', 'Title', 'Asset', 'Tool', 'Status', 'Last Seen'], [rows])}
-      ${totalPages > 1 ? this.paginationHtml(page, totalPages, params) : ''}
-    `;
-  },
-
-  rawFiltersHtml(params) {
-    const sev = params?.severity || '';
-    const status = params?.status || '';
-    return `<div class="filters">
-      <select class="filter-select" id="filter-severity" onchange="FindingsPage.applyFilters()">
-        <option value="">All severities</option>
-        <option value="critical" ${sev==='critical'?'selected':''}>Critical</option>
-        <option value="high" ${sev==='high'?'selected':''}>High</option>
-        <option value="medium" ${sev==='medium'?'selected':''}>Medium</option>
-        <option value="low" ${sev==='low'?'selected':''}>Low</option>
-        <option value="info" ${sev==='info'?'selected':''}>Info</option>
-      </select>
-      <select class="filter-select" id="filter-status" onchange="FindingsPage.applyFilters()">
-        <option value="">All statuses</option>
-        <option value="open" ${status==='open'?'selected':''}>Open</option>
-        <option value="acknowledged" ${status==='acknowledged'?'selected':''}>Acknowledged</option>
-        <option value="resolved" ${status==='resolved'?'selected':''}>Resolved</option>
-        <option value="false_positive" ${status==='false_positive'?'selected':''}>False Positive</option>
-        <option value="ignored" ${status==='ignored'?'selected':''}>Ignored</option>
-      </select>
-    </div>`;
-  },
-
-  // --- View toggle ---
-
-  viewToggle(active) {
-    const groupedCls = active === 'grouped' ? 'btn-accent' : 'btn-ghost';
-    const rawCls = active === 'raw' ? 'btn-accent' : 'btn-ghost';
-    return `<div class="view-toggle" style="margin-bottom:12px;display:flex;gap:8px">
-      <button class="btn btn-sm ${groupedCls}" onclick="FindingsPage.switchView('grouped')">Group by host</button>
-      <button class="btn btn-sm ${rawCls}" onclick="FindingsPage.switchView('raw')">Show all</button>
-    </div>`;
-  },
-
-  switchView(view) {
-    const params = parseQueryParams();
-    const q = ['view=' + view];
-    if (params.severity) q.push('severity=' + params.severity);
-    const newHash = '#/findings?' + q.join('&');
-    if (location.hash === newHash) {
-      Router.navigate();
-    } else {
-      location.hash = newHash;
-    }
-  },
-
-  // --- Shared helpers ---
-
-  applyFilters() {
-    const severity = document.getElementById('filter-severity')?.value || '';
-    const status = document.getElementById('filter-status')?.value || '';
-    const host = document.getElementById('filter-host')?.value || '';
-    const params = parseQueryParams();
-    const view = params.view || 'grouped';
-    const q = ['view=' + view];
-    if (severity) q.push('severity=' + severity);
-    if (status) q.push('status=' + status);
-    if (host) q.push('host=' + host);
-    location.hash = '#/findings?' + q.join('&');
-  },
-
-  paginationHtml(page, totalPages, params) {
-    let html = '<div style="display:flex;gap:8px;justify-content:center;margin-top:16px">';
+  _paginationHtml(page, totalPages, params) {
+    let html = '<div class="pagination">';
     if (page > 1) {
-      html += `<button class="refresh-btn" onclick="FindingsPage.goToPage(${page-1})">Prev</button>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="FindingsPage.goToPage(${page-1})">Prev</button>`;
     }
-    html += `<span class="text-muted" style="padding:4px 8px">Page ${page} of ${totalPages}</span>`;
+    html += `<span class="text-muted">Page ${page} of ${totalPages}</span>`;
     if (page < totalPages) {
-      html += `<button class="refresh-btn" onclick="FindingsPage.goToPage(${page+1})">Next</button>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="FindingsPage.goToPage(${page+1})">Next</button>`;
     }
     html += '</div>';
     return html;
   },
 
-  goToPage(page) {
-    const hash = location.hash;
-    const base = hash.split('?')[0];
-    const params = parseQueryParams();
-    params.page = page;
-    const q = Object.entries(params).filter(([,v]) => v).map(([k,v]) => k+'='+v).join('&');
-    location.hash = base + (q ? '?' + q : '');
+  // --- Wiring ----------------------------------------------------
+
+  _wireListInteractions(app, params) {
+    // Severity tabs.
+    app.querySelectorAll('[data-sev]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sev = btn.getAttribute('data-sev') || '';
+        this._mutateFilter({ severity: sev || null });
+      });
+    });
+
+    // Render filter chips into their mount slots so onRemove handlers
+    // are wired without delegation.
+    app.querySelectorAll('.filter-chip-mount').forEach(slot => {
+      const key = slot.getAttribute('data-chip-key');
+      const label = slot.getAttribute('data-chip-label');
+      const chip = Components.filterChip(label, () => this._mutateFilter({ [key]: null }));
+      slot.replaceWith(chip);
+    });
+
+    // "+ Filter" menu.
+    const addBtn = app.querySelector('[data-add-filter]');
+    if (addBtn) addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._openFilterMenu(addBtn, params);
+    });
+
+    // Save-view pill: opens menu with Reset filters when filters are
+    // active, decorative-only when the list is unfiltered.
+    const saveBtn = app.querySelector('[data-save-view]');
+    if (saveBtn && !saveBtn.classList.contains('empty')) {
+      saveBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._openSaveMenu(saveBtn);
+      });
+    }
+
+    // Header select-all checkbox.
+    const selAll = app.querySelector('#findings-select-all');
+    if (selAll) {
+      this._syncSelectAllState(selAll);
+      selAll.addEventListener('click', () => this.toggleAll(selAll.checked));
+    }
+
+    // Bulk-bar action buttons (read descriptors from this._bulkActionDescriptors).
+    this._wireBulkBarActions(app);
   },
 
-  async changeStatus(id, newStatus, selectEl) {
-    const original = selectEl.dataset.original;
-    try {
-      await API.updateFindingStatus(id, newStatus);
-      selectEl.dataset.original = newStatus;
-      selectEl.className = 'status-select status-' + newStatus;
-      // Refresh the sidebar findings count after a status flip — open
-      // ↔ non-open transitions are exactly what the badge tracks.
-      if (typeof loadSidebarBadge === 'function') loadSidebarBadge();
-    } catch (err) {
-      selectEl.value = original;
-      Components.toast.error('Failed to update status: ' + err.message);
+  _wireBulkBarActions(app) {
+    const bar = app.querySelector('[data-bulk-slot] .bulk-bar');
+    if (!bar) return;
+    const descriptors = this._bulkActionDescriptors();
+    bar.querySelectorAll('[data-bulk-action]').forEach(btn => {
+      const i = parseInt(btn.getAttribute('data-bulk-action'), 10);
+      const a = descriptors[i];
+      if (!a || typeof a.onClick !== 'function') return;
+      btn.addEventListener('click', () => a.onClick());
+    });
+  },
+
+  _bulkActionDescriptors() {
+    return [
+      { label: 'Acknowledge',    onClick: () => this.bulkApplyStatus('acknowledged') },
+      { label: 'Resolve',        onClick: () => this.bulkApplyStatus('resolved') },
+      { label: 'False positive', onClick: () => this.bulkApplyStatus('false_positive') },
+      { label: 'Ignore',         onClick: () => this.bulkApplyStatus('ignored') },
+      { label: 'Clear',          onClick: () => this.clearSelection() },
+    ];
+  },
+
+  // --- Filter mutation ---
+
+  // _mutateFilter is the single entry point for any chip add/remove or
+  // tab change. Patches the current params, persists, resets selection
+  // (filter change invalidates which IDs were "visible"), and rewrites
+  // the hash so the back button rewinds to the previous state.
+  _mutateFilter(patch) {
+    this.clearSelection({ rerender: false });
+    const params = parseQueryParams();
+    delete params.id; // never carry slide-over id forward
+    delete params.view; // legacy grouped view dropped
+    Object.assign(params, patch);
+    // Drop nulled-out keys so empty values don't pollute the hash.
+    Object.keys(params).forEach(k => { if (params[k] == null || params[k] === '') delete params[k]; });
+    delete params.page; // filter change always resets pagination
+    this._persistFromParams(params);
+    const q = Object.entries(params).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+    location.hash = '#/findings' + (q ? '?' + q : '');
+  },
+
+  // --- "+ Filter" menu --------------------------------------------
+
+  _openFilterMenu(anchor, params) {
+    this._closeFilterMenu();
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu';
+    menu.setAttribute('role', 'menu');
+
+    const items = [];
+    if (!params.status)      items.push({ key: 'status',      label: 'Status' });
+    if (!params.target_id)   items.push({ key: 'target_id',   label: 'Target' });
+    if (!params.tool)        items.push({ key: 'tool',        label: 'Tool' });
+    if (!params.host)        items.push({ key: 'host',        label: 'Host' });
+    if (!params.template_id) items.push({ key: 'template_id', label: 'Template' });
+    items.push({ key: '__reset__', label: 'Reset filters', divider: true });
+
+    menu.innerHTML = items.map(it => {
+      if (it.divider) return `<div class="filter-menu-divider"></div>
+        <button type="button" class="filter-menu-item filter-menu-reset" data-mi-key="${it.key}" role="menuitem">${escapeHtml(it.label)}</button>`;
+      return `<button type="button" class="filter-menu-item" data-mi-key="${it.key}" role="menuitem">${escapeHtml(it.label)}</button>`;
+    }).join('');
+
+    document.body.appendChild(menu);
+    this._positionMenu(menu, anchor);
+    this._filterMenu = menu;
+
+    menu.querySelectorAll('[data-mi-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const k = btn.getAttribute('data-mi-key');
+        if (k === '__reset__') {
+          this._closeFilterMenu();
+          this.resetAllFilters();
+          return;
+        }
+        this._closeFilterMenu();
+        this._openFilterSubmenu(anchor, k);
+      });
+    });
+
+    setTimeout(() => {
+      document.addEventListener('click', this._onMenuOutside);
+      document.addEventListener('keydown', this._onMenuKey);
+    }, 0);
+  },
+
+  _openFilterSubmenu(anchor, key) {
+    this._closeFilterMenu();
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu filter-submenu';
+    menu.setAttribute('role', 'menu');
+
+    if (key === 'status') {
+      const opts = [
+        ['open', 'Open'], ['acknowledged', 'Acknowledged'],
+        ['resolved', 'Resolved'], ['false_positive', 'False positive'], ['ignored', 'Ignored'],
+      ];
+      menu.innerHTML = opts.map(([v, l]) =>
+        `<button type="button" class="filter-menu-item" data-mi-pick="${v}" role="menuitem">${escapeHtml(l)}</button>`
+      ).join('');
+    } else if (key === 'target_id') {
+      const targets = this._lastTargets || [];
+      menu.innerHTML = `<input type="text" class="filter-menu-search" placeholder="Search targets…" aria-label="Search targets" />
+        <div class="filter-menu-list" data-target-list>
+          ${targets.map(t => `<button type="button" class="filter-menu-item" data-mi-pick="${escapeHtml(t.id)}" data-mi-text="${escapeHtml(t.value)}" role="menuitem">${escapeHtml(t.value)}</button>`).join('')}
+        </div>`;
+    } else if (key === 'tool') {
+      const tools = Array.from(new Set((this._lastFindings || []).map(f => f.source_tool).filter(Boolean))).sort();
+      if (!tools.length) {
+        menu.innerHTML = `<div class="filter-menu-empty">No tools in current view.</div>`;
+      } else {
+        menu.innerHTML = tools.map(t =>
+          `<button type="button" class="filter-menu-item" data-mi-pick="${escapeHtml(t)}" role="menuitem">${escapeHtml(t)}</button>`
+        ).join('');
+      }
+    } else if (key === 'host') {
+      menu.innerHTML = `<input type="text" class="filter-menu-search" placeholder="Host (e.g. api.example.com)" aria-label="Filter by host" />
+        <button type="button" class="filter-menu-item filter-menu-apply" role="menuitem">Apply</button>`;
+    } else if (key === 'template_id') {
+      const tmpls = Array.from(new Set((this._lastFindings || []).map(f => f.template_id).filter(Boolean))).sort();
+      if (!tmpls.length) {
+        menu.innerHTML = `<div class="filter-menu-empty">No template IDs in current view.</div>`;
+      } else {
+        menu.innerHTML = tmpls.map(t =>
+          `<button type="button" class="filter-menu-item" data-mi-pick="${escapeHtml(t)}" role="menuitem">${escapeHtml(t)}</button>`
+        ).join('');
+      }
+    }
+
+    document.body.appendChild(menu);
+    this._positionMenu(menu, anchor);
+    this._filterMenu = menu;
+
+    menu.querySelectorAll('[data-mi-pick]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._closeFilterMenu();
+        this._mutateFilter({ [key]: btn.getAttribute('data-mi-pick') });
+      });
+    });
+
+    // Host text input: enter / Apply applies the value.
+    const search = menu.querySelector('.filter-menu-search');
+    if (search) {
+      search.focus();
+      if (key === 'host') {
+        const apply = () => {
+          const v = search.value.trim();
+          if (!v) return;
+          this._closeFilterMenu();
+          this._mutateFilter({ host: v });
+        };
+        search.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
+        const applyBtn = menu.querySelector('.filter-menu-apply');
+        if (applyBtn) applyBtn.addEventListener('click', apply);
+      } else if (key === 'target_id') {
+        // Live filter the target list as the user types.
+        search.addEventListener('input', () => {
+          const q = search.value.toLowerCase();
+          menu.querySelectorAll('[data-mi-pick]').forEach(btn => {
+            const txt = (btn.getAttribute('data-mi-text') || '').toLowerCase();
+            btn.style.display = (!q || txt.includes(q)) ? '' : 'none';
+          });
+        });
+      }
+    }
+
+    setTimeout(() => {
+      document.addEventListener('click', this._onMenuOutside);
+      document.addEventListener('keydown', this._onMenuKey);
+    }, 0);
+  },
+
+  _onMenuOutside: (e) => {
+    const menu = FindingsPage._filterMenu;
+    if (!menu) return;
+    if (menu.contains(e.target)) return;
+    FindingsPage._closeFilterMenu();
+  },
+
+  _onMenuKey: (e) => {
+    if (e.key === 'Escape') FindingsPage._closeFilterMenu();
+  },
+
+  _closeFilterMenu() {
+    if (this._filterMenu) {
+      this._filterMenu.remove();
+      this._filterMenu = null;
+    }
+    document.removeEventListener('click', this._onMenuOutside);
+    document.removeEventListener('keydown', this._onMenuKey);
+  },
+
+  _positionMenu(menu, anchor) {
+    const r = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = (r.bottom + 4) + 'px';
+    menu.style.left = r.left + 'px';
+    menu.style.zIndex = 100;
+  },
+
+  // --- Save-view menu ---------------------------------------------
+
+  _openSaveMenu(anchor) {
+    this._closeFilterMenu();
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu';
+    menu.setAttribute('role', 'menu');
+    menu.innerHTML = `<button type="button" class="filter-menu-item filter-menu-reset" role="menuitem" data-mi-reset>Reset filters</button>`;
+    document.body.appendChild(menu);
+    this._positionMenu(menu, anchor);
+    this._filterMenu = menu;
+    menu.querySelector('[data-mi-reset]').addEventListener('click', () => {
+      this._closeFilterMenu();
+      this.resetAllFilters();
+    });
+    setTimeout(() => {
+      document.addEventListener('click', this._onMenuOutside);
+      document.addEventListener('keydown', this._onMenuKey);
+    }, 0);
+  },
+
+  resetAllFilters() {
+    this._clearStored();
+    this.clearSelection({ rerender: false });
+    location.hash = '#/findings';
+  },
+
+  // --- Bulk select ------------------------------------------------
+
+  // onCheckboxChange — called from the per-row checkbox onclick. Reads
+  // .checked off the input directly so we don't have to hunt up the
+  // value via dataset on every render.
+  onCheckboxChange(input) {
+    const id = input.value;
+    if (input.checked) this._selectedIds.add(id);
+    else this._selectedIds.delete(id);
+    this._refreshBulkBar();
+    this._refreshRowHighlight(id, input.checked);
+    const selAll = document.getElementById('findings-select-all');
+    if (selAll) this._syncSelectAllState(selAll);
+  },
+
+  toggleAll(checked) {
+    document.querySelectorAll('.fnd-checkbox').forEach(cb => {
+      cb.checked = checked;
+      const id = cb.value;
+      if (checked) this._selectedIds.add(id);
+      else this._selectedIds.delete(id);
+      this._refreshRowHighlight(id, checked);
+    });
+    this._refreshBulkBar();
+  },
+
+  clearSelection(opts) {
+    this._selectedIds.clear();
+    if (!opts || opts.rerender !== false) {
+      document.querySelectorAll('.fnd-checkbox').forEach(cb => { cb.checked = false; });
+      document.querySelectorAll('.fnd-row').forEach(r => r.classList.remove('fnd-row-selected'));
+      this._refreshBulkBar();
+      const selAll = document.getElementById('findings-select-all');
+      if (selAll) this._syncSelectAllState(selAll);
     }
   },
 
-  // --- Slide-over (PR4 #37) ----------------------------------------
+  _refreshRowHighlight(id, selected) {
+    const row = document.querySelector(`tr.fnd-row[data-finding-id="${cssAttrEscape(id)}"]`);
+    if (row) row.classList.toggle('fnd-row-selected', selected);
+  },
+
+  _syncSelectAllState(el) {
+    const visible = Array.from(document.querySelectorAll('.fnd-checkbox'));
+    if (visible.length === 0) {
+      el.checked = false;
+      el.indeterminate = false;
+      return;
+    }
+    const checkedCount = visible.filter(cb => cb.checked).length;
+    if (checkedCount === 0) { el.checked = false; el.indeterminate = false; }
+    else if (checkedCount === visible.length) { el.checked = true; el.indeterminate = false; }
+    else { el.checked = false; el.indeterminate = true; }
+  },
+
+  _refreshBulkBar() {
+    const slot = document.querySelector('[data-bulk-slot]');
+    if (!slot) return;
+    slot.innerHTML = Components.bulkBar({
+      count: this._selectedIds.size,
+      actions: this._bulkActionDescriptors(),
+    });
+    this._wireBulkBarActions(document);
+  },
+
+  // --- Bulk apply -------------------------------------------------
+
+  async bulkApplyStatus(newStatus) {
+    const ids = Array.from(this._selectedIds);
+    const total = ids.length;
+    if (total === 0) return;
+
+    // Resolve / FP confirm modals — both are "completed" terminal states
+    // and harder to undo than ack/ignore. Compute severity breakdown from
+    // the rows the user can see (good enough — selectedIds always come
+    // from the current page).
+    if (newStatus === 'resolved' || newStatus === 'false_positive') {
+      const breakdown = this._severityBreakdown(ids);
+      const ok = await Components.confirmDialog({
+        title: newStatus === 'resolved' ? 'Mark as resolved?' : 'Mark as false positive?',
+        message: this._buildBulkConfirmMessage(total, newStatus, breakdown),
+        confirmLabel: 'Confirm',
+      });
+      if (!ok) return;
+    }
+
+    const results = await Promise.allSettled(
+      ids.map(id => API.updateFindingStatus(id, newStatus))
+    );
+    const failed = [];
+    results.forEach((r, i) => { if (r.status === 'rejected') failed.push(ids[i]); });
+
+    if (failed.length === 0) {
+      Components.toast.success(`${total} finding${total !== 1 ? 's' : ''} updated to ${this._humanStatus(newStatus)}`);
+      ids.forEach(id => this._updateRowStatus(id, newStatus));
+      this._selectedIds.clear();
+      this._refreshBulkBar();
+      const selAll = document.getElementById('findings-select-all');
+      if (selAll) this._syncSelectAllState(selAll);
+      if (typeof loadSidebarBadge === 'function') loadSidebarBadge();
+    } else {
+      Components.toast.error(`${failed.length}/${total} failed to update. Selection retained for retry.`);
+      // Successful ones still patch the row UI; retain failures only.
+      ids.forEach(id => {
+        if (!failed.includes(id)) this._updateRowStatus(id, newStatus);
+      });
+      this._selectedIds = new Set(failed);
+      // Rebuild the visible checked state to match the new selection set.
+      document.querySelectorAll('.fnd-checkbox').forEach(cb => {
+        const sel = this._selectedIds.has(cb.value);
+        cb.checked = sel;
+        this._refreshRowHighlight(cb.value, sel);
+      });
+      this._refreshBulkBar();
+      if (typeof loadSidebarBadge === 'function') loadSidebarBadge();
+    }
+  },
+
+  _severityBreakdown(ids) {
+    const counts = {};
+    ids.forEach(id => {
+      const f = (this._lastFindings || []).find(x => x.id === id);
+      if (!f) return;
+      counts[f.severity] = (counts[f.severity] || 0) + 1;
+    });
+    return counts;
+  },
+
+  _buildBulkConfirmMessage(total, status, breakdown) {
+    const order = ['critical', 'high', 'medium', 'low', 'info'];
+    const parts = order.filter(s => breakdown[s] > 0).map(s => `${breakdown[s]} ${s}`);
+    const suffix = parts.length ? ` This affects: ${parts.join(', ')}.` : '';
+    const verb = status === 'resolved' ? 'resolved' : 'false positive';
+    return `Mark ${total} finding${total !== 1 ? 's' : ''} as ${verb}?${suffix}`;
+  },
+
+  _updateRowStatus(id, newStatus) {
+    const row = document.querySelector(`tr.fnd-row[data-finding-id="${cssAttrEscape(id)}"]`);
+    if (!row) return;
+    const cell = row.querySelector('[data-row-status]');
+    if (cell) cell.innerHTML = Components.statusPill(this._statusToPill[newStatus] || 'open');
+    // Mirror to the in-memory cache so a follow-up bulk action sees the
+    // current status without a re-fetch.
+    const f = (this._lastFindings || []).find(x => x.id === id);
+    if (f) f.status = newStatus;
+  },
+
+  _humanStatus(s) {
+    return ({
+      open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved',
+      false_positive: 'False positive', ignored: 'Ignored',
+    })[s] || s;
+  },
+
+  // --- Pagination -------------------------------------------------
+
+  goToPage(page) {
+    const params = parseQueryParams();
+    params.page = page;
+    delete params.id;
+    const q = Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+    location.hash = '#/findings' + (q ? '?' + q : '');
+  },
+
+  // --- Slide-over (PR4 #37) — preserved verbatim ------------------
 
   // handleRowClick is the click handler for raw-view <tr>s. It guards
-  // against firing when the operator clicked the inline status <select>
-  // or any other interactive element nested in the row.
+  // against firing when the operator clicked the inline checkbox or any
+  // other interactive element nested in the row.
   handleRowClick(evt, id) {
     const t = evt.target;
-    const tag = t && t.tagName;
-    if (tag === 'SELECT' || tag === 'OPTION' || tag === 'INPUT' ||
-        tag === 'BUTTON' || tag === 'A') return;
-    this._lastTrigger = evt.currentTarget;
-    // Setting hash drives the open via Router's findings transition
-    // detector — keeps Back-button semantics aligned with the panel.
-    location.hash = '#/findings/' + encodeURIComponent(id);
-  },
-
-  // handleGroupedRowClick is the equivalent for the grouped view when
-  // the group has a single underlying finding. Multi-asset groups keep
-  // the drill-through to the raw-filtered list because picking the
-  // port/asset is the meaningful next step there.
-  handleGroupedRowClick(evt, id) {
+    if (t && t.closest && t.closest('input, button, a, .fnd-cb-col')) return;
     this._lastTrigger = evt.currentTarget;
     location.hash = '#/findings/' + encodeURIComponent(id);
   },
 
-  // openSlideoverFor is the entry point used by both the row click and
-  // the deep-link route. It mounts the panel with a skeleton, fetches
-  // the finding, and replaces the body. AbortController guards against
-  // a stale render when the operator clicks a different row mid-fetch.
   async openSlideoverFor(id) {
     if (this._slide) {
-      // Already open on a different finding: tear down the old panel
-      // before mounting a new one so the focus-return pointer is fresh.
       this._slide.close('replace');
       this._slide = null;
     }
@@ -335,17 +758,12 @@ const FindingsPage = {
       onClose: (reason) => {
         this._slide = null;
         if (this._abortCtrl) { this._abortCtrl.abort(); this._abortCtrl = null; }
-        // Focus return to the row that opened the panel — keyboard
-        // operators rely on this to keep their place in the list.
         if (trigger && document.body.contains(trigger)) {
           try { trigger.focus(); } catch (_) {}
         }
-        // Strip the /{id} segment from the hash so reopening from
-        // history doesn't immediately re-mount the panel. Skip the
-        // cleanup when 'replace' (we're swapping for another finding).
         if (reason !== 'replace' && /^#\/findings\/[^?]+/.test(location.hash)) {
           const params = parseQueryParams();
-          const q = Object.entries(params).filter(([,v]) => v != null && v !== '').map(([k,v]) => k+'='+v).join('&');
+          const q = Object.entries(params).filter(([,v]) => v != null && v !== '').map(([k,v]) => k+'='+encodeURIComponent(v)).join('&');
           history.replaceState(null, '', '#/findings' + (q ? '?' + q : ''));
         }
       },
@@ -356,15 +774,11 @@ const FindingsPage = {
       data = await API.finding(id);
     } catch (err) {
       if (ctrl.signal.aborted) return;
-      // 404: the finding does not exist (or was deleted). Close the
-      // panel, surface a non-blocking toast, and clean the URL so a
-      // refresh does not loop on the same error.
       if (err.status === 404) {
         if (this._slide) this._slide.close('not-found');
         Components.toast.error('Finding ' + id + ' not found');
         history.replaceState(null, '', '#/findings');
       } else {
-        // 5xx or network: leave the panel open and offer a retry.
         bodyEl.innerHTML = `<div class="so-empty">Failed to load finding.<br>
           <button class="btn btn-ghost btn-sm" style="margin-top:12px"
             onclick="FindingsPage.openSlideoverFor('${escapeHtml(id)}')">Retry</button></div>`;
@@ -384,10 +798,6 @@ const FindingsPage = {
     </div>`;
   },
 
-  // _renderSlideoverBody builds the full panel interior: header pills +
-  // title + asset, action bar, tab strip, and the four tab panels. The
-  // panel content all comes from the single GET /findings/{id} call —
-  // tab switches do not re-fetch.
   _renderSlideoverBody(root, f, asset) {
     root.innerHTML = `
       ${this._headerHtml(f, asset)}
@@ -402,9 +812,6 @@ const FindingsPage = {
     this._wireActions(root, f);
     this._wireCopyButtons(root, f, asset);
     this._wireRemediationCopy(root, f);
-    // Update the panel title for screen readers — the helper builds
-    // .slide-over-title from the title arg of slideOver({title:…}); we
-    // patch it post-mount with the real finding title.
     if (this._slide && this._slide.root) {
       const titleEl = this._slide.root.querySelector('.slide-over-title');
       if (titleEl) titleEl.textContent = f.title || 'Finding';
@@ -438,9 +845,6 @@ const FindingsPage = {
   },
 
   _actionBarHtml(f) {
-    // Visibility matrix per status — see issue #37 P0.4. Map button
-    // class hints to so-action-* modifiers so the colors match status
-    // tokens without restating them in the call site.
     const matrix = {
       open:           [['acknowledged','Acknowledge','ack'], ['resolved','Mark resolved','resolved'], ['false_positive','False positive',''], ['ignored','Ignore','']],
       acknowledged:   [['resolved','Mark resolved','resolved'], ['open','Reopen','reopen'], ['false_positive','False positive','']],
@@ -458,8 +862,6 @@ const FindingsPage = {
   },
 
   _tabsHtml() {
-    // Comments tab is intentionally absent (#37 Non-goals #4). aria-
-    // selected is updated by _wireTabs on activation.
     return `<div class="so-tabs" role="tablist" aria-label="Finding sections">
       <button type="button" class="so-tab tab-active" id="so-tab-overview" role="tab" aria-selected="true" aria-controls="so-panel-overview" data-tab="overview">Overview</button>
       <button type="button" class="so-tab" id="so-tab-evidence" role="tab" aria-selected="false" aria-controls="so-panel-evidence" data-tab="evidence">Evidence</button>
@@ -494,13 +896,11 @@ const FindingsPage = {
         bar.querySelectorAll('[data-set-status]').forEach(b => { b.disabled = true; });
         try {
           await API.updateFindingStatus(f.id, newStatus);
-          // 1. Mutate the local model and refresh in-place: header pill
-          //    + action bar + the row in the list behind. No re-fetch.
           f.status = newStatus;
           this._refreshHeaderStatusPill(root, newStatus);
           bar.outerHTML = this._actionBarHtml(f);
           this._wireActions(root, f);
-          this._refreshListRow(f.id, newStatus);
+          this._updateRowStatus(f.id, newStatus);
           if (typeof loadSidebarBadge === 'function') loadSidebarBadge();
         } catch (err) {
           Components.toast.error('Failed to update status: ' + err.message);
@@ -514,24 +914,9 @@ const FindingsPage = {
     const row = root.querySelector('.so-pillrow');
     if (!row) return;
     const pillKey = this._statusToPill[status] || 'open';
-    // Status pill is the second .pill in the header row.
     const pills = row.querySelectorAll('.pill');
     if (pills.length >= 2) {
       pills[1].outerHTML = Components.statusPill(pillKey);
-    }
-  },
-
-  _refreshListRow(id, newStatus) {
-    // The list lives outside the panel. Find the <tr> by its
-    // data-finding-id and patch the inline <select> + the className
-    // tokens that drive the pill color.
-    const row = document.querySelector(`tr[data-finding-id="${cssAttrEscape(id)}"]`);
-    if (!row) return;
-    const sel = row.querySelector('.status-select');
-    if (sel) {
-      sel.value = newStatus;
-      sel.dataset.original = newStatus;
-      sel.className = 'status-select status-' + newStatus;
     }
   },
 
@@ -568,10 +953,9 @@ const FindingsPage = {
     });
   },
 
-  // --- Tab content ------------------------------------------------
+  // --- Tab content (PR4) ------------------------------------------
 
   _overviewHtml(f) {
-    // CVSS card. Range → token. Empty / 0 → em-dash.
     let cvssCard;
     if (!f.cvss || f.cvss <= 0) {
       cvssCard = this._cardHtml('CVSS 3.1', '<span class="so-card-value-empty">—</span>', '');
@@ -583,15 +967,10 @@ const FindingsPage = {
       else if (f.cvss >= 4.0) { sev = 'medium'; label = 'Medium'; }
       cvssCard = this._cardHtml('CVSS 3.1', `<span class="so-card-value sev-${sev}">${score}</span>`, label);
     }
-
-    // Confidence card.
     const conf = (f.confidence == null || f.confidence === 0)
       ? '<span class="so-card-value-empty">—</span>'
       : `<span class="so-card-value">${Math.round(f.confidence)}%</span>`;
     const confCard = this._cardHtml('Confidence', conf, '');
-
-    // EPSS column omitted (model.Finding has no EPSS field — see #37
-    // Non-goals #6). Two cards collapse to a 2-col grid.
     const cards = `<div class="so-cards" style="--so-card-cols:2">${cvssCard}${confCard}</div>`;
 
     const description = f.description
@@ -603,9 +982,6 @@ const FindingsPage = {
 
     const refs = this._referencesHtml(f);
 
-    // Metadata footer (template + first/last seen) — the wireframe
-    // collapses the legacy detail-grid into a smaller card. Useful for
-    // operators who want the canonical IDs at a glance.
     const meta = `<div class="so-section">
       <h3 class="so-section-label">Details</h3>
       <ul class="so-list" style="list-style:none;padding-left:0">
@@ -638,8 +1014,6 @@ const FindingsPage = {
         } else if (/^https?:\/\//i.test(String(r))) {
           items.push({ kind: 'url', value: String(r) });
         } else if (cveMatch) {
-          // Mixed string with a CVE id inside — render the CVE link plus
-          // a stripped-text remainder as plain.
           items.push({ kind: 'cve', value: cveMatch[0] });
         } else {
           items.push({ kind: 'text', value: String(r) });
@@ -661,11 +1035,7 @@ const FindingsPage = {
   _evidenceHtml(f) {
     const raw = f.evidence;
     if (!raw) return '<div class="so-empty">No evidence captured.</div>';
-
     const trimmed = String(raw).trim();
-
-    // 1. JSON shape: try to parse; if it has request/response keys use
-    //    the dual-block format, otherwise pretty-print the object.
     if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
       try {
         const obj = JSON.parse(trimmed);
@@ -678,8 +1048,6 @@ const FindingsPage = {
         </div>`;
       } catch (_) { /* fallthrough */ }
     }
-
-    // 2. Plain text — preformatted with a header label.
     return `<div class="so-section">
       <h3 class="so-section-label">Evidence</h3>
       <pre class="so-evidence">${escapeHtml(String(raw))}</pre>
@@ -704,12 +1072,8 @@ const FindingsPage = {
   _remediationHtml(f) {
     const body = f.remediation;
     if (!body) return '<div class="so-empty">No remediation steps documented.</div>';
-
-    // Numbered-list parser: if every non-empty line starts with "1." /
-    // "2)" / etc., render as <ol>. Otherwise prose.
     const lines = String(body).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     const allNumbered = lines.length > 1 && lines.every(l => /^\d+[.)]\s+/.test(l));
-
     let bodyHtml;
     if (allNumbered) {
       const items = lines.map(l => l.replace(/^\d+[.)]\s+/, '')).map(l =>
@@ -727,17 +1091,11 @@ const FindingsPage = {
     </div>`;
   },
 
-  // _inlineCode escapes HTML and then promotes single-backtick spans to
-  // <code> — a deliberate ASCII-only mini parser, NOT markdown. Run on
-  // already-escaped text so the regex never sees raw HTML.
   _inlineCode(text) {
     return escapeHtml(text).replace(/`([^`]+)`/g, (_m, g) => `<code>${g}</code>`);
   },
 
   _timelineHtml(f) {
-    // Events derive from the model — there is no finding_status_history
-    // table yet (see #37 P2.1). resolved_at is the only status-related
-    // event we can reliably show.
     const events = [];
     if (f.created_at) {
       const scanShort = (f.first_seen_scan_id || f.scan_id || '').slice(0, 8);
@@ -765,8 +1123,6 @@ const FindingsPage = {
     </div>`;
   },
 
-  // closeSlideover is invoked by app.js when the hash transitions away
-  // from #/findings/{id} (back button, manual edit, etc.). Idempotent.
   closeSlideover() {
     if (this._slide) {
       this._slide.close('hashchange');
