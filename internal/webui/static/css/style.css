@@ -2286,3 +2286,310 @@ button.kpi-card:focus-visible {
 .dash-status-dot-active { background: var(--brand); }
 .dash-status-dot-paused { background: var(--status-ack); }
 
+/* === UI v2 PR4 — finding slide-over interior (#37) ===================
+ * The slide-over chrome lives above (.slide-over*). PR4 fills its body
+ * with a rich layout: header pills row + title + asset, action bar, tab
+ * strip, and per-tab content. All classes namespace under .so- so they
+ * never clash with the legacy detail-page styles.
+ * =================================================================== */
+
+.so-pillrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.so-pillrow .pill {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.so-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.so-id:hover { color: var(--text-primary); background: var(--ink-600); }
+.so-title {
+  margin: 10px 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+.so-asset {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.so-asset code {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+}
+.so-icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.so-icon-btn:hover { color: var(--text-primary); background: var(--ink-700); }
+.so-asset-sep { color: var(--ink-600); }
+
+.so-actionbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--ink-700);
+  flex-shrink: 0;
+  background: var(--ink-900);
+}
+.so-action {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-600);
+  background: var(--ink-700);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.so-action:hover:not(:disabled) { background: var(--ink-600); color: var(--text-primary); }
+.so-action:disabled { opacity: 0.5; cursor: wait; }
+.so-action-resolved { background: var(--status-resolved-bg); color: var(--status-resolved); border-color: var(--status-resolved-border); }
+.so-action-ack { background: var(--status-ack-bg); color: var(--status-ack); border-color: var(--status-ack-border); }
+.so-action-reopen { background: var(--status-open-bg); color: var(--status-open); border-color: var(--status-open-border); }
+
+.so-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--ink-700);
+  padding: 0 16px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.so-tab {
+  background: transparent;
+  border: none;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+}
+.so-tab:hover { color: var(--text-primary); }
+.so-tab.tab-active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+
+.so-tabpanel { padding: 16px 0; }
+.so-tabpanel[hidden] { display: none; }
+.so-section + .so-section { margin-top: 20px; }
+.so-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+.so-prose {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.so-prose code {
+  font-family: var(--font-mono, monospace);
+  color: var(--brand);
+  background: rgba(0,229,153,0.08);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+.so-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.so-list li + li { margin-top: 4px; }
+
+.so-cards {
+  display: grid;
+  grid-template-columns: repeat(var(--so-card-cols, 3), 1fr);
+  gap: 10px;
+}
+.so-card {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.so-card-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.so-card-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+.so-card-value-empty { color: var(--text-muted); font-size: 22px; }
+.so-card-caption {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.so-card-value.sev-critical { color: var(--sev-critical); }
+.so-card-value.sev-high     { color: var(--sev-high); }
+.so-card-value.sev-medium   { color: var(--sev-medium); }
+.so-card-value.sev-low      { color: var(--sev-low); }
+
+.so-refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.so-refs li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cve-link {
+  font-family: var(--font-mono, monospace);
+  color: var(--brand);
+  text-decoration: none;
+}
+.cve-link:hover { text-decoration: underline; }
+.so-extlink {
+  color: var(--brand);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  word-break: break-all;
+}
+.so-extlink:hover { text-decoration: underline; }
+
+.so-evidence {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.so-evidence-block + .so-evidence-block { margin-top: 10px; }
+.so-evidence-block-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.so-timeline { list-style: none; margin: 0; padding: 0; }
+.so-timeline li {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--ink-700);
+}
+.so-timeline li:last-child { border-bottom: none; }
+.so-timeline-when { color: var(--text-muted); width: 80px; flex-shrink: 0; }
+.so-timeline-what { color: var(--text-primary); }
+
+.so-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 28px 12px;
+}
+
+.so-skeleton { padding: 4px 0; }
+.so-skel-bar {
+  background: var(--ink-700);
+  border-radius: 4px;
+  margin-bottom: 10px;
+  animation: so-pulse 1.4s ease-in-out infinite;
+}
+.so-skel-bar-1 { height: 14px; width: 33%; }
+.so-skel-bar-2 { height: 12px; width: 66%; }
+.so-skel-bar-3 { height: 12px; width: 100%; }
+.so-skel-bar-4 { height: 96px; width: 100%; }
+@keyframes so-pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 0.85; } }
+
+@media (max-width: 768px) {
+  .so-cards { --so-card-cols: 1; }
+}
+
+/* Toast stack — bottom-right, stacks newest at bottom. The stack mounts
+ * as a body sibling so it floats above slide-overs and modals. */
+.toast-stack {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 60;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  color: var(--text-primary);
+  padding: 8px 10px 8px 14px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+  max-width: 360px;
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+  animation: toast-in 0.14s ease-out;
+}
+.toast-success { border-left: 3px solid var(--status-resolved); }
+.toast-error   { border-left: 3px solid var(--sev-critical); }
+.toast-info    { border-left: 3px solid var(--brand); }
+.toast-msg { flex: 1; }
+.toast-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.toast-close:hover { color: var(--text-primary); }
+.toast-leaving { opacity: 0; transform: translateX(8px); transition: opacity 0.16s, transform 0.16s; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+

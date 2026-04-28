@@ -77,16 +77,98 @@ func TestFoundationComponentHelpers(t *testing.T) {
 	// The icon registry must list at least the seed glyphs so PR2 can
 	// rely on them without re-discovering whether they exist. PR3 #36
 	// added `refresh` for the dashboard header — listed here so the
-	// next maintainer doesn't strip it during a refactor.
+	// next maintainer doesn't strip it during a refactor. PR4 #37 added
+	// `external` for the finding slide-over reference links.
 	icons := []string{
 		"x:", "search:", "plus:",
 		"'chevron-down':", "'chevron-right':",
 		"check:", "clock:", "alert:", "copy:",
 		"refresh:",
+		"external:",
 	}
 	for _, ic := range icons {
 		assert.True(t, strings.Contains(js, ic),
 			"foundation icon %q missing from components.js ICONS registry", ic)
+	}
+
+	// PR4 #37 added cveLink and a toast helper. They live on the
+	// Components object so future pages can render CVE references and
+	// transient feedback without re-implementing the parser.
+	pr4Helpers := []string{
+		"cveLink(",
+		"toast(",
+	}
+	for _, h := range pr4Helpers {
+		assert.True(t, strings.Contains(js, h),
+			"PR4 helper %q missing from components.js", h)
+	}
+}
+
+// PR4 #37 — findings slide-over migration. The legacy detail-page
+// renderDetail / statusActionsHtml / changeStatusFromDetail / backLink
+// are gone; rows now open a Components.slideOver with severity/status
+// pills and the cveLink helper. These guards catch a partial migration.
+
+func TestFindingsLegacyArtifactsRemoved(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/findings.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	legacy := []string{
+		"renderDetail",
+		"statusActionsHtml",
+		"changeStatusFromDetail",
+		"Components.backLink",
+		"Back to findings",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"legacy artifact %q must not appear in findings.js after PR4 #37", s)
+	}
+}
+
+func TestFindingsUsesFoundationHelpers(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/findings.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.slideOver(",
+		"Components.severityPill(",
+		"Components.statusPill(",
+		"Components.cveLink(",
+		"Components.icon(",
+		"openSlideoverFor",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"findings.js must use foundation helper %q after PR4 #37", s)
+	}
+}
+
+// TestFindingsCSSScaffolding gates the CSS classes the rewritten
+// slide-over interior hard-codes. Lives next to the JS guards so a
+// single failed test makes the missing piece obvious.
+func TestFindingsCSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		".so-pillrow", ".so-title", ".so-asset",
+		".so-actionbar", ".so-action",
+		".so-tabs", ".so-tab", ".tab-active",
+		".so-tabpanel", ".so-section", ".so-section-label",
+		".so-cards", ".so-card", ".so-card-label", ".so-card-value",
+		".so-prose", ".so-list",
+		".so-refs", ".cve-link", ".so-extlink",
+		".so-evidence", ".so-evidence-block",
+		".so-timeline", ".so-empty",
+		".toast-stack", ".toast", ".toast-success", ".toast-error",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"findings CSS class %q missing from style.css", c)
 	}
 }
 
