@@ -337,6 +337,136 @@ func TestScansUsesChipsNoBulkBar(t *testing.T) {
 		"scans.js must NOT mount Components.bulkBar after PR5 #38 (bulk explicitly out of scope)")
 }
 
+// PR7 #40 — scan-detail extracted into pages/scan_detail.js. The
+// guards here catch (1) the file existing in the embed FS, (2) the
+// app.js router pointing the /#/scans/:id route at ScanDetailPage,
+// (3) scans.js no longer carrying renderDetail / renderDetailContent
+// (cleanup gating), and (4) the new module wiring through the PR1
+// foundation helpers (severityPill, statusBadge, confirmDialog,
+// toast, backLink). The _openToolRunIds Set assertion preserves the
+// PR5 fix c3802e47 across the extract.
+
+func TestScanDetailModuleExists(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/scan_detail.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"const ScanDetailPage",
+		"_openToolRunIds: new Set()",
+		"PHASES:",
+		"discovery", "resolution", "port_scan", "http_probe", "assess",
+		"Components.severityPill(",
+		"Components.statusBadge(",
+		"Components.confirmDialog(",
+		"Components.toast",
+		"Components.backLink(",
+		"AbortController",
+		"data-scan-tab",
+		"data-cancel-scan",
+		"API.cancelScan(",
+		"scan_scope=",
+		"visibilitychange",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"scan_detail.js must reference %q", s)
+	}
+}
+
+func TestAppJSRoutesScanDetail(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/app.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	// The router entry for #/scans/:id must point at ScanDetailPage,
+	// not ScansPage — otherwise the extract is half-wired.
+	assert.True(t, strings.Contains(js, "ScanDetailPage.render(app"),
+		"app.js must route /#/scans/:id to ScanDetailPage.render after PR7 #40")
+	// Topbar indicator must deep-link to the running scan id, not the
+	// list. Checked by presence of the encoded-id path on the indicator.
+	assert.True(t, strings.Contains(js, "'#/scans/' + encodeURIComponent(scan.id)"),
+		"ScanIndicator must deep-link to the running scan id after PR7 #40")
+}
+
+func TestScansJSDetailArtifactsRemoved(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/scans.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	legacy := []string{
+		"renderDetail(",
+		"renderDetailContent(",
+		"renderPhaseIndicator(",
+		"renderPipeline(",
+		"startDetailPolling(",
+		"_openToolRunIds",
+		"renderScanAggregates(",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"legacy detail artifact %q must not appear in scans.js after PR7 #40", s)
+	}
+
+	// PR7 list-view tweaks must land in the same file: progress column
+	// + status pill helper carrying the phase name.
+	required := []string{
+		"_statusCell(",
+		"_progressCell(",
+		"scan-running-pill",
+		"scan-row-progress",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"scans.js must reference %q after PR7 #40 list tweaks", s)
+	}
+}
+
+func TestPR7CSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		".scan-detail-header", ".scan-detail-title", ".scan-detail-subtitle",
+		".scan-detail-actions", ".scan-detail-tabs", ".scan-detail-panel",
+		".scan-progress-card", ".scan-progress-row", ".scan-progress-pct",
+		".scan-phase-card", ".phase-tracker", ".phase-row", ".phase-marker",
+		".phase-dot", ".phase-dot-pending", ".phase-dot-running",
+		".phase-dot-done", ".phase-dot-failed",
+		".phase-bar-track", ".phase-bar-fill",
+		".phase-group", ".phase-group-label",
+		".findings-panel", ".findings-panel-row", ".findings-panel-empty",
+		".findings-panel-cta", ".findings-panel-count",
+		".scan-logs-card", ".scan-logs-placeholder",
+		".config-phase", ".config-phase-label", ".config-run", ".config-list",
+		".scan-running-pill", ".scan-running-dot",
+		".scan-row-progress", ".scan-row-progress-track",
+		".scan-row-progress-fill", ".scan-row-progress-pct",
+		".marquee", ".dash-col-12",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"PR7 CSS class %q missing from style.css", c)
+	}
+}
+
+func TestIndexHTMLLoadsScanDetail(t *testing.T) {
+	data, err := staticFS.ReadFile("static/index.html")
+	require.NoError(t, err)
+	html := string(data)
+
+	assert.True(t, strings.Contains(html, "/js/pages/scan_detail.js"),
+		"index.html must load scan_detail.js after PR7 #40")
+	// Ordering: scan_detail.js must load BEFORE app.js so the router
+	// can reference ScanDetailPage at navigate-time.
+	scanIdx := strings.Index(html, "/js/pages/scan_detail.js")
+	appIdx := strings.Index(html, "/js/app.js")
+	require.True(t, scanIdx > 0 && appIdx > 0)
+	assert.Less(t, scanIdx, appIdx,
+		"scan_detail.js must be loaded before app.js so the router can resolve ScanDetailPage")
+}
+
 // TestPR5CSSScaffolding gates the CSS classes the new layout hard-codes:
 // severity tabs, filter strip, filter menu (popup + submenu), save-view
 // pill, and the table checkbox column.

@@ -8,7 +8,11 @@ const Router = {
     { pattern: /^#\/findings\/([^?]+)(\?.*)?$/, page: 'findings', render: (m) => FindingsPage.render(app, Object.assign(parseQueryParams(), { id: decodeURIComponent(m[1]) })) },
     { pattern: /^#\/findings/, page: 'findings', render: () => FindingsPage.render(app, parseQueryParams()) },
     { pattern: /^#\/assets/, page: 'assets', render: () => AssetsPage.render(app, parseQueryParams()) },
-    { pattern: /^#\/scans\/(.+)$/, page: 'scans', render: (m) => ScansPage.render(app, { id: m[1] }) },
+    // PR7 #40: scan-detail lives in its own module (ScanDetailPage).
+    // The list route below stays on ScansPage. Detail captures stop at
+    // `?` so a future query string can ride along without the id
+    // swallowing it.
+    { pattern: /^#\/scans\/([^?]+)(\?.*)?$/, page: 'scans', render: (m) => ScanDetailPage.render(app, decodeURIComponent(m[1])) },
     { pattern: /^#\/scans/, page: 'scans', render: () => ScansPage.render(app, parseQueryParams()) },
     { pattern: /^#\/targets\/(.+)$/, page: 'targets', render: (m) => TargetsPage.render(app, { id: m[1] }) },
     { pattern: /^#\/targets/, page: 'targets', render: () => TargetsPage.render(app) },
@@ -210,6 +214,15 @@ const ScanIndicator = {
     if (targetEl) targetEl.textContent = scan.target || '';
     if (toolEl) toolEl.textContent = scan.phase || '';
     if (pctEl) pctEl.textContent = (scan.progress != null) ? Math.round(scan.progress) + '%' : '';
+    // PR7 #40: deep-link the indicator. Single running scan → its
+    // detail page; multiple running → filtered list. /scans/status
+    // returns the most recent running scan, so we can route directly
+    // when a scan id is present.
+    if (scan.id) {
+      el.setAttribute('href', '#/scans/' + encodeURIComponent(scan.id));
+    } else {
+      el.setAttribute('href', '#/scans?status=running');
+    }
   },
 };
 
