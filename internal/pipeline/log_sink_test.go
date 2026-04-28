@@ -46,7 +46,7 @@ func (w *fakeWriter) snapshot() []model.ScanLog {
 func TestSQLiteLogSink_BatchedInsert(t *testing.T) {
 	w := &fakeWriter{}
 	sink := NewSQLiteLogSink(w, SQLiteLogSinkOptions{BatchSize: 10, FlushInterval: 50 * time.Millisecond})
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 
 	for i := 0; i < 25; i++ {
 		sink.Emit(context.Background(), "scan-1", model.LogLevelInfo, "scanner", "line")
