@@ -274,7 +274,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// If the tool was killed by external cancellation, stop immediately
 		if toolErr != nil {
 			if fresh, fErr := p.store.GetScan(context.Background(), scan.ID); fErr == nil && fresh.Status == model.ScanStatusCancelled {
-				p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, "cancelled")
+				p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, "canceled")
 				scan.Status = model.ScanStatusCancelled
 				scan.Phase = "cancelled"
 				nowt := time.Now().UTC()
