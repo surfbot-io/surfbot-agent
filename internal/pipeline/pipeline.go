@@ -109,28 +109,14 @@ type PhaseResult struct {
 type Pipeline struct {
 	store    storage.Store
 	registry *detection.Registry
-	sink     LogSink
 }
 
-// New creates a new Pipeline with the given store and registry. The
-// LogSink defaults to NoopSink — callers that want UI-visible logs
-// (issue #52) wire one via SetSink before calling Run.
+// New creates a new Pipeline with the given store and registry.
 func New(store storage.Store, registry *detection.Registry) *Pipeline {
 	return &Pipeline{
 		store:    store,
 		registry: registry,
-		sink:     NoopSink{},
 	}
-}
-
-// SetSink swaps the LogSink. Call before Run; the pipeline reads the
-// field once at the start of Run and doesn't reach for it again
-// elsewhere, so swap-during-scan is undefined.
-func (p *Pipeline) SetSink(sink LogSink) {
-	if sink == nil {
-		sink = NoopSink{}
-	}
-	p.sink = sink
 }
 
 // Run executes the full detection pipeline against the given target.
@@ -188,14 +174,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	pp := newPipelinePrinter(os.Stderr)
 	pp.progress("Scan started: %s (%s)", target.Value, opts.ScanType)
 
-	// Issue #52: structured scan log. NoopSink by default; production
-	// callers swap in SQLiteLogSink via SetSink before Run.
-	sink := p.sink
-	if sink == nil {
-		sink = NoopSink{}
-	}
-	sink.ScanStarted(ctx, scan.ID, target.Value, opts.ScanType)
-
 	for i, tool := range tools {
 		// Check for context cancellation
 		select {
@@ -217,7 +195,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 				nowt := time.Now().UTC()
 				scan.FinishedAt = &nowt
 				p.store.UpdateScan(context.Background(), scan) //nolint:errcheck
-				sink.ScanCancelled(ctx, scan.ID, "external")
 				pp.warn("Scan cancelled externally")
 				return nil, fmt.Errorf("scan cancelled")
 			}
@@ -231,7 +208,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			}
 			result.Phases = append(result.Phases, pr)
 			p.recordToolRun(ctx, tool, scan.ID, time.Now(), 0, len(inputs), 0, model.ToolRunSkipped, "")
-			sink.ToolSkipped(ctx, scan.ID, tool.Name(), "filtered by scan options")
 			continue
 		}
 
@@ -241,14 +217,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		p.store.UpdateScan(ctx, scan) //nolint:errcheck
 
 		pp.success("Phase %d/%d: %s — %s", i+1, len(tools), tool.Phase(), tool.Name())
-		sink.PhaseStarted(ctx, scan.ID, tool.Phase(), tool.Name())
-
-		// Pre-allocate the tool_run id so the start log line carries
-		// the same ID as the eventual recordToolRun row. Both lines
-		// (start + complete) reference it via tool_run_id, letting the
-		// UI group log lines under their tool execution.
-		toolRunID := uuid.New().String()
-		sink.ToolStarted(ctx, scan.ID, toolRunID, tool.Name(), tool.Phase(), len(inputs))
 
 		// Per-phase timeout — assessment (nuclei) gets 10 min, others 5 min
 		phaseTimeout := time.Duration(opts.Timeout) * time.Second
@@ -306,14 +274,12 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// If the tool was killed by external cancellation, stop immediately
 		if toolErr != nil {
 			if fresh, fErr := p.store.GetScan(context.Background(), scan.ID); fErr == nil && fresh.Status == model.ScanStatusCancelled {
-				p.recordToolRunWithID(ctx, toolRunID, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, "canceled")
-				sink.ToolFailed(ctx, scan.ID, toolRunID, tool.Name(), "canceled")
+				p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, "cancelled")
 				scan.Status = model.ScanStatusCancelled
 				scan.Phase = "cancelled"
 				nowt := time.Now().UTC()
 				scan.FinishedAt = &nowt
 				p.store.UpdateScan(context.Background(), scan) //nolint:errcheck
-				sink.ScanCancelled(ctx, scan.ID, tool.Name()+" terminated")
 				pp.warn("Scan cancelled — %s terminated", tool.Name())
 				return nil, fmt.Errorf("scan cancelled")
 			}
@@ -332,13 +298,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 			pr.Error = toolErr.Error()
 			result.Phases = append(result.Phases, pr)
 
-			p.recordToolRunWithID(ctx, toolRunID, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, toolErr.Error())
-			sink.ToolFailed(ctx, scan.ID, toolRunID, tool.Name(), toolErr.Error())
-			// toolResult may be nil on hard tool failures (the wrapper
-			// returns (nil, err)). Guard before dereferencing.
-			if toolResult != nil {
-				flushToolStderr(ctx, sink, scan.ID, toolRunID, tool.Name(), &toolResult.ToolRun)
-			}
+			p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), 0, model.ToolRunFailed, toolErr.Error())
 
 			if isHardFailure(tool) {
 				scan.Status = model.ScanStatusFailed
@@ -346,7 +306,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 				nowt := time.Now().UTC()
 				scan.FinishedAt = &nowt
 				p.store.UpdateScan(ctx, scan) //nolint:errcheck
-				sink.ScanFailed(ctx, scan.ID, scan.Error)
 				return nil, fmt.Errorf("%s: %w", tool.Name(), toolErr)
 			}
 			pp.warn("    %s failed: %v", tool.Name(), toolErr)
@@ -413,9 +372,7 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 		// telemetry (command args, stderr tail, output summary, exit
 		// code). Merge those into the persisted record so the webui and
 		// `surfbot scan detail` can show per-tool logs.
-		p.recordToolRunWithID(ctx, toolRunID, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "", &toolResult.ToolRun)
-		sink.ToolCompleted(ctx, scan.ID, toolRunID, tool.Name(), duration.Milliseconds(), outputCount, toolResult.ToolRun.OutputSummary)
-		flushToolStderr(ctx, sink, scan.ID, toolRunID, tool.Name(), &toolResult.ToolRun)
+		p.recordToolRun(ctx, tool, scan.ID, startTime, duration, len(inputs), len(toolResult.Findings), model.ToolRunCompleted, "", &toolResult.ToolRun)
 
 		// Print phase summary. The port_scan summary surfaces the
 		// resolution-filter drop count so operators can see the
@@ -499,7 +456,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 					Status:   "skipped",
 				})
 				p.recordToolRun(ctx, tools[k], scan.ID, time.Now(), 0, 0, 0, model.ToolRunSkipped, "no live URLs to assess")
-				sink.ToolSkipped(ctx, scan.ID, tools[k].Name(), "no live URLs to assess")
 			}
 			break
 		}
@@ -553,8 +509,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	p.store.UpdateScan(ctx, scan)                                         //nolint:errcheck
 	p.store.UpdateTargetLastScan(ctx, scan.TargetID, scan.ID, finishedAt) //nolint:errcheck
 
-	sink.ScanCompleted(ctx, scan.ID, duration.Milliseconds())
-
 	result.Type = opts.ScanType
 	result.Duration = duration
 	result.TargetState = targetState
@@ -564,29 +518,6 @@ func (p *Pipeline) Run(ctx context.Context, targetID string, opts PipelineOption
 	PrintChangeSummary(delta)
 
 	return result, nil
-}
-
-// flushToolStderr splits the accumulated stderr from a tool's ToolRun
-// (set by attachExecContext during tool.Run) into individual lines and
-// emits each non-empty one via sink.ToolStderr at level=warn. Multi-line
-// stderr is the canonical signal that something went sideways inside
-// the tool — surfacing it in the live log lets operators triage without
-// `sqlite3 surfbot.db ...` queries against tool_runs.config.
-func flushToolStderr(ctx context.Context, sink LogSink, scanID, toolRunID, toolName string, tr *model.ToolRun) {
-	if tr == nil || tr.Config == nil {
-		return
-	}
-	raw, _ := tr.Config["stderr_tail"].(string)
-	if raw == "" {
-		return
-	}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimRight(line, "\r ")
-		if line == "" {
-			continue
-		}
-		sink.ToolStderr(ctx, scanID, toolRunID, toolName, line)
-	}
 }
 
 func (p *Pipeline) selectTools(opts PipelineOptions) []detection.DetectionTool {
@@ -619,21 +550,10 @@ func (p *Pipeline) selectTools(opts PipelineOptions) []detection.DetectionTool {
 // The pipeline-controlled fields (scan_id, timing, counts, status)
 // always win — the wrapper doesn't know scan_id and its own timing may
 // be slightly off vs. the outer timer.
-func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string, enrich ...*model.ToolRun) string {
-	return p.recordToolRunWithID(ctx, "", tool, scanID, startedAt, duration, inputCount, outputCount, status, errMsg, enrich...)
-}
-
-// recordToolRunWithID is recordToolRun with an explicit ID — used by the
-// main loop so the pre-emitted sink.ToolStarted log line and the
-// post-emitted sink.ToolCompleted/Failed line share a tool_run_id.
-// Empty toolRunID generates a fresh UUID, matching the legacy behavior.
-func (p *Pipeline) recordToolRunWithID(ctx context.Context, toolRunID string, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string, enrich ...*model.ToolRun) string {
-	if toolRunID == "" {
-		toolRunID = uuid.New().String()
-	}
+func (p *Pipeline) recordToolRun(ctx context.Context, tool detection.DetectionTool, scanID string, startedAt time.Time, duration time.Duration, inputCount, outputCount int, status model.ToolRunStatus, errMsg string, enrich ...*model.ToolRun) {
 	finishedAt := startedAt.Add(duration)
 	tr := &model.ToolRun{
-		ID:            toolRunID,
+		ID:            uuid.New().String(),
 		ScanID:        scanID,
 		ToolName:      tool.Name(),
 		Phase:         tool.Phase(),
@@ -670,7 +590,6 @@ func (p *Pipeline) recordToolRunWithID(ctx context.Context, toolRunID string, to
 		}
 	}
 	p.store.CreateToolRun(ctx, tr) //nolint:errcheck
-	return tr.ID
 }
 
 // buildAssetLookup returns a map of asset value → asset ID for all assets of a target.

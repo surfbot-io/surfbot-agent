@@ -115,14 +115,7 @@ func NewServer(store *storage.SQLiteStore, opts ServerOptions) (*http.Server, ne
 		}
 	})
 	mux.HandleFunc("/api/v1/scans/", func(w http.ResponseWriter, r *http.Request) {
-		// /api/v1/scans/status is handled above by the more specific route.
-		// Issue #52: /api/v1/scans/{id}/logs branches off here; the
-		// /logs suffix is checked before the generic detail/cancel
-		// dispatch so the path doesn't get treated as a scan id.
-		if strings.HasSuffix(r.URL.Path, "/logs") {
-			h.handleScanLogs(w, r)
-			return
-		}
+		// /api/v1/scans/status is handled above by the more specific route
 		switch r.Method {
 		case http.MethodGet:
 			h.handleScanDetail(w, r)

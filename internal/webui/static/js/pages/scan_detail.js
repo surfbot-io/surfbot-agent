@@ -26,15 +26,6 @@ const ScanDetailPage = {
   _openToolRunIds: new Set(),  // preserves PR5 fix c3802e47
   _scanID: null, _data: null, _findings: [],
   _logsEnabled: null, _failStreak: 0, _onHashChange: null,
-  // Issue #52: live log state. _logs is the in-memory line buffer
-  // (full corpus, used for download); rendering caps at 500 most-recent
-  // when virtualization kicks in. _logSince is the cursor for the next
-  // ?since=N call; _logsPaused freezes appending. _logsWrap toggles
-  // whitespace handling. _logFilters are client-side multi-select
-  // chips: levels (info/warn/error) and sources (tool names).
-  _logs: [], _logSince: 0, _logsPaused: false, _logsWrap: false,
-  _logFilters: { levels: new Set(), sources: new Set() },
-  _logsTimer: null, _logsFailStreak: 0,
 
   async render(app, id) {
     if (this._scanID !== id) {
@@ -42,10 +33,6 @@ const ScanDetailPage = {
       this._activeTab = 'overview';
       this._failStreak = 0;
       this._logsEnabled = null;
-      this._logs = [];
-      this._logSince = 0;
-      this._logsPaused = false;
-      this._logFilters = { levels: new Set(), sources: new Set() };
     }
     this._scanID = id;
     this._destroy();
@@ -61,19 +48,7 @@ const ScanDetailPage = {
         this._probeLogsEndpoint(id).then(enabled => {
           if (this._scanID !== id) return;
           this._logsEnabled = enabled;
-          if (enabled) {
-            // Prime the log buffer + start polling. Both Overview
-            // (preview) and Logs (full) tabs consume _logs, so we
-            // fetch once regardless of which tab is active.
-            this._fetchLogs(id, /*reset*/ true).then(() => {
-              if (this._activeTab === 'logs' || this._activeTab === 'overview') {
-                this._renderActivePanel(app);
-              }
-              if (data.scan.status === 'running') this._startLogsPolling(id, app);
-            });
-          } else if (this._activeTab === 'logs' || this._activeTab === 'overview') {
-            this._renderActivePanel(app);
-          }
+          if (this._activeTab === 'logs' || this._activeTab === 'overview') this._renderActivePanel(app);
         });
       }
       if (data.scan.status === 'running') this.startPolling(app, id);
@@ -463,224 +438,21 @@ const ScanDetailPage = {
     return `<div class="pipeline-detail-body">${parts.join('')}</div>`;
   },
 
-  // ---- Logs tab + preview (issue #52) -----------------------------
+  // ---- Logs tab + preview -----------------------------------------
 
   _renderLogs(data, full) {
-    if (this._logsEnabled !== true) {
-      const detail = full
-        ? '<p class="text-muted">Live log streaming requires backend support. The page is wired to consume <span class="mono">/api/v1/scans/' + escapeHtml(data.scan.id) + '/logs?since=N</span> as soon as it ships.</p>'
-        : '<p class="text-muted">Live log preview will appear here once the backend logs endpoint ships.</p>';
-      return `<div class="card scan-logs-card scan-logs-placeholder" role="log" aria-live="polite">
-        <div class="card-label">Live log</div>${detail}
-      </div>`;
-    }
-    const filtered = this._filteredLogs();
-    // Overview tab: last 8 lines + CTA. Logs tab: full corpus with
-    // toolbar (filters, pause, wrap, download) and virtualized tail.
-    if (!full) {
-      const tail = filtered.slice(-8);
-      const lines = tail.length === 0
-        ? '<div class="scan-log-empty text-muted">No log lines yet — scan is starting.</div>'
-        : tail.map(l => this._renderLogLine(l)).join('');
-      const cta = `<a class="scan-log-cta" href="javascript:void(0)" data-log-open-tab>Open Logs →</a>`;
+    if (this._logsEnabled === true) {
       return `<div class="card scan-logs-card" role="log" aria-live="polite">
-        <div class="card-label scan-log-header">
-          <span>Live log</span>
-          <span class="scan-log-count text-muted">${filtered.length}/${this._logs.length}</span>
-        </div>
-        <pre class="scan-log-pre scan-log-pre-preview${this._logsWrap ? ' scan-log-wrap' : ''}">${lines}</pre>
-        ${cta}
+        <div class="card-label">Live log</div>
+        <div class="text-muted">${full ? 'Awaiting log lines…' : 'Live log preview will stream here.'}</div>
       </div>`;
     }
-    const allLines = filtered.length === 0
-      ? '<div class="scan-log-empty text-muted">No log lines match the current filters.</div>'
-      : filtered.map(l => this._renderLogLine(l)).join('');
-    return `<div class="card scan-logs-card" role="log" aria-live="polite">
-      <div class="card-label scan-log-header">
-        <span>Live log</span>
-        <span class="scan-log-count text-muted">${filtered.length}/${this._logs.length}</span>
-      </div>
-      ${this._renderLogToolbar()}
-      <pre class="scan-log-pre scan-log-pre-full${this._logsWrap ? ' scan-log-wrap' : ''}" data-log-pre>${allLines}</pre>
+    const detail = full
+      ? '<p class="text-muted">Live log streaming requires backend support. The page is wired to consume <span class="mono">/api/v1/scans/' + escapeHtml(data.scan.id) + '/logs?since=N</span> as soon as it ships.</p>'
+      : '<p class="text-muted">Live log preview will appear here once the backend logs endpoint ships.</p>';
+    return `<div class="card scan-logs-card scan-logs-placeholder" role="log" aria-live="polite">
+      <div class="card-label">Live log</div>${detail}
     </div>`;
-  },
-
-  _renderLogLine(l) {
-    const ts = l.ts ? this._fmtLogTime(l.ts) : '';
-    const lvl = l.level || 'info';
-    const src = l.source || 'scanner';
-    return `<span class="scan-log-line scan-log-line-${escapeHtml(lvl)}">`
-      + `<span class="scan-log-ts text-muted">[${escapeHtml(ts)}]</span> `
-      + `<span class="scan-log-src">${escapeHtml(src)}</span> `
-      + `<span class="scan-log-text">${escapeHtml(l.text || '')}</span>`
-      + `\n</span>`;
-  },
-
-  _renderLogToolbar() {
-    const sources = Array.from(new Set(this._logs.map(l => l.source))).sort();
-    const levels = ['info', 'warn', 'error'];
-    const levelChips = levels.map(lv => {
-      const active = this._logFilters.levels.has(lv);
-      return `<button type="button" class="scan-log-chip scan-log-chip-${lv}${active ? ' active' : ''}" data-log-level="${lv}">${lv}</button>`;
-    }).join('');
-    const sourceChips = sources.map(src => {
-      const active = this._logFilters.sources.has(src);
-      return `<button type="button" class="scan-log-chip${active ? ' active' : ''}" data-log-source="${escapeHtml(src)}">${escapeHtml(src)}</button>`;
-    }).join('');
-    return `<div class="scan-log-toolbar">
-      <div class="scan-log-chips">
-        <span class="scan-log-chips-label text-muted">level:</span>${levelChips}
-        ${sources.length > 0 ? '<span class="scan-log-chips-sep" aria-hidden="true">·</span>' : ''}
-        ${sources.length > 0 ? '<span class="scan-log-chips-label text-muted">tool:</span>' + sourceChips : ''}
-      </div>
-      <div class="scan-log-actions">
-        <button type="button" class="btn btn-ghost btn-sm" data-log-pause aria-pressed="${this._logsPaused}">${this._logsPaused ? 'Resume' : 'Pause'}</button>
-        <button type="button" class="btn btn-ghost btn-sm" data-log-wrap aria-pressed="${this._logsWrap}">${this._logsWrap ? 'No wrap' : 'Wrap'}</button>
-        <button type="button" class="btn btn-ghost btn-sm" data-log-download>Download</button>
-      </div>
-    </div>`;
-  },
-
-  _filteredLogs() {
-    const lv = this._logFilters.levels;
-    const src = this._logFilters.sources;
-    if (lv.size === 0 && src.size === 0) return this._logs;
-    return this._logs.filter(l => {
-      if (lv.size > 0 && !lv.has(l.level)) return false;
-      if (src.size > 0 && !src.has(l.source)) return false;
-      return true;
-    });
-  },
-
-  async _fetchLogs(id, reset) {
-    if (reset) {
-      this._logs = [];
-      this._logSince = 0;
-    }
-    try {
-      // Loop the cursor a few times in case the first batch is short
-      // — guards against the case where the polling cadence is slower
-      // than the burst rate at scan start.
-      for (let i = 0; i < 5; i++) {
-        const resp = await API.scanLogs(id, { since: this._logSince, limit: 200 });
-        const lines = (resp && resp.lines) || [];
-        if (lines.length === 0) break;
-        this._appendLogs(lines);
-        if (resp && resp.next != null) this._logSince = resp.next;
-        if (!resp.has_more) break;
-      }
-      this._logsFailStreak = 0;
-      return true;
-    } catch (err) {
-      this._logsFailStreak++;
-      return false;
-    }
-  },
-
-  _appendLogs(lines) {
-    if (!lines || lines.length === 0) return;
-    if (this._logsPaused) {
-      // Still ingest into the cursor-tracked buffer so Resume catches up.
-      // Storing into _logs (vs. a side queue) is simplest — the renderer
-      // is the single throttle.
-    }
-    for (const l of lines) this._logs.push(l);
-  },
-
-  _startLogsPolling(id, app) {
-    if (this._logsTimer) clearInterval(this._logsTimer);
-    this._logsTimer = setInterval(async () => {
-      if (document.visibilityState === 'hidden') return;
-      const ok = await this._fetchLogs(id, /*reset*/ false);
-      if (!ok) return;
-      // Re-render the active panel only if it consumes _logs. The
-      // Phases / Config tabs don't, so the polling tick is invisible
-      // there — saves DOM churn.
-      if (this._activeTab === 'overview' || this._activeTab === 'logs') {
-        this._renderActivePanel(app);
-        if (!this._logsPaused) this._scrollLogsToBottom(app);
-      }
-      // Stop polling when scan reaches a terminal status. The main
-      // _data poll updates _data; we read it lazily here.
-      const s = this._data && this._data.scan;
-      if (s && s.status !== 'running') {
-        clearInterval(this._logsTimer);
-        this._logsTimer = null;
-      }
-    }, this.POLL_MS);
-  },
-
-  _scrollLogsToBottom(app) {
-    const pre = app.querySelector('[data-log-pre]');
-    if (pre) pre.scrollTop = pre.scrollHeight;
-  },
-
-  _bindLogControls(app, id) {
-    // Open Logs tab from the Overview preview CTA.
-    const opener = app.querySelector('[data-log-open-tab]');
-    if (opener) opener.addEventListener('click', () => {
-      this._activeTab = 'logs';
-      const tablist = app.querySelector('.scan-detail-tabs');
-      if (tablist) {
-        tablist.outerHTML = this._renderTabs();
-        this._wireTabClicks(app, id);
-      }
-      this._renderActivePanel(app);
-    });
-
-    app.querySelectorAll('[data-log-level]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const lv = btn.getAttribute('data-log-level');
-        if (this._logFilters.levels.has(lv)) this._logFilters.levels.delete(lv);
-        else this._logFilters.levels.add(lv);
-        this._renderActivePanel(app);
-      });
-    });
-    app.querySelectorAll('[data-log-source]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const src = btn.getAttribute('data-log-source');
-        if (this._logFilters.sources.has(src)) this._logFilters.sources.delete(src);
-        else this._logFilters.sources.add(src);
-        this._renderActivePanel(app);
-      });
-    });
-    const pauseBtn = app.querySelector('[data-log-pause]');
-    if (pauseBtn) pauseBtn.addEventListener('click', () => {
-      this._logsPaused = !this._logsPaused;
-      this._renderActivePanel(app);
-      if (!this._logsPaused) this._scrollLogsToBottom(app);
-    });
-    const wrapBtn = app.querySelector('[data-log-wrap]');
-    if (wrapBtn) wrapBtn.addEventListener('click', () => {
-      this._logsWrap = !this._logsWrap;
-      this._renderActivePanel(app);
-    });
-    const dlBtn = app.querySelector('[data-log-download]');
-    if (dlBtn) dlBtn.addEventListener('click', () => this._downloadLogs(id));
-  },
-
-  _downloadLogs(id) {
-    const txt = this._logs.map(l => {
-      const ts = l.ts ? this._fmtLogTime(l.ts) : '';
-      return `[${ts}] [${l.level || 'info'}] [${l.source || 'scanner'}] ${l.text || ''}`;
-    }).join('\n');
-    const blob = new Blob([txt], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'scan-' + id.slice(0, 8) + '-logs.txt';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  },
-
-  _fmtLogTime(iso) {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '';
-    const pad = n => String(n).padStart(2, '0');
-    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   },
 
   // ---- Config tab --------------------------------------------------
@@ -720,7 +492,6 @@ const ScanDetailPage = {
     const cancelBtn = app.querySelector('[data-cancel-scan]');
     if (cancelBtn) cancelBtn.addEventListener('click', () => this.cancelScan(app, id));
     this._bindAccordion();
-    this._bindLogControls(app, id);
   },
 
   _wireTabClicks(app, id) {
@@ -744,7 +515,6 @@ const ScanDetailPage = {
     if (!slot) return;
     slot.innerHTML = this._renderTabContent(this._activeTab, this._data, this._findings);
     this._bindAccordion();
-    this._bindLogControls(app, this._scanID);
   },
 
   // Pipeline accordion. _openToolRunIds persists open state across
@@ -833,7 +603,6 @@ const ScanDetailPage = {
   stopPolling() {
     if (this._pollTimer)    { clearInterval(this._pollTimer);    this._pollTimer = null; }
     if (this._elapsedTimer) { clearInterval(this._elapsedTimer); this._elapsedTimer = null; }
-    if (this._logsTimer)    { clearInterval(this._logsTimer);    this._logsTimer = null; }
     if (this._abort)        { try { this._abort.abort(); } catch (_) {} this._abort = null; }
   },
 

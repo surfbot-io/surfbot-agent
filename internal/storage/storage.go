@@ -128,25 +128,7 @@ type Store interface {
 	AssetChangeCountsForScan(ctx context.Context, scanID string) (map[string]map[model.AssetType]int, error)
 	ScanIsBaseline(ctx context.Context, scanID string) (bool, error)
 
-	// --- Scan logs (see scan_logs.go, issue #52) ---
-	InsertScanLogs(ctx context.Context, logs []model.ScanLog) error
-	ListScanLogs(ctx context.Context, opts ScanLogListOptions) ([]model.ScanLog, error)
-	CountScanLogs(ctx context.Context, scanID string) (int, error)
-	PruneScanLogsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
-
 	Close() error
-}
-
-// ScanLogListOptions narrows a /scan_logs query. ScanID is required;
-// everything else is optional. Limit defaults to 200 and is capped at
-// 1000 by the handler before reaching here.
-type ScanLogListOptions struct {
-	ScanID    string           // required
-	Since     int64            // exclusive lower bound on id; 0 = from beginning
-	Limit     int              // default 200
-	Level     []model.LogLevel // optional level filter (OR'd)
-	Source    []string         // optional source filter (OR'd)
-	ToolRunID string           // optional, narrows to a single tool run
 }
 
 // SQLiteStore implements Store using modernc.org/sqlite.
@@ -178,17 +160,6 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pinging database: %w", err)
-	}
-
-	// :memory: SQLite databases are per-connection — modernc.org/sqlite
-	// allocates a fresh in-memory DB for each pooled connection, so
-	// migrations applied on connection A are invisible to a query on
-	// connection B. Issue #52 exposed this when the SQLiteLogSink's
-	// background goroutine grabbed a different connection than the
-	// migration runner. Pinning the pool to 1 connection eliminates the
-	// race for tests; production paths use a real file and are unaffected.
-	if dbPath == ":memory:" {
-		db.SetMaxOpenConns(1)
 	}
 
 	// Restrict DB file permissions — it may contain sensitive scan data.
@@ -250,17 +221,6 @@ func (s *SQLiteStore) runMigrations() error {
 		}
 		if _, err = s.db.Exec(string(m005)); err != nil {
 			return fmt.Errorf("executing migration 0005: %w", err)
-		}
-	}
-
-	schemaVersion, _ = s.getSchemaVersion()
-	if schemaVersion < 6 {
-		m006, err := migrationsFS.ReadFile("migrations/0006_scan_logs.sql")
-		if err != nil {
-			return fmt.Errorf("reading migration 0006: %w", err)
-		}
-		if _, err = s.db.Exec(string(m006)); err != nil {
-			return fmt.Errorf("executing migration 0006: %w", err)
 		}
 	}
 
