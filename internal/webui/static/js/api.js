@@ -67,6 +67,7 @@ const API = {
   assetTree(targetId)   { return this.get('/assets/tree' + toQuery({ target_id: targetId })); },
   scans(params)         { return this.get('/scans' + toQuery(params)); },
   scan(id)              { return this.get('/scans/' + id); },
+  scanLogs(id, params)  { return this.get('/scans/' + encodeURIComponent(id) + '/logs' + toQuery(params)); },
   targets()             { return this.get('/targets'); },
   target(id)            { return this.get('/targets/' + id); },
   tools()               { return this.get('/tools'); },

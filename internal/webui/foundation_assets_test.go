@@ -451,6 +451,71 @@ func TestPR7CSSScaffolding(t *testing.T) {
 	}
 }
 
+// Issue #52 — scan_logs frontend integration. The HEAD probe + log
+// rendering now have a real backend behind them. Guard that the
+// frontend wires the polling helpers, color-coded line renderer, and
+// toolbar controls (pause/wrap/download/level chips) against silent
+// regression.
+
+func TestScanDetailWiresLogStream(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/scan_detail.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"_fetchLogs(",
+		"_startLogsPolling(",
+		"_renderLogLine(",
+		"_renderLogToolbar(",
+		"_filteredLogs(",
+		"_downloadLogs(",
+		"_bindLogControls(",
+		"data-log-level=",
+		"data-log-source=",
+		"data-log-pause",
+		"data-log-wrap",
+		"data-log-download",
+		"API.scanLogs(",
+		"_logsPaused",
+		"_logsWrap",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"scan_detail.js must reference %q after #52", s)
+	}
+}
+
+func TestAPIWiresScanLogs(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/api.js")
+	require.NoError(t, err)
+	js := string(data)
+	assert.True(t, strings.Contains(js, "scanLogs(id, params)"),
+		"api.js must expose scanLogs() helper after #52")
+}
+
+func TestScanLogsCSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+	classes := []string{
+		".scan-log-header", ".scan-log-toolbar",
+		".scan-log-chips", ".scan-log-chip",
+		".scan-log-chip-error", ".scan-log-chip-warn",
+		".scan-log-actions", ".scan-log-pre",
+		".scan-log-pre-preview", ".scan-log-pre-full",
+		".scan-log-wrap",
+		".scan-log-line", ".scan-log-line-error",
+		".scan-log-line-warn", ".scan-log-line-debug",
+		".scan-log-ts", ".scan-log-src",
+		".scan-log-empty", ".scan-log-cta",
+		".scan-log-count",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"scan_logs CSS class %q missing from style.css", c)
+	}
+}
+
 func TestIndexHTMLLoadsScanDetail(t *testing.T) {
 	data, err := staticFS.ReadFile("static/index.html")
 	require.NoError(t, err)

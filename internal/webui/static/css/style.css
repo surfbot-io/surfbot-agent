@@ -3023,10 +3023,98 @@ button.kpi-card:focus-visible {
 }
 .findings-panel-cta:hover { text-decoration: underline; }
 
-/* Logs placeholder */
+/* Logs (#52) */
 .scan-logs-card { padding: 16px; }
 .scan-logs-placeholder { background: var(--ink-900); }
 .scan-log-preview-slot { margin-top: 0; }
+.scan-log-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.scan-log-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.scan-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 10px;
+}
+.scan-log-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.scan-log-chips-label {
+  font-size: 11px;
+  margin-right: 2px;
+}
+.scan-log-chips-sep {
+  color: var(--text-muted);
+}
+.scan-log-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.scan-log-chip:hover { background: var(--ink-700); color: var(--text-primary); }
+.scan-log-chip.active {
+  background: rgba(0,229,153,0.10);
+  border-color: rgba(0,229,153,0.4);
+  color: var(--brand);
+}
+.scan-log-chip-error.active { background: var(--sev-critical-bg); border-color: rgba(248,81,73,0.4); color: var(--sev-critical); }
+.scan-log-chip-warn.active  { background: var(--sev-medium-bg);   border-color: rgba(210,153,34,0.4); color: var(--sev-medium); }
+.scan-log-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.scan-log-pre {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  overflow-y: auto;
+  white-space: pre;
+}
+.scan-log-pre-preview { max-height: 168px; }
+.scan-log-pre-full    { max-height: 480px; }
+.scan-log-wrap        { white-space: pre-wrap; word-break: break-word; }
+.scan-log-line        { display: block; }
+.scan-log-line-error .scan-log-text { color: var(--sev-critical); }
+.scan-log-line-warn  .scan-log-text { color: var(--sev-medium); }
+.scan-log-line-debug .scan-log-text { color: var(--text-muted); }
+.scan-log-ts          { font-size: 11px; }
+.scan-log-src         { color: var(--brand); font-weight: 500; }
+.scan-log-empty       { padding: 16px 0; text-align: center; }
+.scan-log-cta {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--brand);
+  text-decoration: none;
+}
+.scan-log-cta:hover   { text-decoration: underline; }
 
 /* Error card */
 .scan-error-card {
