@@ -730,7 +730,57 @@ const Components = {
       <span class="bulk-bar-actions">${btns}</span>
     </div>`;
   },
+
+  // cveLink renders a CVE-id as a link to NVD when the input matches the
+  // canonical "CVE-YYYY-NNNN" shape, escaped text otherwise. The shape
+  // check guards against XSS in case the CVE field is operator-supplied
+  // by an external tool. target=_blank carries rel=noopener noreferrer
+  // because referrer leak via window.opener is the documented risk.
+  cveLink(cve) {
+    if (!cve || !/^CVE-\d{4}-\d{4,7}$/i.test(cve)) return escapeHtml(cve || '');
+    const id = cve.toUpperCase();
+    return `<a class="cve-link" href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(id)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${id} on NVD (opens in new tab)">${id}</a>`;
+  },
+
+  // toast renders a transient message in a stack at the bottom-right of
+  // the viewport. kind controls the accent color ('success' | 'error' |
+  // 'info'). The stack container is created on demand. Toasts auto-
+  // dismiss after timeoutMs (default 2200ms); set to 0 to keep open until
+  // the user closes via the X button.
+  toast(message, opts) {
+    const o = opts || {};
+    const kind = o.kind || 'info';
+    let stack = document.getElementById('toast-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'toast-stack';
+      stack.className = 'toast-stack';
+      stack.setAttribute('role', 'status');
+      stack.setAttribute('aria-live', 'polite');
+      document.body.appendChild(stack);
+    }
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + kind;
+    el.innerHTML = `<span class="toast-msg">${escapeHtml(String(message || ''))}</span>
+      <button type="button" class="toast-close" aria-label="Dismiss">&times;</button>`;
+    stack.appendChild(el);
+    const close = () => {
+      if (!el.parentNode) return;
+      el.classList.add('toast-leaving');
+      setTimeout(() => el.remove(), 180);
+    };
+    el.querySelector('.toast-close').addEventListener('click', close);
+    const timeout = o.timeoutMs == null ? 2200 : o.timeoutMs;
+    if (timeout > 0) setTimeout(close, timeout);
+    return { close };
+  },
 };
+
+// Convenience shortcuts so callers can write Components.toast.error('…')
+// without juggling the kind string.
+Components.toast.success = (msg, opts) => Components.toast(msg, Object.assign({ kind: 'success' }, opts || {}));
+Components.toast.error   = (msg, opts) => Components.toast(msg, Object.assign({ kind: 'error', timeoutMs: 4500 }, opts || {}));
+Components.toast.info    = (msg, opts) => Components.toast(msg, Object.assign({ kind: 'info' }, opts || {}));
 
 // Severity level whitelist for severityPill. Kept as a frozen object
 // so an unknown level can short-circuit to 'info' without spelling out
@@ -754,6 +804,7 @@ const ICONS = Object.freeze({
   alert:          '<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   copy:           '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>',
   refresh:        '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>',
+  external:       '<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
 });
 
 function pad2(n) { return String(n).padStart(2, '0'); }

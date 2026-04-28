@@ -2,7 +2,10 @@
 const Router = {
   routes: [
     { pattern: /^#?\/?$/, page: 'dashboard', render: () => DashboardPage.render(app) },
-    { pattern: /^#\/findings\/(.+)$/, page: 'findings', render: (m) => FindingsPage.render(app, { id: m[1] }) },
+    // PR4 #37: deep link with id MUST come before the list route. The
+    // capture stops at `?` so #/findings/abc?status=open routes to the
+    // list+slide-over for abc with the query preserved on the listing.
+    { pattern: /^#\/findings\/([^?]+)(\?.*)?$/, page: 'findings', render: (m) => FindingsPage.render(app, Object.assign(parseQueryParams(), { id: decodeURIComponent(m[1]) })) },
     { pattern: /^#\/findings/, page: 'findings', render: () => FindingsPage.render(app, parseQueryParams()) },
     { pattern: /^#\/assets/, page: 'assets', render: () => AssetsPage.render(app, parseQueryParams()) },
     { pattern: /^#\/scans\/(.+)$/, page: 'scans', render: (m) => ScansPage.render(app, { id: m[1] }) },
@@ -25,9 +28,25 @@ const Router = {
     { pattern: /^#\/settings\/defaults/, page: 'settings-defaults', render: () => SettingsDefaultsPage.render(app) },
   ],
 
+  // _lastHash captures the previous hash so the navigate() short-circuit
+  // can detect findings list-vs-slide-over toggles without re-rendering
+  // the list. Set on every navigate() call.
+  _lastHash: '',
+
   navigate() {
     const hash = location.hash || '#/';
     const app = document.getElementById('app');
+
+    // PR4 #37: when transitioning between #/findings and
+    // #/findings/{id} with identical query params, the only thing that
+    // changes is whether the slide-over is open. Re-rendering the list
+    // would flash and lose scroll/selection state, so short-circuit.
+    if (this._isFindingsSlideoverToggle(this._lastHash, hash)) {
+      this._lastHash = hash;
+      this._syncFindingsSlideover(hash);
+      return;
+    }
+    this._lastHash = hash;
 
     // Update active nav link
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -49,6 +68,11 @@ const Router = {
       AgentCard.unmount();
     }
 
+    // Slide-overs from one page should not survive cross-page nav.
+    if (typeof FindingsPage !== 'undefined' && FindingsPage.closeSlideover) {
+      FindingsPage.closeSlideover();
+    }
+
     for (const route of this.routes) {
       const match = hash.match(route.pattern);
       if (match) {
@@ -58,6 +82,39 @@ const Router = {
     }
 
     app.innerHTML = Components.emptyState('Page not found', 'The requested page does not exist.');
+  },
+
+  // _isFindingsSlideoverToggle returns true when prev and cur both live
+  // under #/findings, share the same query string, and differ only by
+  // the trailing /{id} segment (open or close). The path comparison
+  // uses split('?') so query order is preserved verbatim.
+  _isFindingsSlideoverToggle(prev, cur) {
+    if (!prev || !cur) return false;
+    const a = this._parseFindings(prev);
+    const b = this._parseFindings(cur);
+    if (!a || !b) return false;
+    if (a.query !== b.query) return false;
+    return a.id !== b.id;
+  },
+
+  _parseFindings(hash) {
+    const m = hash.match(/^#\/findings(\/[^?]+)?(\?.*)?$/);
+    if (!m) return null;
+    return {
+      id: m[1] ? decodeURIComponent(m[1].slice(1)) : '',
+      query: m[2] || '',
+    };
+  },
+
+  _syncFindingsSlideover(hash) {
+    const parsed = this._parseFindings(hash);
+    if (!parsed) return;
+    if (typeof FindingsPage === 'undefined') return;
+    if (parsed.id) {
+      FindingsPage.openSlideoverFor(parsed.id);
+    } else {
+      FindingsPage.closeSlideover();
+    }
   },
 };
 
