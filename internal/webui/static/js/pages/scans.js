@@ -2,6 +2,13 @@
 const ScansPage = {
   pollTimer: null,
 
+  // Set of tool_run.id values whose pipeline-detail accordion is open.
+  // Survives the 3s polling re-render of the scan detail page so the
+  // user's expansion stays put. Keyed by id (not idx) because the sort
+  // by started_at can re-order running tools as new started_at values
+  // come in.
+  _openToolRunIds: new Set(),
+
   // PR5 (#38): scans list adds status tabs + filter chips (target /
   // template / range). Bulk actions are explicitly out of scope; the
   // backend doesn't yet accept template_id or range params either, so
@@ -684,7 +691,10 @@ const ScansPage = {
       // Providing a hint chevron makes the affordance discoverable.
       const hasLogs = this.toolRunHasLogs(tr);
 
-      return `<div class="pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}" data-tr-idx="${i}"${hasLogs ? ' title="Click to view logs"' : ''}>
+      const trID = tr.id || '';
+      const isOpen = hasLogs && trID && this._openToolRunIds.has(trID);
+      const nodeClasses = `pipeline-node ${statusClass}${hasLogs ? ' pipeline-node-clickable' : ''}${isOpen ? ' pipeline-node-open' : ''}`;
+      return `<div class="${nodeClasses}" data-tr-idx="${i}" data-tr-id="${escapeHtml(trID)}"${hasLogs ? ' title="Click to view logs"' : ''}>
         <div class="pipeline-connector">
           <div class="pipeline-dot"></div>
           ${isLast ? '' : '<div class="pipeline-vline"></div>'}
@@ -698,7 +708,7 @@ const ScansPage = {
             ${hasLogs ? '<span class="pipeline-chevron text-muted" aria-hidden="true">▸</span>' : ''}
           </div>
           ${stats.length > 0 ? `<div class="pipeline-stats">${stats.join('')}</div>` : ''}
-          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" hidden>${this.renderToolRunDetail(tr)}</div>` : ''}
+          ${hasLogs ? `<div class="pipeline-detail" data-tr-idx="${i}" data-tr-id="${escapeHtml(trID)}"${isOpen ? '' : ' hidden'}>${this.renderToolRunDetail(tr)}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -789,21 +799,27 @@ const ScansPage = {
 
   // bindPipelineAccordion wires click handlers on pipeline nodes.
   // Re-invoked after every render (polling re-renders the whole detail)
-  // so listeners are always fresh.
+  // so listeners are always fresh. Open state is persisted in
+  // _openToolRunIds so the accordion stays expanded across re-renders;
+  // the renderPipeline template applies the persisted state during
+  // render, this handler only mutates the Set on click.
   bindPipelineAccordion() {
     document.querySelectorAll('.pipeline-node-clickable').forEach(node => {
       node.addEventListener('click', (e) => {
         if (e.target.closest('a, button')) return;
         const idx = node.dataset.trIdx;
+        const trID = node.dataset.trId || '';
         const detail = node.querySelector(`.pipeline-detail[data-tr-idx="${idx}"]`);
         if (!detail) return;
         const isOpen = !detail.hasAttribute('hidden');
         if (isOpen) {
           detail.setAttribute('hidden', '');
           node.classList.remove('pipeline-node-open');
+          if (trID) this._openToolRunIds.delete(trID);
         } else {
           detail.removeAttribute('hidden');
           node.classList.add('pipeline-node-open');
+          if (trID) this._openToolRunIds.add(trID);
         }
       });
     });
@@ -1295,6 +1311,12 @@ const ScansPage = {
 
   async renderDetail(app, id) {
     this.stopPolling();
+    // New scan: reset accordion open-state so we don't carry stale
+    // tool_run.ids from a different scan into the new render.
+    if (this._openScanID !== id) {
+      this._openToolRunIds.clear();
+      this._openScanID = id;
+    }
     app.innerHTML = '<div class="loading">Loading scan...</div>';
 
     // Reset the main scroll container so navigating between scan details
