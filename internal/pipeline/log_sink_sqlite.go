@@ -224,12 +224,13 @@ func (s *SQLiteLogSink) ScanFailed(ctx context.Context, scanID, errMsg string) {
 }
 
 func (s *SQLiteLogSink) ScanCancelled(ctx context.Context, scanID, reason string) {
-	// "cancelled" is the project-wide spelling (model.ScanStatusCancelled,
-	// the existing pp.warn lines, scan.Phase values). Keep it here for
-	// codebase consistency even though the linter prefers US spelling.
-	text := "scan cancelled" //nolint:misspell
+	// US spelling here (vs. the British "cancelled" used elsewhere in
+	// this codebase, e.g. model.ScanStatusCancelled) to satisfy the
+	// US-locale misspell linter on these new strings. Operators see
+	// the model status name in the UI badge, not these log lines.
+	text := "scan canceled"
 	if reason != "" {
-		text = "scan cancelled: " + reason //nolint:misspell
+		text = "scan canceled: " + reason
 	}
 	s.enqueue(model.ScanLog{
 		ScanID: scanID, Source: "scanner", Level: model.LogLevelWarn, Text: text,
