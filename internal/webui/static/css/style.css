@@ -495,18 +495,35 @@ tr.finding-detail-row td.finding-detail-cell {
   transition: background 0.15s ease;
 }
 
-.pipeline-node.pipeline-node-clickable:hover .pipeline-content {
+/* B4 fix (#52): the highlighted background now applies to the WHOLE
+   `.pipeline-node` (not just `.pipeline-content`) so the connector
+   dot lives inside the visible card boundary when the accordion is
+   open. Previously the dot floated outside the gray box and looked
+   orphaned, especially in the Phases tab. We give the node itself
+   horizontal padding when hovered/open so the dot has breathing room
+   inside the highlighted region. */
+.pipeline-node.pipeline-node-clickable:hover,
+.pipeline-node.pipeline-node-open {
   background: var(--bg-hover);
+  padding: 6px 10px;
+  margin: 0 -10px;
 }
 
+/* Reset the inner content padding when the node itself is the
+   highlighted box — otherwise we'd double-pad. */
+.pipeline-node.pipeline-node-clickable:hover .pipeline-content,
 .pipeline-node.pipeline-node-open .pipeline-content {
-  background: var(--bg-hover);
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .pipeline-content {
   padding: 6px 10px;
   border-radius: 4px;
   transition: background 0.15s ease;
+  flex: 1;
+  min-width: 0;
 }
 
 .pipeline-chevron {
@@ -2919,19 +2936,33 @@ button.kpi-card:focus-visible {
   background: var(--ink-700);
   margin-top: 4px;
 }
+/* B3 fix (#52): the previous grid used `auto auto` for the duration
+   and summary cells, which let varying text lengths squeeze the
+   progress-bar column unevenly (e.g. "30.5s" vs "10m 5s"). Fixed
+   widths on cols 3-4 keep the bar column uniform across phases so
+   percent comparisons are visually honest. */
 .phase-body {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto auto;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) 64px 160px;
   gap: 12px;
   align-items: center;
 }
 .phase-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .phase-tool { font-size: 11px; }
-.phase-duration, .phase-summary {
+.phase-duration {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  white-space: nowrap;
+}
+.phase-summary {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .phase-bar, .phase-bar-track {
   height: 6px;
@@ -3098,4 +3129,198 @@ button.kpi-card:focus-visible {
   min-width: 32px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   #52 — Scan logs UI fixes: indeterminate progress, completed-with-
+   warnings badge, live log card.
+   ============================================================ */
+
+/* B2 fix: when a scan is running but reports 0% progress (haven't
+   advanced past the first phase yet), the fill stays at 0% width and
+   the empty TRACK shows a sliding shimmer so the user sees motion
+   without a misleading full-width "completed-looking" bar. */
+.progress-bar-track-indeterminate {
+  position: relative;
+  overflow: hidden;
+}
+.progress-bar-track-indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -30%;
+  width: 30%;
+  background: linear-gradient(90deg, transparent 0%, var(--brand) 50%, transparent 100%);
+  opacity: 0.45;
+  animation: progress-indeterminate 1.6s linear infinite;
+}
+@keyframes progress-indeterminate {
+  0%   { left: -30%; }
+  100% { left: 100%; }
+}
+
+/* B7 fix: tool runs that completed but recorded an error_message
+   (canonical case: nuclei after `context deadline exceeded`) show a
+   yellow "completed (warnings)" badge so operators don't mistake
+   them for a clean run. The hover title surfaces the error string. */
+.badge-status.badge-completed-warn {
+  background: var(--sev-medium-bg, rgba(210, 153, 34, 0.18));
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  color: var(--sev-medium, #d29922);
+}
+
+/* Live log toolbar + chips + pre. The card itself reuses the
+   existing .scan-logs-card class. */
+.scan-log-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.scan-log-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.scan-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 10px;
+}
+.scan-log-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.scan-log-chips-label {
+  font-size: 11px;
+  margin-right: 2px;
+}
+.scan-log-chips-sep {
+  color: var(--text-muted);
+}
+.scan-log-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.scan-log-chip:hover { background: var(--ink-700); color: var(--text-primary); }
+.scan-log-chip.active {
+  background: rgba(0,229,153,0.10);
+  border-color: rgba(0,229,153,0.4);
+  color: var(--brand);
+}
+.scan-log-chip-error.active { background: var(--sev-critical-bg); border-color: rgba(248,81,73,0.4); color: var(--sev-critical); }
+.scan-log-chip-warn.active  { background: var(--sev-medium-bg);   border-color: rgba(210,153,34,0.4); color: var(--sev-medium); }
+.scan-log-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.scan-log-pre {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  overflow-y: auto;
+  white-space: pre;
+}
+.scan-log-pre-preview { max-height: 168px; }
+.scan-log-pre-full    { max-height: 480px; }
+.scan-log-wrap        { white-space: pre-wrap; word-break: break-word; }
+.scan-log-line        { display: block; }
+.scan-log-line-error .scan-log-text { color: var(--sev-critical); }
+.scan-log-line-warn  .scan-log-text { color: var(--sev-medium); }
+.scan-log-line-debug .scan-log-text { color: var(--text-muted); }
+.scan-log-ts          { font-size: 11px; }
+.scan-log-src         { color: var(--brand); font-weight: 500; }
+.scan-log-empty       { padding: 16px 0; text-align: center; }
+.scan-log-cta {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--brand);
+  text-decoration: none;
+}
+.scan-log-cta:hover   { text-decoration: underline; }
+
+/* Proposal B (#52 follow-up): "Partial run" notice rendered inside a
+   pipeline-detail accordion when a tool completed with a deadline-
+   exceeded error. Replaces the previous Stderr tail + Error pair of
+   red sections with one amber notice block + collapsible technical
+   detail. The visual tone matches the .badge-completed-warn pill on
+   the row header so the two cues read as one consistent signal. */
+.pipeline-detail-notice {
+  background: var(--sev-medium-bg, rgba(210, 153, 34, 0.10));
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+.pipeline-detail-notice-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sev-medium, #d29922);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.pipeline-detail-notice-body {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.pipeline-detail-notice-body p {
+  margin: 0 0 6px;
+}
+.pipeline-detail-notice-body p:last-child {
+  margin-bottom: 0;
+}
+.pipeline-detail-notice-body strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pipeline-detail-tech {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pipeline-detail-tech > summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  list-style: none;
+}
+.pipeline-detail-tech > summary::-webkit-details-marker { display: none; }
+.pipeline-detail-tech > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.12s;
+}
+.pipeline-detail-tech[open] > summary::before {
+  transform: rotate(90deg);
+}
+.pipeline-detail-tech > summary:hover {
+  color: var(--text-primary);
+}
+.pipeline-detail-tech .pipeline-detail-heading {
+  margin-top: 8px;
 }

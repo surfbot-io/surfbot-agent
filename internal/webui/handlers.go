@@ -1017,6 +1017,11 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 
 	// Create pipeline and run async
 	pipe := pipeline.New(h.store, h.registry)
+	// Issue #52: tee pipeline events into scan_logs so the webui's
+	// live log card can render in real time. Sink lives for the
+	// duration of the scan goroutine and is closed on completion.
+	sink := pipeline.NewSQLiteLogSink(h.store, pipeline.SQLiteLogSinkOptions{})
+	pipe.SetSink(sink)
 	opts := pipeline.PipelineOptions{
 		ScanType:  scanType,
 		Tools:     req.Tools,
@@ -1030,6 +1035,7 @@ func (h *handler) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	h.scanMu.Unlock()
 
 	go func() {
+		defer func() { _ = sink.Close() }()
 		result, err := pipe.Run(scanCtx, target.ID, opts)
 
 		h.scanMu.Lock()
@@ -1148,6 +1154,153 @@ func (h *handler) handleCancelScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- Scan Logs (issue #52) ---
+
+// handleScanLogs serves GET and HEAD /api/v1/scans/{id}/logs.
+//
+//	HEAD: 200 if the scan exists, 404 otherwise. Used by the SPA's
+//	      _probeLogsEndpoint to feature-detect the live log stream.
+//	GET:  paginated list of log lines for the scan, ordered by id ASC.
+//	      ?since=N (exclusive cursor), ?limit=N (default 200, max 1000),
+//	      ?level=info,warn (CSV filter), ?source=naabu,nuclei (CSV).
+//
+// Response shape (matches frontend expectation):
+//
+//	{ "lines": [...ScanLog...], "next": <int>, "has_more": <bool> }
+func (h *handler) handleScanLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/scans/")
+	id = strings.TrimSuffix(id, "/logs")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing scan id")
+		return
+	}
+	// Verify scan exists for both methods so HEAD's 200 is meaningful
+	// and GET doesn't silently return [] for a typo'd id.
+	if _, err := h.store.GetScan(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "scan not found")
+		return
+	}
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	since := parseInt64Query(r, "since", 0)
+	limit := parseIntQuery(r, "limit", 200)
+	if limit <= 0 {
+		writeError(w, http.StatusBadRequest, "limit must be positive")
+		return
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	opts := storage.ScanLogListOptions{
+		ScanID:    id,
+		Since:     since,
+		Limit:     limit,
+		Level:     parseLogLevels(r.URL.Query().Get("level")),
+		Source:    parseCSV(r.URL.Query().Get("source")),
+		ToolRunID: r.URL.Query().Get("tool_run_id"),
+	}
+	logs, err := h.store.ListScanLogs(r.Context(), opts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list logs")
+		return
+	}
+	if logs == nil {
+		logs = []model.ScanLog{}
+	}
+	next := since
+	hasMore := false
+	if n := len(logs); n > 0 {
+		next = logs[n-1].ID
+		hasMore = n >= limit
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"lines":    logs,
+		"next":     next,
+		"has_more": hasMore,
+	})
+}
+
+// parseInt64Query reads an int64 query param, returning fallback on
+// missing/invalid input. Negative values fall back too — the only
+// caller is `since` which is a non-negative cursor.
+func parseInt64Query(r *http.Request, key string, fallback int64) int64 {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
+
+// parseIntQuery reads an int query param, returning fallback on
+// missing/invalid input.
+func parseIntQuery(r *http.Request, key string, fallback int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// parseLogLevels splits a CSV "info,warn,error" into a typed slice,
+// dropping unknown values silently. Returns nil for empty input so the
+// store layer can treat absent-filter and empty-list identically.
+func parseLogLevels(csv string) []model.LogLevel {
+	if csv == "" {
+		return nil
+	}
+	known := map[model.LogLevel]bool{
+		model.LogLevelDebug: true, model.LogLevelInfo: true,
+		model.LogLevelWarn: true, model.LogLevelError: true,
+	}
+	out := make([]model.LogLevel, 0, 4)
+	for _, p := range strings.Split(csv, ",") {
+		lv := model.LogLevel(strings.TrimSpace(p))
+		if known[lv] {
+			out = append(out, lv)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// parseCSV is the source filter sibling of parseLogLevels, but without
+// the controlled vocabulary — tool names are an open set.
+func parseCSV(csv string) []string {
+	if csv == "" {
+		return nil
+	}
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // --- Available Tools ---
