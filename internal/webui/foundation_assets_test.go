@@ -586,6 +586,74 @@ func TestIndexHTMLLoadsScanDetail(t *testing.T) {
 		"scan_detail.js must be loaded before app.js so the router can resolve ScanDetailPage")
 }
 
+// PR10 #43 — Assets page split-view rewrite. The legacy `viewToggle`
+// dropdown + `Components.treeNode` rendering are gone; the new layout
+// is type-tabs + filter-strip + tree (col-7) + detail pane (col-5).
+// These guards catch a partial migration and the CSS classes the new
+// layout hard-codes.
+
+func TestAssetsLegacyArtifactsRemoved(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/assets.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	legacy := []string{
+		"Components.treeNode",
+		"viewToggle",
+		"filter-select",
+		"id=\"filter-view\"",
+		"id=\"filter-type\"",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"legacy artifact %q must not appear in assets.js after PR10 #43", s)
+	}
+}
+
+func TestAssetsUsesFoundationHelpers(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/assets.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"Components.severityPill(",
+		"Components.filterChip(",
+		"Components.icon(",
+		"Components.toast",
+		"surfbot_assets_filters",
+		"surfbot_assets_active_target",
+		"_selectedAssetId",
+		"_expandedNodes",
+		"AdHocPage.open(",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"assets.js must reference %q after PR10 #43", s)
+	}
+}
+
+func TestAssetsCSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		".assets-grid", ".assets-tree-card", ".assets-pane-card",
+		".assets-tree", ".tree-row", ".tree-row-selected",
+		".tree-toggle", ".tree-type-pill", ".tree-value",
+		".tree-finding-count",
+		".assets-detail", ".assets-detail-header", ".assets-detail-value",
+		".assets-detail-meta", ".assets-detail-stats",
+		".assets-stat-card", ".assets-stat-label", ".assets-stat-value",
+		".assets-detail-actions", ".assets-detail-tags",
+		".assets-target-bar", ".assets-search-input",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"PR10 CSS class %q missing from style.css", c)
+	}
+}
+
 // TestPR5CSSScaffolding gates the CSS classes the new layout hard-codes:
 // severity tabs, filter strip, filter menu (popup + submenu), save-view
 // pill, and the table checkbox column.
