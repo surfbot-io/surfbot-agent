@@ -80,6 +80,7 @@ const AssetsPage = {
 
       this._treeRoots = (treeResp && treeResp.tree) || [];
       this._buildFindingsIndex((findingsResp && findingsResp.findings) || []);
+      this._synthesizeHierarchy();
       this._buildFlatIndex();
       this._loadExpandedFromStorage();
 
@@ -237,6 +238,87 @@ const AssetsPage = {
       }
     };
     walk(this._treeRoots, null, 0);
+  },
+
+  // _synthesizeHierarchy infers parent links from asset value patterns when
+  // the backend payload has every asset as a flat root (parent_id empty
+  // across the board — detection tools don't populate it today). Runs only
+  // when no real hierarchy exists, so once tools start setting parent_id
+  // the synthesizer becomes a no-op.
+  //
+  // Rules (best-effort, no schema changes):
+  //   port_service "host:port/proto"  → parent matches asset value === host
+  //   url          "scheme://host…"   → parent matches asset value === host
+  //   subdomain    "a.b.c"             → parent is the longest-suffix existing
+  //                                      subdomain/domain shorter than self
+  // ipv*/technology stay as roots — value carries no parent signal.
+  _synthesizeHierarchy() {
+    const roots = this._treeRoots;
+    if (!roots.length) return;
+    // Skip when ANY backend node already has children or any asset declares
+    // parent_id. The presence of either signals the backend already wired
+    // the tree and we should not second-guess it.
+    for (const n of roots) {
+      if ((n.children && n.children.length) || (n.parent_id && n.parent_id.length)) return;
+    }
+
+    const byValue = new Map();
+    for (const n of roots) byValue.set(n.value, n);
+
+    const findHostParent = (host) => {
+      const hit = byValue.get(host);
+      return hit && hit.type !== 'port_service' && hit.type !== 'url' ? hit : null;
+    };
+
+    const findParent = (n) => {
+      if (n.type === 'port_service') {
+        const m = String(n.value).match(/^([^:\/]+):/);
+        if (m) return findHostParent(m[1]);
+      } else if (n.type === 'url') {
+        try {
+          const u = new URL(n.value);
+          return findHostParent(u.hostname);
+        } catch (_) { return null; }
+      } else if (n.type === 'subdomain' || n.type === 'domain') {
+        const parts = String(n.value).split('.');
+        for (let i = 1; i < parts.length; i++) {
+          const candidate = parts.slice(i).join('.');
+          if (candidate && candidate !== n.value && byValue.has(candidate)) {
+            const p = byValue.get(candidate);
+            if (p.type === 'subdomain' || p.type === 'domain') return p;
+          }
+        }
+      }
+      return null;
+    };
+
+    // Reset and re-attach.
+    for (const n of roots) n.children = [];
+    const newRoots = [];
+    const TYPE_ORDER = { subdomain: 0, domain: 0, ipv4: 1, ipv6: 1, port_service: 2, url: 3, technology: 4, service: 5 };
+    for (const n of roots) {
+      const parent = findParent(n);
+      if (parent && parent !== n) parent.children.push(n);
+      else newRoots.push(n);
+    }
+    const sortChildren = (node) => {
+      if (!node.children || !node.children.length) return;
+      node.children.sort((a, b) => {
+        const da = TYPE_ORDER[a.type] != null ? TYPE_ORDER[a.type] : 9;
+        const db = TYPE_ORDER[b.type] != null ? TYPE_ORDER[b.type] : 9;
+        if (da !== db) return da - db;
+        return String(a.value).localeCompare(String(b.value));
+      });
+      node.children.forEach(sortChildren);
+    };
+    newRoots.sort((a, b) => {
+      const da = TYPE_ORDER[a.type] != null ? TYPE_ORDER[a.type] : 9;
+      const db = TYPE_ORDER[b.type] != null ? TYPE_ORDER[b.type] : 9;
+      if (da !== db) return da - db;
+      return String(a.value).localeCompare(String(b.value));
+    });
+    newRoots.forEach(sortChildren);
+    this._treeRoots = newRoots;
   },
 
   _expandPathTo(assetId) {

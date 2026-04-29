@@ -3341,7 +3341,13 @@ button.kpi-card:focus-visible {
   padding: 12px;
   min-height: 240px;
 }
-.assets-pane-card { padding: 0; overflow: hidden; }
+.assets-pane-card {
+  padding: 0;
+  overflow-y: auto;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+}
 .assets-pane-empty {
   padding: 32px 24px;
   text-align: center;
@@ -3543,9 +3549,10 @@ button.kpi-card:focus-visible {
   flex-wrap: wrap;
 }
 
-/* Mobile: stack tree/pane vertically */
+/* Mobile: stack tree/pane vertically and drop sticky positioning */
 @media (max-width: 1024px) {
   .assets-grid { grid-template-columns: 1fr; }
+  .assets-pane-card { position: static; max-height: none; }
 }
 @media (max-width: 768px) {
   .tree-row { padding-left: 12px; }
