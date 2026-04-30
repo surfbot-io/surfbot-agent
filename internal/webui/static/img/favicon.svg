@@ -1,11 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="32" height="32">
-  <!-- Surfbot Favicon - Simplified robot head -->
-  <rect x="148" y="30" width="35" height="38" fill="#5CE0B0"/>
-  <rect x="329" y="30" width="35" height="38" fill="#5CE0B0"/>
-  <rect x="100" y="68" width="312" height="248" fill="#5CE0B0"/>
-  <rect x="168" y="155" width="48" height="48" fill="#2D7A60"/>
-  <rect x="296" y="155" width="48" height="48" fill="#2D7A60"/>
-  <rect x="168" y="248" width="176" height="40" fill="#3E9E7E"/>
-  <rect x="72" y="345" width="368" height="32" fill="#5CE0B0"/>
-  <rect x="100" y="397" width="312" height="40" fill="#3E9E7E"/>
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Surfbot">
+  <!-- Simplified for tiny sizes: no antennas / no side bolts.
+       Head + wave + larger pixel eyes. -->
+  <path d="M12 8
+           H52
+           A4 4 0 0 1 56 12
+           V44
+           C 51.5 44, 51.5 51, 44.667 51
+           C 37.833 51, 37.833 44, 32 44
+           C 26.167 44, 26.167 51, 19.333 51
+           C 12.5 51, 12.5 44, 8 44
+           V12
+           A4 4 0 0 1 12 8 Z" fill="#05308C"/>
+  <rect x="20" y="22" width="9" height="9" rx="1" fill="#FFFFFF"/>
+  <rect x="35" y="22" width="9" height="9" rx="1" fill="#FFFFFF"/>
 </svg>

@@ -1,0 +1,212 @@
+/* ============================================================
+ * Surfbot Design System — Tokens
+ * v0.2.0 · 2026-04-30
+ *
+ * Source of truth for color, typography, spacing, radii,
+ * shadows, and motion. Consume these tokens from any
+ * Surfbot surface (SPA, marketing site, docs, decks).
+ *
+ * Brand: PANTONE 20-0146 TPM Magnetic Blue (#05308C)
+ * Direction: Light-first, enterprise technical, minimalist.
+ * ============================================================ */
+
+:root {
+  /* ---------- Color · Brand (Magnetic Blue scale) ----------
+   * Brand sits at 700 (Magnetic Blue). 600 is the recommended
+   * primary CTA (slightly lighter for contrast headroom on
+   * white). 800 is hover/pressed.
+   */
+  --color-brand-50:  #EEF2FB;
+  --color-brand-100: #D4DDF4;
+  --color-brand-200: #A8BBE9;
+  --color-brand-300: #7894D9;
+  --color-brand-400: #4D6FC4;
+  --color-brand-500: #2A4FAE;
+  --color-brand-600: #1340A0;
+  --color-brand-700: #05308C; /* MAGNETIC BLUE — brand anchor */
+  --color-brand-800: #042670;
+  --color-brand-900: #031D54;
+  --color-brand-950: #010F30;
+
+  /* ---------- Color · Neutral (cool slate) ----------
+   * Cool slate harmonizes with the deep blue brand.
+   */
+  --color-neutral-0:    #FFFFFF;
+  --color-neutral-50:   #F8FAFC;
+  --color-neutral-100:  #F1F5F9;
+  --color-neutral-200:  #E2E8F0;
+  --color-neutral-300:  #CBD5E1;
+  --color-neutral-400:  #94A3B8;
+  --color-neutral-500:  #64748B;
+  --color-neutral-600:  #475569;
+  --color-neutral-700:  #334155;
+  --color-neutral-800:  #1E293B;
+  --color-neutral-900:  #0F172A;
+  --color-neutral-1000: #000000;
+
+  /* ---------- Color · Semantic ---------- */
+  --color-success-50:  #F0FDF4;
+  --color-success-100: #DCFCE7;
+  --color-success-500: #22C55E;
+  --color-success-600: #16A34A;
+  --color-success-700: #15803D;
+
+  --color-warning-50:  #FFFBEB;
+  --color-warning-100: #FEF3C7;
+  --color-warning-500: #F59E0B;
+  --color-warning-600: #D97706;
+  --color-warning-700: #B45309;
+
+  --color-danger-50:   #FEF2F2;
+  --color-danger-100:  #FEE2E2;
+  --color-danger-500:  #EF4444;
+  --color-danger-600:  #DC2626;
+  --color-danger-700:  #B91C1C;
+
+  --color-info-50:     #ECFEFF;
+  --color-info-100:    #CFFAFE;
+  --color-info-500:    #06B6D4;
+  --color-info-600:    #0891B2;
+  --color-info-700:    #0E7490;
+
+  /* ---------- Color · Severity (security-specific) ----------
+   * Used in finding badges and timeline. Mirrors CVSS bands.
+   */
+  --color-severity-critical: #991B1B;
+  --color-severity-high:     #B91C1C;
+  --color-severity-medium:   #B45309;
+  --color-severity-low:      #0E7490;
+  --color-severity-info:     #475569;
+
+  /* ---------- Color · Surfaces (semantic) ----------
+   * Reference these from components, not the primitive scale.
+   * That's how dark mode comes for free later.
+   */
+  --surface-page:        var(--color-neutral-50);
+  --surface-card:        var(--color-neutral-0);
+  --surface-elevated:    var(--color-neutral-0);
+  --surface-sunken:      var(--color-neutral-100);
+  --surface-overlay:     rgba(15, 23, 42, 0.5);
+  --surface-brand:       var(--color-brand-700);
+  --surface-brand-soft:  var(--color-brand-50);
+
+  --border-subtle:       var(--color-neutral-200);
+  --border-default:      var(--color-neutral-300);
+  --border-strong:       var(--color-neutral-400);
+  --border-brand:        var(--color-brand-700);
+
+  --text-primary:        var(--color-neutral-900);
+  --text-secondary:      var(--color-neutral-600);
+  --text-tertiary:       var(--color-neutral-500);
+  --text-on-brand:       var(--color-neutral-0);
+  --text-brand:          var(--color-brand-700);
+  --text-link:           var(--color-brand-600);
+
+  /* ---------- Typography ---------- */
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system,
+               "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Geist", ui-sans-serif, system-ui, -apple-system,
+                  "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono",
+               "Cascadia Code", Menlo, Consolas, monospace;
+
+  /* Type scale — 1.125 minor third, anchored at 16px body */
+  --font-size-2xs:  11px;
+  --font-size-xs:   12px;
+  --font-size-sm:   14px;
+  --font-size-base: 16px;
+  --font-size-lg:   18px;
+  --font-size-xl:   20px;
+  --font-size-2xl:  24px;
+  --font-size-3xl:  30px;
+  --font-size-4xl:  36px;
+  --font-size-5xl:  48px;
+  --font-size-6xl:  60px;
+
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  --line-height-tight:   1.15;
+  --line-height-snug:    1.3;
+  --line-height-normal:  1.5;
+  --line-height-relaxed: 1.65;
+
+  --letter-spacing-tight:  -0.02em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide:   0.04em;
+
+  /* ---------- Spacing — 4px base ---------- */
+  --space-0:   0;
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+  --space-20:  80px;
+  --space-24:  96px;
+  --space-32:  128px;
+
+  /* ---------- Radii ---------- */
+  --radius-none: 0;
+  --radius-xs:   2px;
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-2xl:  16px;
+  --radius-full: 9999px;
+
+  /* ---------- Shadows ----------
+   * Layered subtle shadows. Avoid heavy drop shadows.
+   */
+  --shadow-xs:    0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm:    0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md:    0 4px 6px rgba(15, 23, 42, 0.05), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-lg:    0 10px 15px rgba(15, 23, 42, 0.08), 0 4px 6px rgba(15, 23, 42, 0.04);
+  --shadow-xl:    0 20px 25px rgba(15, 23, 42, 0.10), 0 10px 10px rgba(15, 23, 42, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(5, 48, 140, 0.18);
+  --shadow-focus-danger: 0 0 0 3px rgba(185, 28, 28, 0.20);
+
+  /* ---------- Motion ---------- */
+  --duration-fast:    120ms;
+  --duration-base:    200ms;
+  --duration-slow:    320ms;
+  --easing-standard:  cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --easing-decel:     cubic-bezier(0, 0, 0.2, 1);
+
+  /* ---------- Layout ---------- */
+  --max-width-prose:   65ch;
+  --max-width-content: 1200px;
+  --z-base:    1;
+  --z-sticky:  100;
+  --z-overlay: 1000;
+  --z-modal:   1100;
+  --z-toast:   1200;
+}
+
+/* ============================================================
+ * Dark mode (deferred — placeholder so consumers can opt in)
+ * Enable with [data-theme="dark"] on <html> later.
+ * Light-first means we ship light fully validated; dark
+ * comes in a follow-up sprint.
+ * ============================================================ */
+[data-theme="dark"] {
+  --surface-page:     var(--color-neutral-900);
+  --surface-card:     var(--color-neutral-800);
+  --surface-elevated: var(--color-neutral-800);
+  --surface-sunken:   var(--color-neutral-900);
+  --border-subtle:    var(--color-neutral-700);
+  --border-default:   var(--color-neutral-600);
+  --text-primary:     var(--color-neutral-50);
+  --text-secondary:   var(--color-neutral-300);
+  --text-tertiary:    var(--color-neutral-400);
+  --text-link:        var(--color-brand-300);
+}
