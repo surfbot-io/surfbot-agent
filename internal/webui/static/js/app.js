@@ -29,7 +29,13 @@ const Router = {
     { pattern: /^#\/templates/, page: 'templates', render: () => TemplatesPage.render(app, parseQueryParams()) },
     { pattern: /^#\/blackouts\/(.+)$/, page: 'blackouts', render: (m) => BlackoutsPage.render(app, { id: decodeURIComponent(m[1]) }) },
     { pattern: /^#\/blackouts/, page: 'blackouts', render: () => BlackoutsPage.render(app, parseQueryParams()) },
-    { pattern: /^#\/settings\/defaults/, page: 'settings-defaults', render: () => SettingsDefaultsPage.render(app) },
+    { pattern: /^#\/changes/, page: 'changes', render: () => ChangesPage.render(app, parseQueryParams()) },
+    // PR8 #41: legacy URL — redirect transparent. Replace the hash so
+    // the redirect doesn't create a back-button trap and the canonical
+    // /settings/scan-defaults section opens.
+    { pattern: /^#\/settings\/defaults\b/, page: 'settings', render: () => { location.replace('#/settings/scan-defaults'); } },
+    { pattern: /^#\/settings\/([^/?]+)(\?.*)?$/, page: 'settings', render: (m) => SettingsPage.render(app, { section: decodeURIComponent(m[1]) }) },
+    { pattern: /^#\/settings(\?.*)?$/, page: 'settings', render: () => SettingsPage.render(app, {}) },
   ],
 
   // _lastHash captures the previous hash so the navigate() short-circuit
@@ -279,9 +285,166 @@ document.addEventListener('DOMContentLoaded', () => {
     // Placeholder — PR9 implements global search.
   });
   const newBtn = document.getElementById('topbar-new-btn');
-  if (newBtn) newBtn.addEventListener('click', () => {
-    // Placeholder — PR3 wires the "+ New" entry point. Falls back to
-    // the ad-hoc dispatcher so the button isn't dead in the meantime.
-    if (typeof AdHocPage !== 'undefined' && AdHocPage.open) AdHocPage.open();
-  });
+  if (newBtn) {
+    newBtn.setAttribute('aria-haspopup', 'menu');
+    newBtn.setAttribute('aria-expanded', 'false');
+    newBtn.removeAttribute('title');
+    newBtn.setAttribute('aria-label', 'New');
+    newBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      TopbarNewMenu.toggle(newBtn);
+    });
+  }
 });
+
+// PR8 #41 — Topbar "+ New" dropdown. Replaces the PR2 placeholder that
+// dispatched straight to the ad-hoc modal. Renders four entries:
+//   Add target  → TargetsPage.openCreateModal() | fallback to /targets
+//   Run scan    → AdHocPage.open()
+//   New schedule→ SchedulesPage.openCreateModal() | fallback to /schedules?new=1
+//   New blackout→ BlackoutsPage.openCreateModal() | fallback to /blackouts?new=1
+//
+// Keyboard shortcuts (T/S/⌘⇧S/B) are visual only in P0; PR9 #42 wires
+// the global handlers as part of Cmd+K.
+const TopbarNewMenu = {
+  _menu: null,
+  _anchor: null,
+
+  toggle(anchor) {
+    if (this._menu) {
+      this.close();
+      return;
+    }
+    this.open(anchor);
+  },
+
+  open(anchor) {
+    this.close();
+    const menu = document.createElement('div');
+    menu.className = 'topbar-new-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Create new resource');
+    menu.innerHTML = `
+      <button type="button" class="topbar-new-item" role="menuitem" data-new-action="target">
+        ${Components.icon('plus', 14)}<span class="topbar-new-label">Add target…</span>
+        <kbd class="kbd">T</kbd>
+      </button>
+      <button type="button" class="topbar-new-item" role="menuitem" data-new-action="scan">
+        ${Components.icon('play', 14)}<span class="topbar-new-label">Run scan…</span>
+        <kbd class="kbd">S</kbd>
+      </button>
+      <button type="button" class="topbar-new-item" role="menuitem" data-new-action="schedule">
+        ${Components.icon('clock', 14)}<span class="topbar-new-label">New schedule…</span>
+        <kbd class="kbd">⌘⇧S</kbd>
+      </button>
+      <button type="button" class="topbar-new-item" role="menuitem" data-new-action="blackout">
+        ${Components.icon('eye-off', 14)}<span class="topbar-new-label">New blackout…</span>
+        <kbd class="kbd">B</kbd>
+      </button>
+    `;
+    document.body.appendChild(menu);
+    this._position(menu, anchor);
+    this._menu = menu;
+    this._anchor = anchor;
+    if (anchor) anchor.setAttribute('aria-expanded', 'true');
+
+    menu.querySelectorAll('[data-new-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const kind = btn.getAttribute('data-new-action');
+        this.close();
+        TopbarNewMenu.dispatch(kind);
+      });
+    });
+
+    // Defer the global listeners so the click that opened the menu
+    // doesn't immediately close it.
+    setTimeout(() => {
+      document.addEventListener('click', this._onOutside);
+      document.addEventListener('keydown', this._onKey);
+    }, 0);
+
+    // Focus the first item so keyboard users can act immediately.
+    const first = menu.querySelector('[data-new-action]');
+    if (first) first.focus();
+  },
+
+  close() {
+    if (!this._menu) return;
+    if (this._menu.parentNode) this._menu.remove();
+    this._menu = null;
+    if (this._anchor) {
+      this._anchor.setAttribute('aria-expanded', 'false');
+      this._anchor = null;
+    }
+    document.removeEventListener('click', this._onOutside);
+    document.removeEventListener('keydown', this._onKey);
+  },
+
+  _position(menu, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = (rect.bottom + 4) + 'px';
+    menu.style.right = (window.innerWidth - rect.right) + 'px';
+    menu.style.zIndex = '40';
+  },
+
+  _onOutside(e) {
+    if (!TopbarNewMenu._menu) return;
+    if (TopbarNewMenu._menu.contains(e.target)) return;
+    if (TopbarNewMenu._anchor && TopbarNewMenu._anchor.contains(e.target)) return;
+    TopbarNewMenu.close();
+  },
+
+  _onKey(e) {
+    if (!TopbarNewMenu._menu) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      TopbarNewMenu.close();
+      if (TopbarNewMenu._anchor) TopbarNewMenu._anchor.focus();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const items = Array.from(TopbarNewMenu._menu.querySelectorAll('[data-new-action]'));
+      if (!items.length) return;
+      const cur = document.activeElement;
+      let idx = items.indexOf(cur);
+      if (idx === -1) idx = 0;
+      const next = e.key === 'ArrowDown'
+        ? (idx + 1) % items.length
+        : (idx - 1 + items.length) % items.length;
+      items[next].focus();
+    }
+  },
+
+  dispatch(kind) {
+    switch (kind) {
+      case 'target':
+        if (typeof TargetsPage !== 'undefined' && TargetsPage.openCreateModal) {
+          TargetsPage.openCreateModal();
+        } else {
+          location.hash = '#/targets';
+        }
+        return;
+      case 'scan':
+        if (typeof AdHocPage !== 'undefined' && AdHocPage.open) {
+          AdHocPage.open();
+        }
+        return;
+      case 'schedule':
+        if (typeof SchedulesPage !== 'undefined' && SchedulesPage.openCreateModal) {
+          SchedulesPage.openCreateModal();
+        } else {
+          location.hash = '#/schedules?new=1';
+        }
+        return;
+      case 'blackout':
+        if (typeof BlackoutsPage !== 'undefined' && BlackoutsPage.openCreateModal) {
+          BlackoutsPage.openCreateModal();
+        } else {
+          location.hash = '#/blackouts?new=1';
+        }
+        return;
+    }
+  },
+};

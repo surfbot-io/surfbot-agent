@@ -197,6 +197,25 @@ const TargetsPage = {
     } catch (_) {}
   },
 
+  // PR8 #41 — public entry point used by the topbar +New menu. The
+  // targets page uses an inline form rather than a modal, so the
+  // public API is "navigate + focus the value input" rather than
+  // mounting a dialog. If the operator is already on /targets the
+  // hashchange handler is a no-op, so focus needs the manual nudge
+  // either way.
+  openCreateModal() {
+    const focusInput = () => {
+      const input = document.getElementById('target-value');
+      if (input) input.focus();
+    };
+    if ((location.hash || '').startsWith('#/targets')) {
+      focusInput();
+      return;
+    }
+    location.hash = '#/targets';
+    setTimeout(focusInput, 50);
+  },
+
   bindEvents(app) {
     const form = document.getElementById('add-target-form');
     if (form) {

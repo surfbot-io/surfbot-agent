@@ -49,16 +49,42 @@ const BlackoutsPage = {
     const headerActions = '<div style="margin-left:auto"><button type="button" class="btn btn-primary" id="blackouts-new">New blackout</button></div>';
 
     if (items.length === 0) {
-      const hint = f.activeOnly
-        ? 'No blackouts are active right now.'
-        : 'No blackout windows defined. Click <strong>New blackout</strong> above or use <code class="mono">surfbot blackout create</code>.';
+      // PR8 #41 — premium empty state for the unfiltered case (zero
+      // blackouts in the DB). The activeOnly branch keeps the legacy
+      // copy: it's a filter-result, not a first-run state.
+      if (f.activeOnly) {
+        return `
+          <div class="page-header">
+            <h2>Blackout windows</h2>
+            ${headerActions}
+          </div>
+          ${filterBar}
+          ${Components.emptyState('No blackouts', 'No blackouts are active right now.')}
+        `;
+      }
       return `
         <div class="page-header">
           <h2>Blackout windows</h2>
           ${headerActions}
         </div>
         ${filterBar}
-        ${Components.emptyState('No blackouts', hint)}
+        <div class="blackouts-empty">
+          <div class="blackouts-empty-icon">${Components.icon('eye-off', 16)}</div>
+          <h3 class="blackouts-empty-title">No hay blackouts definidos</h3>
+          <p class="blackouts-empty-body">
+            Crea ventanas para suprimir scans durante deploys, mantenimiento, o eventos.
+            Los schedules se reanudan automáticamente al cerrar la ventana.
+          </p>
+          <div class="blackouts-empty-actions">
+            <button type="button" class="btn btn-primary" id="blackouts-empty-new">+ New blackout</button>
+            <button type="button" class="btn btn-ghost btn-sm" disabled
+              title="Calendar import coming with calendar integration"
+              aria-disabled="true">Importar desde calendario ↗</button>
+          </div>
+          <p class="blackouts-empty-cli">
+            O desde CLI: <code class="mono">surfbot blackout create</code>
+          </p>
+        </div>
       `;
     }
 
@@ -130,6 +156,10 @@ const BlackoutsPage = {
     }
     const newBtn = document.getElementById('blackouts-new');
     if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm());
+    // PR8 #41 — empty-state CTA. Wired via id, only present in the
+    // first-run branch of template().
+    const emptyBtn = document.getElementById('blackouts-empty-new');
+    if (emptyBtn) emptyBtn.addEventListener('click', () => this.openCreateForm());
   },
 
   // --- Blackout detail ---
@@ -224,11 +254,29 @@ const BlackoutsPage = {
   // multiple blackouts. Duration is rendered as hours + minutes +
   // seconds inputs and serialized to a single `duration_seconds`.
 
-  openCreateForm() {
+  openCreateForm(opts) {
+    const o = opts || {};
     this.openForm({
       mode: 'create',
-      onSaved: () => BlackoutsPage.render(document.getElementById('app'), {}),
+      prefill: o.prefill,
+      onSaved: () => {
+        if (typeof o.onSaved === 'function') o.onSaved();
+        // Re-render the list when the user is on /blackouts; skip the
+        // refresh otherwise (the modal was launched from the topbar or
+        // another page, the operator stays where they were).
+        if ((location.hash || '').startsWith('#/blackouts')) {
+          BlackoutsPage.render(document.getElementById('app'), {});
+        }
+      },
     });
+  },
+
+  // PR8 #41 — public alias for the topbar +New menu and the asset
+  // detail-pane "Add to blackout" CTA. Same shape as
+  // SchedulesPage.openCreateForm but without listFilters since blackouts
+  // doesn't paginate the list filter state into the create flow.
+  openCreateModal(opts) {
+    return this.openCreateForm(opts);
   },
 
   openEditForm(app, b) {
@@ -239,8 +287,15 @@ const BlackoutsPage = {
     });
   },
 
-  openForm({ mode, blackout, onSaved }) {
-    const b = blackout || {};
+  openForm({ mode, blackout, prefill, onSaved }) {
+    // PR8 #41: when a caller (asset detail pane, topbar +New) opens the
+    // create modal with a `prefill` payload, merge it onto the empty
+    // blackout draft so the scope/target_id fields render pre-filled.
+    // Edit mode ignores prefill — the existing record always wins.
+    const base = blackout || {};
+    const b = (mode === 'create' && prefill)
+      ? Object.assign({}, base, prefill)
+      : base;
     const secs = Math.max(0, b.duration_seconds || 0);
     const hours = Math.floor(secs / 3600);
     const mins = Math.floor((secs % 3600) / 60);

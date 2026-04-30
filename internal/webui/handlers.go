@@ -477,6 +477,9 @@ func (h *handler) handleAssets(w http.ResponseWriter, r *http.Request) {
 	if targetID := r.URL.Query().Get("target_id"); targetID != "" {
 		opts.TargetID = targetID
 	}
+	if status := r.URL.Query().Get("status"); status != "" {
+		opts.Status = model.AssetStatus(status)
+	}
 
 	assets, err := h.store.ListAssets(r.Context(), opts)
 	if err != nil {
