@@ -269,6 +269,14 @@ const SchedulesPage = {
     });
   },
 
+  // PR8 #41 — public alias for the topbar +New menu. The list page's
+  // own "New schedule" button still calls openCreateForm directly with
+  // its filter snapshot; this version assumes the operator wants a
+  // fresh form and refreshes the unfiltered list on save.
+  openCreateModal() {
+    return this.openCreateForm(document.getElementById('app'), {});
+  },
+
   openEditForm(app, schedule) {
     this.openForm({
       mode: 'edit',

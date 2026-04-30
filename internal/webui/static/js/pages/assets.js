@@ -634,9 +634,8 @@ const AssetsPage = {
       </div>
       <div class="assets-detail-actions">
         <button type="button" class="btn btn-primary" data-asset-action="run-scan">Run scan</button>
-        <button type="button" class="btn btn-ghost" data-asset-action="blackout" disabled
-          title="Coming with PR8 blackouts integration"
-          aria-disabled="true">Add to blackout</button>
+        <button type="button" class="btn btn-ghost" data-asset-action="blackout"
+          data-asset-target-id="${escapeHtml(node.target_id || '')}">Add to blackout</button>
         <button type="button" class="btn btn-danger" data-asset-action="remove" disabled
           title="Manual asset deletion coming with vacuum endpoint"
           aria-disabled="true">Remove</button>
@@ -748,6 +747,16 @@ const AssetsPage = {
       btn.addEventListener('click', () => {
         if (typeof AdHocPage === 'undefined' || !AdHocPage.open) return;
         AdHocPage.open({ prefillTargetID: this._activeTargetID, lockTargetID: true });
+      });
+    });
+
+    // PR8 #41 — Add-to-blackout CTA. Opens the blackout create modal
+    // pre-filled with scope=target + target_id of the selected asset.
+    // Falls back to a navigation hint if BlackoutsPage hasn't loaded.
+    app.querySelectorAll('[data-asset-action="blackout"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetID = btn.getAttribute('data-asset-target-id') || this._activeTargetID;
+        AssetsPage.addToBlackout(targetID);
       });
     });
 
@@ -985,5 +994,29 @@ const AssetsPage = {
         }
       }
     }
+  },
+
+  // PR8 #41 — opens the BlackoutsPage create modal pre-filled with the
+  // asset's target. The blackout API scope is "target" + target_id —
+  // there's no per-asset scope, so multi-host targets get suppressed
+  // wholesale. Toast on success only; cancel is silent.
+  addToBlackout(targetID) {
+    if (typeof BlackoutsPage === 'undefined' || !BlackoutsPage.openCreateModal) {
+      Components.toast.error('Blackouts module not loaded');
+      return;
+    }
+    if (!targetID) {
+      Components.toast.error('Asset has no target — cannot scope blackout');
+      return;
+    }
+    BlackoutsPage.openCreateModal({
+      prefill: {
+        scope: 'target',
+        target_id: targetID,
+      },
+      onSaved: () => {
+        Components.toast.success('Blackout created. Scans on this target will be suppressed.');
+      },
+    });
   },
 };

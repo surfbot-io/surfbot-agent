@@ -654,6 +654,229 @@ func TestAssetsCSSScaffolding(t *testing.T) {
 	}
 }
 
+// PR8 #41 — Changes + Blackouts CTA + Settings consolidation + Topbar
+// +New dropdown. Each subscope ships independently but the invariants
+// fit naturally next to the rest of the foundation_assets guards.
+
+func TestChangesPageExists(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/changes.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		"const ChangesPage",
+		// Three-column diff: status filters per column.
+		"status: 'new'",
+		"status: 'disappeared'",
+		"status: 'returned'",
+		// Foundation helpers.
+		"Components.icon(",
+		"Components.emptyState(",
+		"Components.errorBanner(",
+		// Sidebar badge sync — count of disappeared assets.
+		"_syncSidebarBadge(",
+		"changes-badge",
+		// Click row → asset deep link.
+		"#/assets?id=",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"changes.js must reference %q after PR8 #41", s)
+	}
+
+	// Components.treeNode and Components.table are PR1-era helpers we
+	// explicitly do NOT want on the new page — the wireframe is bespoke.
+	legacy := []string{
+		"Components.treeNode",
+		"Components.table",
+	}
+	for _, s := range legacy {
+		assert.False(t, strings.Contains(js, s),
+			"changes.js must not reference legacy helper %q", s)
+	}
+}
+
+func TestSettingsPageExists(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/settings.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	// Section keys mirror the wireframe sub-nav. The order is part of
+	// the contract — when v0.6 fills out a section, we don't want the
+	// nav to silently shuffle.
+	sections := []string{
+		"'general'", "'scan-defaults'", "'notifications'",
+		"'integrations'", "'api-tokens'", "'storage'", "'about'",
+	}
+	for _, s := range sections {
+		assert.True(t, strings.Contains(js, s),
+			"settings.js must declare section %q", s)
+	}
+
+	required := []string{
+		"const SettingsPage",
+		"DEFAULT_SECTION:",
+		"_renderSection(",
+		// Scan defaults reuses the existing form.
+		"SettingsDefaultsPage.render(",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"settings.js must reference %q", s)
+	}
+}
+
+func TestAppJSRoutesPR8Pages(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/app.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		// Changes route + ChangesPage entry point.
+		"ChangesPage.render(",
+		// Settings shell + section sub-route.
+		"SettingsPage.render(",
+		// Legacy /settings/defaults must redirect — the rule rewrites
+		// the hash to the canonical scan-defaults section.
+		"location.replace('#/settings/scan-defaults')",
+		// Topbar +New dropdown wiring.
+		"TopbarNewMenu",
+		"data-new-action=",
+		"TargetsPage.openCreateModal",
+		"SchedulesPage.openCreateModal",
+		"BlackoutsPage.openCreateModal",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"app.js must reference %q after PR8 #41", s)
+	}
+
+	// The PR2 placeholder fall-through to AdHoc on +New click is gone.
+	// The dropdown owns dispatch now.
+	assert.False(t, strings.Contains(js, "Placeholder — PR3 wires"),
+		"app.js must drop the PR2 +New placeholder comment after PR8 #41")
+}
+
+func TestIndexHTMLLoadsPR8Pages(t *testing.T) {
+	data, err := staticFS.ReadFile("static/index.html")
+	require.NoError(t, err)
+	html := string(data)
+
+	required := []string{
+		"/js/pages/changes.js",
+		"/js/pages/settings.js",
+		// Sidebar Settings link points at the canonical /settings, not
+		// /settings/defaults, after the consolidation.
+		`href="#/settings"`,
+		// Sidebar Changes badge slot — attack-surface loss counter.
+		`id="changes-badge"`,
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(html, s),
+			"index.html must reference %q after PR8 #41", s)
+	}
+
+	// Page-script load order: every page module must load BEFORE app.js
+	// so the router can resolve the *Page globals.
+	appIdx := strings.Index(html, "/js/app.js")
+	require.Greater(t, appIdx, 0)
+	for _, p := range []string{"/js/pages/changes.js", "/js/pages/settings.js"} {
+		idx := strings.Index(html, p)
+		require.Greater(t, idx, 0, "%s must load", p)
+		assert.Less(t, idx, appIdx, "%s must load before app.js", p)
+	}
+}
+
+func TestBlackoutsEmptyStateHasPremiumCTA(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/blackouts.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	required := []string{
+		// First-run empty state copy.
+		"No hay blackouts definidos",
+		"surfbot blackout create",
+		// CTA wires.
+		"blackouts-empty-new",
+		"openCreateModal",
+		// Calendar import is visible but disabled — keep that
+		// commitment so the v0.6 cleanup PR doesn't have to chase
+		// references.
+		"Importar desde calendario",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"blackouts.js must reference %q after PR8 #41", s)
+	}
+}
+
+func TestAssetsAddToBlackoutEnabled(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/pages/assets.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	// The PR10 #43 detail pane left "Add to blackout" disabled with
+	// the "Coming with PR8 blackouts integration" tooltip. PR8 enables
+	// the button and adds a public addToBlackout(targetID) method.
+	assert.False(t, strings.Contains(js, "Coming with PR8 blackouts integration"),
+		"PR10 disabled-button tooltip must be gone after PR8 #41")
+	required := []string{
+		"AssetsPage.addToBlackout(",
+		"BlackoutsPage.openCreateModal",
+		"data-asset-action=\"blackout\"",
+		"data-asset-target-id=",
+	}
+	for _, s := range required {
+		assert.True(t, strings.Contains(js, s),
+			"assets.js must reference %q after PR8 #41", s)
+	}
+}
+
+func TestPR8CSSScaffolding(t *testing.T) {
+	data, err := staticFS.ReadFile("static/css/style.css")
+	require.NoError(t, err)
+	css := string(data)
+
+	classes := []string{
+		// Changes page.
+		".changes-grid", ".changes-card", ".changes-card-header",
+		".changes-card-label", ".changes-card-count",
+		".changes-list", ".changes-row", ".changes-row-strike",
+		".changes-row-more", ".changes-empty",
+		".changes-count-new", ".changes-count-gone", ".changes-count-back",
+		// Blackouts empty state.
+		".blackouts-empty", ".blackouts-empty-icon",
+		".blackouts-empty-title", ".blackouts-empty-body",
+		".blackouts-empty-actions", ".blackouts-empty-cli",
+		// Settings shell.
+		".settings-grid", ".settings-subnav",
+		".settings-subnav-item", ".settings-subnav-item-active",
+		".settings-section", ".settings-placeholder",
+		".settings-placeholder-eyebrow", ".settings-placeholder-title",
+		// Topbar +New menu.
+		".topbar-new-menu", ".topbar-new-item", ".topbar-new-label",
+	}
+	for _, c := range classes {
+		assert.True(t, strings.Contains(css, c),
+			"PR8 CSS class %q missing from style.css", c)
+	}
+}
+
+func TestPR8IconsRegistered(t *testing.T) {
+	data, err := staticFS.ReadFile("static/js/components.js")
+	require.NoError(t, err)
+	js := string(data)
+
+	icons := []string{
+		"'eye-off':",
+		"play:",
+	}
+	for _, ic := range icons {
+		assert.True(t, strings.Contains(js, ic),
+			"PR8 icon %q missing from components.js ICONS registry", ic)
+	}
+}
+
 // TestPR5CSSScaffolding gates the CSS classes the new layout hard-codes:
 // severity tabs, filter strip, filter menu (popup + submenu), save-view
 // pill, and the table checkbox column.
