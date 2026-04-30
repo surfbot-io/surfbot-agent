@@ -1,36 +1,48 @@
 /* === Reset & Base === */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Design system v0.2 — light-first, Magnetic Blue.
+ *
+ * Legacy variable NAMES preserved so the 4000+ existing selectors below
+ * keep working without a renaming pass. Only the VALUES change — they
+ * now resolve to the design system tokens defined in tokens.css.
+ *
+ * tokens.css already provides --text-primary, --text-secondary,
+ * --font-sans, --font-mono, --radius-lg with light-first values, so we
+ * intentionally don't redeclare those here — they shine through. */
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --bg-hover: #30363d;
-  --border: #30363d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #484f58;
-  --accent: #00E599;
-  --accent-hover: #33EDAE;
+  /* Surfaces */
+  --bg-primary:    var(--surface-page);     /* was #0d1117 */
+  --bg-secondary:  var(--surface-card);     /* was #161b22 */
+  --bg-tertiary:   var(--surface-sunken);   /* was #21262d */
+  --bg-hover:      var(--surface-sunken);   /* was #30363d */
+  --border:        var(--border-subtle);    /* was #30363d */
 
-  --sev-critical: #f85149;
-  --sev-critical-bg: rgba(248,81,73,0.15);
-  --sev-high: #db6d28;
-  --sev-high-bg: rgba(219,109,40,0.15);
-  --sev-medium: #d29922;
-  --sev-medium-bg: rgba(210,153,34,0.15);
-  --sev-low: #58a6ff;
-  --sev-low-bg: rgba(88,166,255,0.15);
-  --sev-info: #8b949e;
-  --sev-info-bg: rgba(139,148,158,0.15);
+  /* Text muted (the rest comes from tokens.css) */
+  --text-muted:    var(--color-neutral-500); /* was #484f58 */
 
-  --success: #00E599;
-  --danger: #f85149;
+  /* Brand: mint → Magnetic Blue */
+  --accent:        var(--color-brand-700);  /* was #00E599 */
+  --accent-hover:  var(--color-brand-800);  /* was #33EDAE */
 
-  --radius: 6px;
-  --radius-lg: 8px;
-  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  /* Semantic */
+  --success:       var(--color-success-700); /* was #00E599 */
+  --danger:        var(--color-danger-700);  /* was #f85149 */
+
+  /* Severity — flat tints over light surfaces (was rgba over dark) */
+  --sev-critical:    var(--color-severity-critical);
+  --sev-critical-bg: var(--color-danger-100);
+  --sev-high:        var(--color-severity-high);
+  --sev-high-bg:     var(--color-danger-100);
+  --sev-medium:      var(--color-severity-medium);
+  --sev-medium-bg:   var(--color-warning-100);
+  --sev-low:         var(--color-severity-low);
+  --sev-low-bg:      var(--color-info-100);
+  --sev-info:        var(--color-severity-info);
+  --sev-info-bg:     var(--color-neutral-100);
+
+  /* Legacy radius alias (--radius-lg comes from tokens.css = 8px) */
+  --radius:        var(--radius-md);
 }
 
 html, body { height: 100%; }
@@ -106,7 +118,7 @@ a:hover { color: var(--accent-hover); }
 }
 
 .nav-link.active {
-  background: rgba(0,229,153,0.08);
+  background: rgba(5,48,140,0.08);
   color: var(--accent);
   font-weight: 500;
 }
@@ -320,8 +332,8 @@ a:hover { color: var(--accent-hover); }
 }
 
 .badge-open { background: var(--sev-critical-bg); color: var(--sev-critical); }
-.badge-completed { background: rgba(0,229,153,0.15); color: var(--success); }
-.badge-running { background: rgba(0,229,153,0.1); color: var(--accent); }
+.badge-completed { background: rgba(5,48,140,0.15); color: var(--success); }
+.badge-running { background: rgba(5,48,140,0.1); color: var(--accent); }
 .badge-failed { background: var(--sev-high-bg); color: var(--sev-high); }
 
 /* === Tables === */
@@ -931,7 +943,7 @@ tr.finding-detail-row td.finding-detail-cell {
 
 .btn-primary {
   background: var(--accent);
-  color: #0d1117;
+  color: var(--text-on-brand);
   border-color: var(--accent);
   font-weight: 600;
 }
@@ -947,12 +959,12 @@ tr.finding-detail-row td.finding-detail-cell {
 .btn-secondary:hover { background: var(--bg-secondary); border-color: var(--text-muted); }
 
 .btn-accent {
-  background: rgba(0,229,153,0.1);
+  background: rgba(5,48,140,0.1);
   color: var(--accent);
-  border-color: rgba(0,229,153,0.3);
+  border-color: rgba(5,48,140,0.3);
 }
 
-.btn-accent:hover { background: rgba(0,229,153,0.2); }
+.btn-accent:hover { background: rgba(5,48,140,0.2); }
 
 .btn-danger {
   background: rgba(248,81,73,0.1);
@@ -995,7 +1007,7 @@ tr.finding-detail-row td.finding-detail-cell {
 .form-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(0,229,153,0.15);
+  box-shadow: 0 0 0 2px rgba(5,48,140,0.15);
 }
 
 .form-input::placeholder { color: var(--text-muted); }
@@ -1045,7 +1057,7 @@ tr.finding-detail-row td.finding-detail-cell {
 .status-select:focus { outline: none; border-color: var(--accent); }
 .status-select.status-open { background: var(--sev-critical-bg); color: var(--sev-critical); border-color: rgba(248,81,73,0.3); }
 .status-select.status-acknowledged { background: var(--sev-medium-bg); color: var(--sev-medium); border-color: rgba(210,153,34,0.3); }
-.status-select.status-resolved { background: rgba(0,229,153,0.15); color: var(--success); border-color: rgba(0,229,153,0.3); }
+.status-select.status-resolved { background: rgba(5,48,140,0.15); color: var(--success); border-color: rgba(5,48,140,0.3); }
 .status-select.status-false_positive { background: var(--sev-info-bg); color: var(--sev-info); border-color: rgba(139,148,158,0.3); }
 .status-select.status-ignored { background: var(--sev-info-bg); color: var(--sev-info); border-color: rgba(139,148,158,0.3); }
 
@@ -1076,7 +1088,7 @@ tr.finding-detail-row td.finding-detail-cell {
 
 .scan-banner {
   background: var(--bg-secondary);
-  border: 1px solid rgba(0,229,153,0.3);
+  border: 1px solid rgba(5,48,140,0.3);
   border-radius: var(--radius-lg);
   padding: 16px 20px;
   margin-bottom: 20px;
@@ -1105,7 +1117,7 @@ tr.finding-detail-row td.finding-detail-cell {
 
 /* === Status badges (additions) === */
 .badge-acknowledged { background: var(--sev-medium-bg); color: var(--sev-medium); }
-.badge-resolved { background: rgba(0,229,153,0.15); color: var(--success); }
+.badge-resolved { background: rgba(5,48,140,0.15); color: var(--success); }
 .badge-false_positive { background: var(--sev-info-bg); color: var(--sev-info); }
 .badge-ignored { background: var(--sev-info-bg); color: var(--sev-info); }
 .badge-queued { background: var(--sev-low-bg); color: var(--sev-low); }
@@ -1147,7 +1159,7 @@ tr.finding-detail-row td.finding-detail-cell {
   border-radius: 50%;
   background: #888;
 }
-.agent-dot-ok   { background: var(--success, #00e599); box-shadow: 0 0 6px rgba(0,229,153,0.6); }
+.agent-dot-ok   { background: var(--success, #15803D); box-shadow: 0 0 6px rgba(5,48,140,0.6); }
 .agent-dot-warn { background: var(--sev-medium, #f5a623); }
 .agent-dot-err  { background: var(--danger, #ff4d4f); }
 .agent-actions {
@@ -1208,7 +1220,7 @@ tr.finding-detail-row td.finding-detail-cell {
 .phase-circle.phase-done {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0d1117;
+  color: var(--text-on-brand);
 }
 
 .phase-circle.phase-active {
@@ -1508,7 +1520,7 @@ body.modal-open { overflow: hidden; }
 .bulk-actions-count { font-size: 13px; color: var(--text-secondary); }
 .bulk-actions-count strong { color: var(--text-primary); }
 .bulk-actions-buttons { display: flex; gap: 8px; }
-tr.row-selected { background: rgba(0,229,153,0.06); }
+tr.row-selected { background: rgba(5,48,140,0.06); }
 
 /* Schedule/template/blackout detail grids reuse .detail-grid but the
  * rrule/JSON blocks benefit from a fixed-height scroll. */
@@ -1535,37 +1547,37 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
  * =================================================================== */
 
 :root {
-  /* Surface scale — lower number = darker. Mapped 1:1 to existing
-   * --bg-* so the redesign can reach for semantic names without a
-   * second source of truth for the actual hex. */
-  --ink-900: #0d1117;
-  --ink-800: #161b22;
-  --ink-700: #21262d;
-  --ink-600: #30363d;
+  /* --ink-* originally mapped 1:1 to --bg-* in the dark theme. Same
+   * semantic kept: lower number = "deeper surface". Now chains through
+   * to the new light-first surface tokens. */
+  --ink-900: var(--bg-primary);
+  --ink-800: var(--bg-secondary);
+  --ink-700: var(--bg-tertiary);
+  --ink-600: var(--border);
 
   /* Brand alias for --accent. Keeps the wireframe vocabulary. */
-  --brand: var(--accent);
+  --brand:        var(--accent);
   --brand-strong: var(--accent-hover);
 
-  /* Finding triage status. Open is attention-red, ack is amber,
-   * resolved is brand green, fp/ignored fade to muted greys. */
-  --status-open:     #f85149;
-  --status-ack:      #d29922;
-  --status-resolved: #00E599;
-  --status-fp:       #8b949e;
-  --status-ignored:  #6e7681;
+  /* Finding triage status — light-first.
+   * open = danger, ack = warning, resolved = success, fp/ignored = neutral. */
+  --status-open:     var(--color-danger-600);
+  --status-ack:      var(--color-warning-600);
+  --status-resolved: var(--color-success-600);
+  --status-fp:       var(--color-neutral-500);
+  --status-ignored:  var(--color-neutral-400);
 
-  --status-open-bg:     rgba(248,81,73,0.15);
-  --status-ack-bg:      rgba(210,153,34,0.15);
-  --status-resolved-bg: rgba(0,229,153,0.15);
-  --status-fp-bg:       rgba(139,148,158,0.15);
-  --status-ignored-bg:  rgba(110,118,129,0.15);
+  --status-open-bg:     var(--color-danger-50);
+  --status-ack-bg:      var(--color-warning-50);
+  --status-resolved-bg: var(--color-success-50);
+  --status-fp-bg:       var(--color-neutral-100);
+  --status-ignored-bg:  var(--color-neutral-100);
 
-  --status-open-border:     rgba(248,81,73,0.4);
-  --status-ack-border:      rgba(210,153,34,0.4);
-  --status-resolved-border: rgba(0,229,153,0.4);
-  --status-fp-border:       rgba(139,148,158,0.3);
-  --status-ignored-border:  rgba(110,118,129,0.3);
+  --status-open-border:     rgba(220, 38, 38, 0.4);  /* danger-600 */
+  --status-ack-border:      rgba(217, 119, 6, 0.4);  /* warning-600 */
+  --status-resolved-border: rgba(22, 163, 74, 0.4);  /* success-600 */
+  --status-fp-border:       rgba(100, 116, 139, 0.3);/* neutral-500 */
+  --status-ignored-border:  rgba(148, 163, 184, 0.3);/* neutral-400 */
 }
 
 /* --- Pills (severity + status) -------------------------------------
@@ -1844,7 +1856,7 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
  * visually with the active-scan pill. The real "+ New" affordance
  * lands in PR3. */
 .topbar-new:hover {
-  border-color: rgba(0,229,153,0.6);
+  border-color: rgba(5,48,140,0.6);
   color: var(--text-primary);
 }
 
@@ -1873,7 +1885,7 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
 }
 
 .topbar-search:hover {
-  border-color: rgba(0,229,153,0.6);
+  border-color: rgba(5,48,140,0.6);
   color: var(--text-secondary);
 }
 
@@ -1917,8 +1929,8 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
   gap: 6px;
   padding: 4px 10px;
   border-radius: 9999px;
-  background: rgba(0,229,153,0.1);
-  border: 1px solid rgba(0,229,153,0.3);
+  background: rgba(5,48,140,0.1);
+  border: 1px solid rgba(5,48,140,0.3);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
@@ -1928,7 +1940,7 @@ tr.row-selected { background: rgba(0,229,153,0.06); }
 }
 
 .scan-indicator:hover {
-  border-color: rgba(0,229,153,0.6);
+  border-color: rgba(5,48,140,0.6);
   color: var(--text-primary);
 }
 
@@ -2105,7 +2117,7 @@ button.kpi-card:focus-visible {
   font-size: 11px;
   font-weight: 500;
 }
-.kpi-trend-up { color: var(--sev-low); background: rgba(0,229,153,0.15); }
+.kpi-trend-up { color: var(--sev-low); background: rgba(5,48,140,0.15); }
 .kpi-trend-down { color: var(--sev-critical); background: var(--sev-critical-bg); }
 .kpi-trend-flat { color: var(--text-muted); background: var(--ink-700); }
 
@@ -2119,7 +2131,7 @@ button.kpi-card:focus-visible {
 .sparkline-bar {
   flex: 1;
   min-height: 2px;
-  background: rgba(0,229,153,0.3);
+  background: rgba(5,48,140,0.3);
   border-radius: 1px;
 }
 
@@ -2193,7 +2205,7 @@ button.kpi-card:focus-visible {
   color: var(--text-secondary);
   cursor: pointer;
 }
-.dash-tab.active { color: var(--brand); background: rgba(0,229,153,0.1); }
+.dash-tab.active { color: var(--brand); background: rgba(5,48,140,0.1); }
 .dash-tab:hover:not(.active) { color: var(--text-primary); }
 
 .activity-list { list-style: none; margin: 0; padding: 0; }
@@ -2438,7 +2450,7 @@ button.kpi-card:focus-visible {
 .so-prose code {
   font-family: var(--font-mono, monospace);
   color: var(--brand);
-  background: rgba(0,229,153,0.08);
+  background: rgba(5,48,140,0.08);
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 12px;
@@ -2662,8 +2674,8 @@ button.kpi-card:focus-visible {
 .sev-tab-low      { color: var(--sev-low); }
 .sev-tab-info     { color: var(--sev-info); }
 .sev-tab-active {
-  background: rgba(0,229,153,0.10);
-  border-color: rgba(0,229,153,0.4);
+  background: rgba(5,48,140,0.10);
+  border-color: rgba(5,48,140,0.4);
   color: var(--brand);
 }
 .sev-tab-active.sev-tab-critical { background: var(--sev-critical-bg); border-color: rgba(248,81,73,0.4); color: var(--sev-critical); }
@@ -2718,8 +2730,8 @@ button.kpi-card:focus-visible {
   line-height: 1.4;
 }
 .save-view-pill.empty { color: var(--text-muted); cursor: default; }
-.save-view-pill.saved { color: var(--brand); border-color: rgba(0,229,153,0.4); }
-.save-view-pill:hover.saved { background: rgba(0,229,153,0.08); }
+.save-view-pill.saved { color: var(--brand); border-color: rgba(5,48,140,0.4); }
+.save-view-pill:hover.saved { background: rgba(5,48,140,0.08); }
 
 /* --- Filter menu / submenu (popup) -------------------------------- */
 .filter-menu {
@@ -2768,7 +2780,7 @@ button.kpi-card:focus-visible {
 .filter-menu-list { max-height: 220px; overflow-y: auto; }
 .filter-menu-apply {
   margin-top: 4px;
-  background: rgba(0,229,153,0.10);
+  background: rgba(5,48,140,0.10);
   color: var(--brand);
   text-align: center;
 }
@@ -2786,10 +2798,10 @@ button.kpi-card:focus-visible {
   cursor: pointer;
   accent-color: var(--brand);
 }
-.fnd-row-selected { background: rgba(0,229,153,0.06); }
-.fnd-row-selected:hover { background: rgba(0,229,153,0.14); }
-.tgt-row-selected { background: rgba(0,229,153,0.06); }
-.tgt-row-selected:hover { background: rgba(0,229,153,0.14); }
+.fnd-row-selected { background: rgba(5,48,140,0.06); }
+.fnd-row-selected:hover { background: rgba(5,48,140,0.14); }
+.tgt-row-selected { background: rgba(5,48,140,0.06); }
+.tgt-row-selected:hover { background: rgba(5,48,140,0.14); }
 
 /* --- Pagination (light) ------------------------------------------- */
 .pagination {
@@ -2927,7 +2939,7 @@ button.kpi-card:focus-visible {
   flex-shrink: 0;
 }
 .phase-dot-pending { background: var(--ink-700); border-color: var(--ink-600); }
-.phase-dot-done    { background: var(--success, #00e599); border-color: var(--success, #00e599); }
+.phase-dot-done    { background: var(--success, #15803D); border-color: var(--success, #15803D); }
 .phase-dot-running { background: var(--brand); border-color: var(--brand); animation: phase-pulse 1.4s ease-in-out infinite; }
 .phase-dot-failed  { background: var(--sev-critical); border-color: var(--sev-critical); }
 .phase-stem {
@@ -2972,7 +2984,7 @@ button.kpi-card:focus-visible {
 .phase-bar-track { background: var(--ink-700); }
 .phase-bar-fill { height: 100%; background: var(--brand); }
 .phase-bar-pending { background: var(--ink-700); }
-.phase-bar-done    { background: var(--success, #00e599); opacity: 0.55; }
+.phase-bar-done    { background: var(--success, #15803D); opacity: 0.55; }
 .phase-bar-failed  { background: var(--sev-critical); opacity: 0.55; }
 @media (max-width: 900px) {
   .phase-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -3218,8 +3230,8 @@ button.kpi-card:focus-visible {
 }
 .scan-log-chip:hover { background: var(--ink-700); color: var(--text-primary); }
 .scan-log-chip.active {
-  background: rgba(0,229,153,0.10);
-  border-color: rgba(0,229,153,0.4);
+  background: rgba(5,48,140,0.10);
+  border-color: rgba(5,48,140,0.4);
   color: var(--brand);
 }
 .scan-log-chip-error.active { background: var(--sev-critical-bg); border-color: rgba(248,81,73,0.4); color: var(--sev-critical); }
@@ -3420,7 +3432,7 @@ button.kpi-card:focus-visible {
 .tree-row:hover { background: var(--ink-800); }
 .tree-row-selected,
 .tree-row-selected:hover {
-  background: rgba(0,229,153,0.10);
+  background: rgba(5,48,140,0.10);
   border-left-color: var(--brand);
 }
 .tree-row-truncated {
@@ -3817,3 +3829,283 @@ button.kpi-card:focus-visible {
   font-size: 10px;
   color: var(--text-secondary);
 }
+
+/* === PR6 #39 — Schedules row pills + Templates card grid =========== */
+
+/* Action-pill variant: a clickable .pill that responds to hover/focus.
+ * Used inline in the Schedules table row and inside template cards. */
+.pill-action {
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+}
+.pill-action:hover { background: var(--bg-hover); color: var(--text-primary); }
+.pill-action:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.pill-action:disabled { opacity: 0.5; cursor: default; }
+
+/* Brand variant of pill-action — used for the primary CTA on a card
+ * (e.g. "Run with…") so the dispatcher action stands out from Edit /
+ * Duplicate. */
+.pill-brand {
+  background: rgba(0, 229, 153, 0.12);
+  color: var(--brand);
+  border-color: rgba(0, 229, 153, 0.4);
+}
+.pill-brand:hover { background: rgba(0, 229, 153, 0.2); color: var(--brand-strong); }
+
+/* Muted variant — read-only counters on the card meta row. */
+.pill-muted {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+/* Right-aligned actions cell in the schedules table. Keeps the two
+ * inline pills tight and prevents the row click handler from firing
+ * when the operator clicks on the gap between buttons. */
+.schedule-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.schedule-actions .pill-action + .pill-action { margin-left: 6px; }
+
+/* Two-line target / template cells in the schedules list: primary
+ * label on top, faint UUID short-id underneath. Scoped to <small>
+ * inside table cells so we don't restyle the many other places that
+ * combine .mono and .text-muted across the SPA. */
+td > small.text-muted.mono,
+td > small.mono.text-muted { font-size: 11px; }
+
+/* --- Templates: responsive card grid ------------------------------- */
+.template-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+@media (min-width: 640px) {
+  .template-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) {
+  .template-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.template-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.template-card:hover {
+  border-color: var(--bg-hover);
+  background: var(--bg-tertiary);
+}
+
+.template-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.template-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.template-card .card-desc {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.template-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.template-card-uuid {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.template-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* === PR6 #39 — Schedule modal redesign ============================ */
+
+/* Segmented preset selector. Each <label> wraps a hidden radio input;
+ * we paint the label and use :has(input:checked) to highlight the
+ * active preset. :has() needs Chrome 105+ / Safari 15.4+ / Firefox 121+
+ * which the SPA already targets. */
+.rrule-builder { gap: 0; }
+.rrule-builder .form-label { margin-bottom: 8px; }
+
+/* Edit-mode warning shown when the existing schedule's RRULE doesn't
+ * fit Daily/Weekly/Monthly (e.g. FREQ=HOURLY created via CLI). The
+ * operator sees this before clicking Save so the replacement isn't
+ * silent. */
+.rrule-incompat {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--sev-medium-bg);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.rrule-incompat strong { color: var(--sev-medium); }
+.rrule-incompat code { color: var(--text-primary); }
+
+.rrule-presets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.rrule-preset {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  user-select: none;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.rrule-preset:hover { color: var(--text-primary); }
+.rrule-preset input { position: absolute; opacity: 0; pointer-events: none; }
+.rrule-preset:has(input:checked) {
+  background: rgba(0, 229, 153, 0.12);
+  border-color: rgba(0, 229, 153, 0.4);
+  color: var(--brand);
+}
+.rrule-preset input:focus-visible + span {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* Per-mode controls row. Inputs sit inline with small labels so the
+ * sentence reads naturally: "every [6] hours". */
+.rrule-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.rrule-panel {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rrule-panel[hidden] { display: none; }
+.rrule-text { color: var(--text-secondary); }
+
+.rrule-controls input[type="time"],
+.rrule-controls input[type="number"],
+.rrule-controls input[type="text"] {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+.rrule-controls input[type="number"] { width: 70px; }
+.rrule-controls input[type="time"]   { width: 110px; }
+.rrule-custom-input { width: 100%; }
+
+/* Weekday toggle row — same pattern as the preset selector. */
+.rrule-day-toggles {
+  display: inline-flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.rrule-day-toggle {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  user-select: none;
+}
+.rrule-day-toggle:hover { color: var(--text-primary); }
+.rrule-day-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.rrule-day-toggle:has(input:checked) {
+  background: rgba(0, 229, 153, 0.12);
+  border-color: rgba(0, 229, 153, 0.4);
+  color: var(--brand);
+}
+
+/* Live preview of the rrule. Echoes humanizeRRule() output as the
+ * operator clicks; falls back to the raw rule when the pattern isn't
+ * humanized (Custom mode with COUNT/UNTIL/etc.). */
+.rrule-preview {
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-left: 2px solid var(--brand);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.rrule-preview-label { color: var(--text-muted); margin-right: 6px; }
+.rrule-preview strong { color: var(--text-primary); font-weight: 500; }
+.rrule-preview-error { border-left-color: var(--sev-medium); }
+.rrule-preview-error strong { color: var(--sev-medium); }
+
+/* Advanced disclosure — collapsible bottom section so estimated
+ * duration and edit-mode status don't crowd the primary fields. */
+.form-disclosure {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.form-disclosure > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 6px 0;
+  list-style: none;
+  user-select: none;
+}
+.form-disclosure > summary::-webkit-details-marker { display: none; }
+.form-disclosure > summary::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+.form-disclosure[open] > summary::before { transform: rotate(90deg); }
+.form-disclosure > summary:hover { color: var(--text-primary); }
