@@ -22,7 +22,11 @@ const Router = {
     // longest-prefix match wins. No Go-side route changes — the SPA
     // fallback in server.go already serves index.html for any unknown
     // path, so these hash routes resolve entirely client-side.
-    { pattern: /^#\/timeline/, page: 'timeline', render: () => TimelinePage.render(app, parseQueryParams()) },
+    //
+    // PR12 #45: #/timeline was removed in UI v2. Legacy bookmarks
+    // redirect to dashboard transparently; the redirect itself will be
+    // dropped in the next sprint.
+    { pattern: /^#\/timeline/, page: 'dashboard', render: () => { location.replace('#/'); } },
     { pattern: /^#\/schedules\/(.+)$/, page: 'schedules', render: (m) => SchedulesPage.render(app, { id: decodeURIComponent(m[1]) }) },
     { pattern: /^#\/schedules/, page: 'schedules', render: () => SchedulesPage.render(app, parseQueryParams()) },
     { pattern: /^#\/templates\/(.+)$/, page: 'templates', render: (m) => TemplatesPage.render(app, { id: decodeURIComponent(m[1]) }) },
@@ -70,13 +74,6 @@ const Router = {
     // Mapping is hash-prefix → [groupLabel, pageLabel]. Detail routes
     // inherit their list parent (e.g. #/findings/abc → "Findings").
     Breadcrumbs.update(hash);
-
-    // Stop the AgentCard *dashboard* poll loop on every navigation. The
-    // sidebar compact AgentCard runs on its own loop (mountCompact) and
-    // is not affected.
-    if (typeof AgentCard !== 'undefined' && AgentCard.unmount) {
-      AgentCard.unmount();
-    }
 
     // Slide-overs from one page should not survive cross-page nav.
     if (typeof FindingsPage !== 'undefined' && FindingsPage.closeSlideover) {
@@ -142,7 +139,6 @@ const Breadcrumbs = {
     '/scans':      ['Detect',    'Scans'],
     '/schedules':  ['Detect',    'Schedules'],
     '/templates':  ['Detect',    'Templates'],
-    '/timeline':   ['Detect',    'Timeline'],
     '/tools':      ['Configure', 'Tools'],
     '/blackouts':  ['Configure', 'Blackouts'],
     '/settings':   ['Configure', 'Settings'],
