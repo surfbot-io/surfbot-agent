@@ -18,6 +18,10 @@ const TemplatesPage = {
     const offset = parseInt((params || {}).offset, 10) || 0;
     try {
       const data = await API.listTemplates({ limit, offset });
+      // _lastItems backs the click handlers in bindListActions so cards
+      // can pass the full template object to the duplicate / edit /
+      // run flows without re-fetching.
+      this._lastItems = (data && data.items) || [];
       app.innerHTML = this.template(data, { limit, offset });
       this.bindListActions(app);
       // SPEC-SCHED1.4c R6: hydrate USED BY counts for the visible
@@ -43,11 +47,14 @@ const TemplatesPage = {
     const cells = document.querySelectorAll('[data-used-by]');
     if (!cells.length) return;
 
+    const setCount = (cell, label, title) => {
+      cell.textContent = label;
+      cell.title = title;
+    };
+
     if (items.length > this.USED_BY_SOFT_THRESHOLD) {
-      cells.forEach(cell => {
-        cell.textContent = '—';
-        cell.title = 'Count unavailable for lists over ' + this.USED_BY_SOFT_THRESHOLD + ' templates.';
-      });
+      cells.forEach(cell => setCount(cell, '— schedules',
+        'Count unavailable for lists over ' + this.USED_BY_SOFT_THRESHOLD + ' templates.'));
       return;
     }
 
@@ -62,15 +69,14 @@ const TemplatesPage = {
         const resp = await API.listSchedules({ template_id: t.id, limit: 1 });
         const total = (resp && typeof resp.total === 'number') ? resp.total : null;
         if (total == null) {
-          cell.textContent = '?';
-          cell.title = 'Count not available (API did not return a total).';
+          setCount(cell, '? schedules', 'Count not available (API did not return a total).');
         } else {
-          cell.textContent = String(total);
-          cell.title = total === 0 ? 'No schedules reference this template.' : total + ' schedule(s) reference this template.';
+          const noun = total === 1 ? 'schedule' : 'schedules';
+          setCount(cell, `${total} ${noun}`,
+            total === 0 ? 'No schedules reference this template.' : total + ' schedule(s) reference this template.');
         }
       } catch (err) {
-        cell.textContent = '?';
-        cell.title = 'Error loading count: ' + (err.message || 'unknown');
+        setCount(cell, '? schedules', 'Error loading count: ' + (err.message || 'unknown'));
       }
     }));
   },
@@ -78,6 +84,29 @@ const TemplatesPage = {
   bindListActions(app) {
     const newBtn = document.getElementById('templates-new');
     if (newBtn) newBtn.addEventListener('click', () => this.openCreateForm(app));
+
+    // Card click → detail. Action buttons inside the card stop
+    // propagation so they don't double-navigate. We keep the
+    // dispatching here (instead of inline onclick) so the per-card
+    // template object can be passed by reference rather than re-fetched.
+    const cards = app.querySelectorAll('.template-card');
+    cards.forEach(card => {
+      const id = card.dataset.id;
+      if (!id) return;
+      const t = (this._lastItems || []).find(x => x.id === id);
+      card.addEventListener('click', () => { location.hash = '#/templates/' + encodeURIComponent(id); });
+      card.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const action = btn.dataset.action;
+          if (!t) return;
+          if (action === 'run') AdHocPage.open({ prefillTemplateID: t.id });
+          else if (action === 'edit') this.openEditForm(app, t);
+          else if (action === 'duplicate') this.duplicate(app, t);
+        });
+      });
+    });
   },
 
   template(data, f) {
@@ -97,19 +126,35 @@ const TemplatesPage = {
       `;
     }
 
-    const rows = items.map(t => {
+    const cards = items.map(t => {
       const toolCount = Object.keys(t.tool_config || {}).length;
-      const sysBadge = t.is_system ? '<span class="badge badge-muted" title="Built-in template — seeded on first boot.">built-in</span>' : '';
+      const toolNoun = toolCount === 1 ? 'tool' : 'tools';
+      const kindBadge = t.is_system
+        ? '<span class="badge badge-muted" title="Built-in template — seeded on first boot.">built-in</span>'
+        : '<span class="badge badge-muted">custom</span>';
+      const desc = (t.description || '').trim();
+      const descHtml = desc
+        ? `<p class="card-desc">${escapeHtml(desc)}</p>`
+        : '<p class="card-desc text-muted">No description.</p>';
+
       return `
-        <tr class="clickable" onclick="location.hash='#/templates/${encodeURIComponent(t.id)}'">
-          <td class="mono">${Components.truncateID(t.id)}</td>
-          <td>${escapeHtml(t.name || '-')} ${sysBadge}</td>
-          <td class="text-muted">${escapeHtml(Components.truncate(t.description || '', 80))}</td>
-          <td>${toolCount}</td>
-          <td data-used-by="${escapeHtml(t.id)}" title="Loading…">…</td>
-          <td>${Components.rruleCompact(t.rrule)}</td>
-          <td class="text-muted">${Components.timeAgo(t.updated_at)}</td>
-        </tr>
+        <div class="template-card clickable" data-id="${escapeHtml(t.id)}">
+          <div class="template-card-header">
+            <span class="template-card-title">${escapeHtml(t.name || '-')}</span>
+            ${kindBadge}
+          </div>
+          ${descHtml}
+          <div class="template-card-meta">
+            <span class="pill pill-muted">${toolCount} ${toolNoun}</span>
+            <span class="pill pill-muted" data-used-by="${escapeHtml(t.id)}" title="Loading…">… schedules</span>
+            <span class="template-card-uuid mono text-muted" title="${escapeHtml(t.id)}">${Components.truncateID(t.id)}</span>
+          </div>
+          <div class="template-card-actions">
+            <button type="button" class="pill pill-action pill-brand" data-action="run">Run with…</button>
+            <button type="button" class="pill pill-action" data-action="edit">Edit</button>
+            <button type="button" class="pill pill-action" data-action="duplicate">Duplicate</button>
+          </div>
+        </div>
       `;
     }).join('');
 
@@ -121,10 +166,7 @@ const TemplatesPage = {
         <p>${total} template${total === 1 ? '' : 's'}</p>
         ${headerActions}
       </div>
-      ${Components.table(
-        ['ID', 'Name', 'Description', 'Tools', 'USED BY', 'RRULE', 'Updated'],
-        [rows]
-      )}
+      <div class="template-grid">${cards}</div>
       ${pager}
     `;
   },
@@ -252,6 +294,25 @@ const TemplatesPage = {
     });
   },
 
+  // duplicate seeds the create form with a copy of the source template.
+  // is_system is intentionally dropped — built-in is a server-managed
+  // marker, not part of the user-editable shape.
+  duplicate(app, t) {
+    const copy = {
+      name: `${t.name || 'template'} (copy)`,
+      description: t.description || '',
+      rrule: t.rrule || '',
+      timezone: t.timezone || 'UTC',
+      tool_config: t.tool_config || {},
+      maintenance_window: t.maintenance_window || null,
+    };
+    this.openForm({
+      mode: 'create',
+      template: copy,
+      onSaved: () => TemplatesPage.render(app, {}),
+    });
+  },
+
   openEditForm(app, t) {
     this.openForm({
       mode: 'edit',
@@ -263,13 +324,22 @@ const TemplatesPage = {
   openForm({ mode, template, onSaved }) {
     const t = template || {};
     const toolConfigJson = JSON.stringify(t.tool_config || {}, null, 2);
+    // Fields the form doesn't surface (e.g. maintenance_window) but we
+    // still want to forward when the form was seeded by Duplicate.
+    const carryover = {};
+    if (mode === 'create' && t.maintenance_window) {
+      carryover.maintenance_window = t.maintenance_window;
+    }
+    const tzDefault = t.timezone || (mode === 'create' ? browserTimezone() : 'UTC');
     const body = `
       <form id="template-form" novalidate>
         <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
         ${Components.formInput({ label: 'Name', name: 'name', value: t.name, required: true })}
         ${Components.formInput({ label: 'Description', name: 'description', value: t.description || '' })}
-        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: t.rrule })}
-        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: t.timezone || 'UTC' })}
+        ${Components.rruleBuilder({ label: 'Schedule', name: 'rrule', value: t.rrule, required: true })}
+        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: tzDefault,
+          placeholder: 'Europe/Madrid',
+          help: 'IANA timezone identifier (e.g. UTC, Europe/Madrid).' })}
         ${Components.formTextarea({
           label: 'Tool config (JSON)', name: 'tool_config',
           value: t.tool_config ? toolConfigJson : '{}',
@@ -289,6 +359,7 @@ const TemplatesPage = {
           const form = document.getElementById('template-form');
           const data = readTemplateForm(form);
           if (!data) return;
+          Object.assign(data, carryover);
           try {
             if (mode === 'create') await API.createTemplate(data);
             else await API.updateTemplate(t.id, data);
@@ -301,7 +372,7 @@ const TemplatesPage = {
       },
       secondaryAction: { label: 'Cancel' },
     });
-    Components.rruleAttachBlurCheck(m.root.querySelector('#template-form'), 'rrule');
+    Components.rruleBuilderAttach(m.root.querySelector('#template-form'));
   },
 
   async confirmDelete(app, t, usedBy) {

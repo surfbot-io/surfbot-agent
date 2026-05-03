@@ -1,8 +1,36 @@
 // SPEC-SCHED1.4a: Schedules page (list + detail). Read-only; write flows
 // land in 1.4b. Mirrors the targets.js / scans.js layout so nav, loading,
 // empty, and error states match the rest of the SPA.
+//
+// PR6 #39 — list now resolves target/template UUIDs to names by fetching
+// /targets and /templates in parallel with /schedules. The lookup cache
+// is module-scoped and invalidated on any mutation flow that changes
+// names (create/edit/delete of schedule, plus full reload via hash nav).
 const SchedulesPage = {
   pageSize: 50,
+
+  // _lookupCache memoizes the parallel /targets and /templates fetches
+  // across renders within the same SPA session. Invalidated by any of
+  // our own write flows; external mutations (CLI) require a refresh.
+  _lookupCache: null,
+
+  async _getLookups() {
+    if (this._lookupCache) return this._lookupCache;
+    const [targetsResp, templatesResp] = await Promise.all([
+      API.targets().catch(() => ({ targets: [] })),
+      API.listTemplates({ limit: 500 }).catch(() => ({ items: [] })),
+    ]);
+    const targets = new Map();
+    const targetsList = (targetsResp && (targetsResp.targets || targetsResp.items)) || [];
+    targetsList.forEach(t => { if (t && t.id) targets.set(t.id, t); });
+    const templates = new Map();
+    const templatesList = (templatesResp && templatesResp.items) || [];
+    templatesList.forEach(t => { if (t && t.id) templates.set(t.id, t); });
+    this._lookupCache = { targets, templates };
+    return this._lookupCache;
+  },
+
+  _invalidateLookups() { this._lookupCache = null; },
 
   async render(app, params) {
     if (params && params.id) {
@@ -12,8 +40,11 @@ const SchedulesPage = {
 
     const filters = this.parseFilters(params || {});
     try {
-      const data = await API.listSchedules(this.apiParams(filters));
-      app.innerHTML = this.template(data, filters);
+      const [data, lookups] = await Promise.all([
+        API.listSchedules(this.apiParams(filters)),
+        this._getLookups(),
+      ]);
+      app.innerHTML = this.template(data, filters, lookups);
       this.bindEvents(app, filters);
     } catch (err) {
       app.innerHTML = `
@@ -41,9 +72,10 @@ const SchedulesPage = {
     return out;
   },
 
-  template(data, f) {
+  template(data, f, lookups) {
     const items = data.items || [];
     const total = data.total || 0;
+    const L = lookups || { targets: new Map(), templates: new Map() };
 
     const filterBar = `
       <form id="schedules-filters" class="inline-form" style="margin-bottom:16px">
@@ -76,20 +108,65 @@ const SchedulesPage = {
       `;
     }
 
-    const rows = items.map(s => `
-      <tr data-schedule-id="${encodeURIComponent(s.id)}">
-        <td class="bulk-cell" onclick="event.stopPropagation()">
-          <input type="checkbox" class="bulk-row-check" data-id="${escapeHtml(s.id)}">
+    const rows = items.map(s => {
+      const sid = encodeURIComponent(s.id);
+      const goRow = `location.hash='#/schedules/${sid}'`;
+
+      // Target cell: resolved value with UUID short-id underneath; if
+      // the target was deleted between fetch and render, surface a
+      // tooltip explaining the gap rather than blanking the cell.
+      const tgt = L.targets.get(s.target_id);
+      const tgtCell = tgt
+        ? `<td class="clickable" onclick="event.stopPropagation();location.hash='#/targets/${encodeURIComponent(s.target_id)}'">
+             <div>${escapeHtml(tgt.value || s.target_id)}</div>
+             <small class="text-muted mono">${Components.truncateID(s.target_id)}</small>
+           </td>`
+        : `<td class="mono clickable" title="Target not found — may have been deleted." onclick="${goRow}">
+             ${Components.truncateID(s.target_id)}
+           </td>`;
+
+      // Template cell: name + short UUID, or em-dash when the schedule
+      // doesn't reference a template at all.
+      let tmplCell;
+      if (!s.template_id) {
+        tmplCell = `<td class="clickable" onclick="${goRow}"><span class="text-muted">—</span></td>`;
+      } else {
+        const tmpl = L.templates.get(s.template_id);
+        tmplCell = tmpl
+          ? `<td class="clickable" onclick="event.stopPropagation();location.hash='#/templates/${encodeURIComponent(s.template_id)}'">
+               <div>${escapeHtml(tmpl.name || s.template_id)}</div>
+               <small class="text-muted mono">${Components.truncateID(s.template_id)}</small>
+             </td>`
+          : `<td class="mono clickable" title="Template not found — may have been deleted." onclick="${goRow}">
+               ${Components.truncateID(s.template_id)}
+             </td>`;
+      }
+
+      const isActive = s.status === 'active';
+      const pauseLabel = isActive ? 'Pause' : 'Resume';
+      const actions = `
+        <td class="schedule-actions" onclick="event.stopPropagation()">
+          <button type="button" class="pill pill-action row-action-pause" data-row-id="${escapeHtml(s.id)}" data-action="${isActive ? 'pause' : 'resume'}">${pauseLabel}</button>
+          <button type="button" class="pill pill-action row-action-edit" data-row-id="${escapeHtml(s.id)}" data-action="edit">Edit</button>
         </td>
-        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.id)}</td>
-        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${escapeHtml(s.name || '-')}</td>
-        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.truncateID(s.target_id)}</td>
-        <td class="mono clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${s.template_id ? Components.truncateID(s.template_id) : '<span class="text-muted">—</span>'}</td>
-        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.scheduleStatusBadge(s.status)}</td>
-        <td class="clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.rruleCompact(s.rrule)}</td>
-        <td class="text-muted clickable" onclick="location.hash='#/schedules/${encodeURIComponent(s.id)}'">${Components.nextRun(s.next_run_at)}</td>
-      </tr>
-    `).join('');
+      `;
+
+      return `
+        <tr data-schedule-id="${sid}">
+          <td class="bulk-cell" onclick="event.stopPropagation()">
+            <input type="checkbox" class="bulk-row-check" data-id="${escapeHtml(s.id)}">
+          </td>
+          <td class="mono clickable" onclick="${goRow}">${Components.truncateID(s.id)}</td>
+          <td class="clickable" onclick="${goRow}">${escapeHtml(s.name || '-')}</td>
+          ${tgtCell}
+          ${tmplCell}
+          <td class="clickable" onclick="${goRow}">${Components.scheduleStatusBadge(s.status)}</td>
+          <td class="clickable" onclick="${goRow}">${Components.rruleCellHtml(s.rrule)}</td>
+          <td class="text-muted clickable" onclick="${goRow}">${Components.nextRun(s.next_run_at)}</td>
+          ${actions}
+        </tr>
+      `;
+    }).join('');
 
     const pager = this.pagerHtml(total, f);
 
@@ -105,7 +182,7 @@ const SchedulesPage = {
       <div id="schedules-bulk-error" style="margin-bottom:8px"></div>
       ${Components.table(
         ['<input type="checkbox" id="bulk-select-all" title="Select all on this page">',
-         'ID', 'Name', 'Target', 'Template', 'Status', 'RRULE', 'Next run'],
+         'ID', 'Name', 'Target', 'Template', 'Status', 'Schedule', 'Next run', ''],
         [rows]
       )}
       ${pager}
@@ -178,7 +255,63 @@ const SchedulesPage = {
       this.onRowCheck(app, f);
     });
 
+    // Inline row actions: Pause/Resume/Edit pills. We don't reuse the
+    // bulk-action handlers because these need per-row state (id, the
+    // schedule object for Edit) and have to refresh just the list.
+    app.querySelectorAll('.pill-action').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const id = btn.dataset.rowId;
+        const action = btn.dataset.action;
+        if (!id || !action) return;
+        if (action === 'pause' || action === 'resume') {
+          this.inlinePauseResume(app, f, id, action === 'resume');
+        } else if (action === 'edit') {
+          this.inlineEdit(app, f, id);
+        }
+      });
+    });
+
     this.rebindBulkBar(app, f);
+  },
+
+  async inlinePauseResume(app, f, id, toActive) {
+    const errBox = document.getElementById('schedules-bulk-error');
+    if (errBox) errBox.innerHTML = '';
+    const btn = app.querySelector(`.row-action-pause[data-row-id="${cssEscape(id)}"]`);
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      if (toActive) await API.resumeSchedule(id);
+      else await API.pauseSchedule(id);
+      // Names didn't change; keep the lookup cache. Re-render the list
+      // so the status badge flips and the pill swaps Pause↔Resume.
+      SchedulesPage.render(app, f);
+    } catch (err) {
+      if (errBox) errBox.innerHTML = Components.errorBanner(err);
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+  },
+
+  async inlineEdit(app, f, id) {
+    const errBox = document.getElementById('schedules-bulk-error');
+    if (errBox) errBox.innerHTML = '';
+    let s;
+    try {
+      s = await API.getSchedule(id);
+    } catch (err) {
+      if (errBox) errBox.innerHTML = Components.errorBanner(err);
+      return;
+    }
+    this.openForm({
+      mode: 'edit',
+      schedule: s,
+      onSaved: () => {
+        SchedulesPage._invalidateLookups();
+        SchedulesPage.render(app, f);
+      },
+    });
   },
 
   onRowCheck(app, f) {
@@ -253,7 +386,11 @@ const SchedulesPage = {
         errBox.innerHTML = parts.join('');
       }
       // Refresh the list so paused→active (etc.) visibly flips and
-      // deleted rows disappear. Keep filters.
+      // deleted rows disappear. Keep filters. Bulk delete may have
+      // removed schedules referencing now-orphan target IDs in the
+      // lookup, but the lookup is keyed by target_id so it stays
+      // valid; only delete invalidates because the page itself moves.
+      if (operation === 'delete') SchedulesPage._invalidateLookups();
       SchedulesPage.render(app, f);
     } catch (err) {
       if (errBox) errBox.innerHTML = Components.errorBanner(err);
@@ -265,7 +402,10 @@ const SchedulesPage = {
   openCreateForm(app, listFilters) {
     this.openForm({
       mode: 'create',
-      onSaved: () => SchedulesPage.render(app, listFilters || {}),
+      onSaved: () => {
+        SchedulesPage._invalidateLookups();
+        SchedulesPage.render(app, listFilters || {});
+      },
     });
   },
 
@@ -281,51 +421,106 @@ const SchedulesPage = {
     this.openForm({
       mode: 'edit',
       schedule,
-      onSaved: () => SchedulesPage.renderDetail(app, schedule.id),
+      onSaved: () => {
+        SchedulesPage._invalidateLookups();
+        SchedulesPage.renderDetail(app, schedule.id);
+      },
     });
   },
 
-  openForm({ mode, schedule, onSaved }) {
+  // openForm opens the schedule create/edit modal.
+  //
+  // PR6 #39 — async because we pre-load the targets/templates lookup so
+  // the entity pickers have data; in-flight callers don't need to await
+  // (they're fire-and-forget). Form sub-fields:
+  //   - Target/Template via Components.entityPicker (datalist typeahead).
+  //   - Schedule via Components.rruleBuilder (preset selector + live preview).
+  //   - DTSTART pre-filled to "now + 15 min" rounded; timezone defaults
+  //     to the browser's IANA zone — both reduce empty-required friction.
+  //   - Advanced disclosure hides estimated_duration + edit-mode status.
+  async openForm({ mode, schedule, onSaved }) {
+    const lookups = await this._getLookups();
+    const targetOptions = Array.from(lookups.targets.values()).map(t => ({
+      id: t.id, label: t.value || t.id,
+    }));
+    const templateOptions = Array.from(lookups.templates.values()).map(t => ({
+      id: t.id, label: t.name || t.id,
+    }));
+
     const s = schedule || {};
+    const isCreate = mode === 'create';
+    const dtstartDefault = isCreate ? defaultDtstartLocal() : '';
+    const tzDefault = s.timezone || (isCreate ? browserTimezone() : 'UTC');
+    const targetHelp = mode === 'edit'
+      ? 'Target cannot be changed after creation.'
+      : (targetOptions.length ? 'Pick a target by name or paste a UUID.' : 'No targets yet — create one in /targets first.');
+
     const body = `
       <form id="schedule-form" novalidate>
         <div class="field-error" data-field-error="__general__" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--sev-critical-bg);border-radius:var(--radius)"></div>
-        ${Components.formInput({ label: 'Name', name: 'name', value: s.name, required: true })}
+
         ${Components.formInput({
-          label: 'Target ID', name: 'target_id', value: s.target_id, required: true,
-          placeholder: 'UUID from /targets',
-          help: mode === 'edit' ? 'Target cannot be changed after creation.' : '',
+          label: 'Name', name: 'name', value: s.name, required: true,
+          placeholder: 'auto-suggested from target + cadence',
         })}
-        ${Components.formInput({ label: 'Template ID', name: 'template_id', value: s.template_id || '',
-          help: 'Optional. Omit to run with tool_config directly.' })}
-        ${Components.rruleField({ label: 'RRULE', name: 'rrule', value: s.rrule })}
-        ${Components.formDatetime({ label: 'DTSTART', name: 'dtstart', value: s.dtstart, required: true })}
-        ${Components.formInput({ label: 'Timezone', name: 'timezone', value: s.timezone || 'UTC', required: true })}
+
+        ${Components.entityPicker({
+          label: 'Target', name: 'target_id', value: s.target_id || '',
+          options: targetOptions, required: true,
+          placeholder: targetOptions.length ? 'Select a target…' : 'No targets available',
+          help: targetHelp,
+        })}
+
+        ${Components.entityPicker({
+          label: 'Template', name: 'template_id', value: s.template_id || '',
+          options: templateOptions, allowEmpty: true,
+          placeholder: 'None — use tool_config directly',
+          help: 'Optional. Pick by name or leave blank.',
+        })}
+
+        ${Components.rruleBuilder({
+          label: 'Schedule', name: 'rrule', value: s.rrule, required: true,
+        })}
+
+        ${Components.formDatetime({
+          label: 'Starts at', name: 'dtstart',
+          value: s.dtstart || dtstartDefault, required: true,
+        })}
+
         ${Components.formInput({
-          label: 'Estimated duration (seconds)', name: 'estimated_duration_seconds',
-          type: 'number', value: '',
-          help: 'Used for overlap checks at create/update time. Leave blank to use the server default (3600s).',
+          label: 'Timezone', name: 'timezone', value: tzDefault, required: true,
+          placeholder: 'Europe/Madrid',
+          help: 'IANA timezone identifier (e.g. UTC, Europe/Madrid, America/New_York).',
         })}
-        ${mode === 'edit' ? Components.formSelect({
-          label: 'Status', name: 'status',
-          options: [{ value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }],
-          value: s.status || 'active',
-        }) : ''}
+
+        <details class="form-disclosure">
+          <summary>Advanced</summary>
+          ${Components.formInput({
+            label: 'Estimated duration (seconds)', name: 'estimated_duration_seconds',
+            type: 'number', value: '',
+            help: 'Used for overlap checks at create/update time. Leave blank to use the server default (3600s).',
+          })}
+          ${mode === 'edit' ? Components.formSelect({
+            label: 'Status', name: 'status',
+            options: [{ value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }],
+            value: s.status || 'active',
+          }) : ''}
+        </details>
       </form>
     `;
 
     const m = Components.modal({
-      title: mode === 'create' ? 'New schedule' : 'Edit schedule',
+      title: isCreate ? 'New schedule' : 'Edit schedule',
       body,
       size: 'md',
       primaryAction: {
-        label: mode === 'create' ? 'Create' : 'Save',
+        label: isCreate ? 'Create' : 'Save',
         onClick: async ({ close }) => {
           const form = document.getElementById('schedule-form');
-          const data = readScheduleForm(form, mode);
+          const data = readScheduleForm(form, mode, lookups);
           if (!data) return;
           try {
-            if (mode === 'create') await API.createSchedule(data);
+            if (isCreate) await API.createSchedule(data);
             else await API.updateSchedule(schedule.id, data);
             if (onSaved) onSaved();
             close('saved');
@@ -336,11 +531,8 @@ const SchedulesPage = {
       },
       secondaryAction: { label: 'Cancel' },
       onClose: () => {
-        // SPEC-SCHED2.2: clear field values on unmount as a belt-and-
-        // suspenders measure against browser autofill carrying state
-        // from one open into the next. R1's hydrateScheduleForm is the
-        // load-bearing fix; this just makes sure stale values don't
-        // outlive the modal in any reference held elsewhere.
+        // SPEC-SCHED2.2: clear field values on unmount so browser
+        // autofill can't leak state from one open into the next.
         const form = m.root.querySelector('#schedule-form');
         if (!form) return;
         Array.from(form.elements).forEach(el => {
@@ -351,13 +543,46 @@ const SchedulesPage = {
         });
       },
     });
-    // SPEC-SCHED2.2: explicit state hydration. Don't rely on the value=
-    // attribute alone — Chrome/Safari autofill can override it when the
-    // form is re-mounted with the same field names, leaking values from
-    // a previously-edited schedule into the next open.
-    hydrateScheduleForm(m.root.querySelector('#schedule-form'), s, mode);
-    // Non-blocking RRULE syntax warning wires after the DOM is in place.
-    Components.rruleAttachBlurCheck(m.root.querySelector('#schedule-form'), 'rrule');
+
+    const form = m.root.querySelector('#schedule-form');
+    // SPEC-SCHED2.2: explicit state hydration so Chrome/Safari autofill
+    // can't override the freshly mounted values with cached prior input.
+    hydrateScheduleForm(form, s, mode, lookups);
+    // Wire the rrule builder (preset selector + live preview).
+    Components.rruleBuilderAttach(form);
+
+    // Auto-suggest the schedule name in create mode while the user
+    // hasn't edited it. Stops as soon as the operator types — never
+    // clobber a manually entered name.
+    if (isCreate) {
+      const nameInput = form.querySelector('[name="name"]');
+      const targetInput = form.querySelector('[name="target_id"]');
+      let nameTouched = !!s.name;
+      if (nameInput) {
+        nameInput.addEventListener('input', () => { nameTouched = true; });
+      }
+      const refreshName = () => {
+        if (nameTouched || !nameInput || !targetInput) return;
+        const tgtTyped = (targetInput.value || '').trim();
+        const tgtId = Components.entityPickerResolve(tgtTyped, targetOptions);
+        // Prefer the resolved label when the user picked from the list
+        // (covers paste-a-UUID flow too); fall back to the raw text.
+        const tgtLabel = tgtId
+          ? (targetOptions.find(o => o.id === tgtId) || {}).label || tgtTyped
+          : tgtTyped;
+        const rr = (form.querySelector('[data-rb-output]') || {}).value || '';
+        const suggested = suggestScheduleName(tgtLabel, rr);
+        if (suggested) nameInput.value = suggested;
+      };
+      if (targetInput) {
+        targetInput.addEventListener('input', refreshName);
+        targetInput.addEventListener('change', refreshName);
+      }
+      form.addEventListener('rrule-change', refreshName);
+      // Initial suggestion — the rrule builder fires its first
+      // rrule-change on attach, so the suggestion lands without us
+      // explicitly poking it here.
+    }
   },
 
   // --- Schedule detail ---
@@ -368,7 +593,10 @@ const SchedulesPage = {
     if (scroller) scroller.scrollTop = 0;
 
     try {
-      const s = await API.getSchedule(id);
+      const [s, lookups] = await Promise.all([
+        API.getSchedule(id),
+        this._getLookups(),
+      ]);
       let upcoming = [];
       try {
         // The 1.3a /schedules/upcoming endpoint doesn't filter by
@@ -379,7 +607,7 @@ const SchedulesPage = {
       } catch (_) {
         upcoming = [];
       }
-      app.innerHTML = this.detailTemplate(s, upcoming);
+      app.innerHTML = this.detailTemplate(s, upcoming, lookups);
       this.bindDetailActions(app, s);
     } catch (err) {
       app.innerHTML = `
@@ -429,6 +657,7 @@ const SchedulesPage = {
     if (!ok) return;
     try {
       await API.deleteSchedule(s.id);
+      SchedulesPage._invalidateLookups();
       location.hash = '#/schedules';
       SchedulesPage.render(app, {});
     } catch (err) {
@@ -437,7 +666,8 @@ const SchedulesPage = {
     }
   },
 
-  detailTemplate(s, upcoming) {
+  detailTemplate(s, upcoming, lookups) {
+    const L = lookups || { targets: new Map(), templates: new Map() };
     const overrideList = (s.overrides && s.overrides.length)
       ? s.overrides.map(o => `<code class="mono">${escapeHtml(o)}</code>`).join(', ')
       : '<span class="text-muted">none</span>';
@@ -450,9 +680,35 @@ const SchedulesPage = {
       ? `<pre class="json-block">${escapeHtml(JSON.stringify(s.maintenance_window, null, 2))}</pre>`
       : '<span class="text-muted">none</span>';
 
-    const tmplCell = s.template_id
-      ? `<a href="#/templates/${encodeURIComponent(s.template_id)}" class="mono">${escapeHtml(s.template_id)}</a>`
-      : '<span class="text-muted">—</span>';
+    // Target: link to detail; show resolved value with the UUID
+    // underneath. Falls back to the raw UUID + tooltip if the target
+    // was deleted between fetches.
+    const tgt = L.targets.get(s.target_id);
+    const tgtCell = tgt
+      ? `<a href="#/targets/${encodeURIComponent(s.target_id)}">${escapeHtml(tgt.value || s.target_id)}</a>
+         <div><small class="text-muted mono">${escapeHtml(s.target_id)}</small></div>`
+      : `<a href="#/targets/${encodeURIComponent(s.target_id)}" class="mono" title="Target not found — may have been deleted.">${escapeHtml(s.target_id)}</a>`;
+
+    let tmplCell;
+    if (!s.template_id) {
+      tmplCell = '<span class="text-muted">—</span>';
+    } else {
+      const tmpl = L.templates.get(s.template_id);
+      tmplCell = tmpl
+        ? `<a href="#/templates/${encodeURIComponent(s.template_id)}">${escapeHtml(tmpl.name || s.template_id)}</a>
+           <div><small class="text-muted mono">${escapeHtml(s.template_id)}</small></div>`
+        : `<a href="#/templates/${encodeURIComponent(s.template_id)}" class="mono" title="Template not found — may have been deleted.">${escapeHtml(s.template_id)}</a>`;
+    }
+
+    // RRULE detail row: humanized line first, with the raw rule kept
+    // visible underneath so operators can copy/edit it without hovering.
+    const human = Components.humanizeRRule(s.rrule);
+    const rruleHuman = (typeof human === 'string' && human.charAt(0) === '<')
+      ? human  // unknown pattern — already a span with title=
+      : escapeHtml(human);
+    const rruleRaw = s.rrule
+      ? `<div><small class="mono text-muted">${escapeHtml(s.rrule)}</small></div>`
+      : '';
 
     return `
       ${Components.backLink('#/schedules', 'Back to schedules')}
@@ -473,13 +729,12 @@ const SchedulesPage = {
           <div class="detail-grid" style="margin-top:12px">
             <span class="detail-label">ID</span><span class="detail-value mono">${escapeHtml(s.id)}</span>
             <span class="detail-label">Target</span>
-            <span class="detail-value mono">
-              <a href="#/targets/${encodeURIComponent(s.target_id)}">${escapeHtml(s.target_id)}</a>
-            </span>
+            <span class="detail-value">${tgtCell}</span>
             <span class="detail-label">Template</span><span class="detail-value">${tmplCell}</span>
             <span class="detail-label">Timezone</span><span class="detail-value mono">${escapeHtml(s.timezone || '-')}</span>
             <span class="detail-label">DTSTART</span><span class="detail-value mono">${escapeHtml(s.dtstart || '-')}</span>
-            <span class="detail-label">RRULE</span><span class="detail-value mono" style="word-break:break-all">${escapeHtml(s.rrule || '-')}</span>
+            <span class="detail-label">RRULE</span>
+            <span class="detail-value">${rruleHuman}${rruleRaw}</span>
             <span class="detail-label">Overrides</span><span class="detail-value">${overrideList}</span>
             <span class="detail-label">Next run</span><span class="detail-value">${Components.nextRun(s.next_run_at)}</span>
             <span class="detail-label">Last run</span><span class="detail-value">${s.last_run_at ? Components.formatDate(s.last_run_at) : '<span class="text-muted">never</span>'}</span>
@@ -516,10 +771,17 @@ const SchedulesPage = {
 // of the same form. Required for SPEC-SCHED2.2 — without this, editing
 // schedule A then closing and editing schedule B would re-display A's
 // values and silently overwrite B on save.
-function hydrateScheduleForm(form, schedule, mode) {
+//
+// PR6 #39 — entity pickers display the human-readable label, not the
+// raw UUID. We resolve target/template via the lookups Map so re-opens
+// don't show "abc-123" instead of "iana.org". The rrule builder
+// hydrates from data-rrule-initial in rruleBuilderAttach, so this fn
+// doesn't touch the rrule field.
+function hydrateScheduleForm(form, schedule, mode, lookups) {
   if (!form) return;
   const s = schedule || {};
   const isCreate = mode === 'create';
+  const L = lookups || { targets: new Map(), templates: new Map() };
 
   const setVal = (name, value) => {
     const el = form.elements[name];
@@ -528,12 +790,33 @@ function hydrateScheduleForm(form, schedule, mode) {
   };
 
   setVal('name', isCreate ? '' : s.name);
-  setVal('target_id', isCreate ? '' : s.target_id);
-  setVal('template_id', isCreate ? '' : s.template_id);
-  setVal('rrule', isCreate ? '' : s.rrule);
+
+  if (isCreate) {
+    // Pre-fill the target picker if the caller seeded a target_id
+    // (e.g. targets-page "Create schedule" button). Look up the label.
+    if (s.target_id) {
+      const t = L.targets.get(s.target_id);
+      setVal('target_id', t ? (t.value || s.target_id) : s.target_id);
+    } else {
+      setVal('target_id', '');
+    }
+    setVal('template_id', '');
+  } else {
+    const t = L.targets.get(s.target_id);
+    setVal('target_id', t ? (t.value || s.target_id) : (s.target_id || ''));
+    if (s.template_id) {
+      const tmpl = L.templates.get(s.template_id);
+      setVal('template_id', tmpl ? (tmpl.name || s.template_id) : s.template_id);
+    } else {
+      setVal('template_id', '');
+    }
+  }
+
   // datetime-local needs "YYYY-MM-DDTHH:MM"; the API gives back ISO-8601.
-  setVal('dtstart', isCreate ? '' : toDatetimeLocal(s.dtstart));
-  setVal('timezone', s.timezone || 'UTC');
+  // Create mode: pre-fill with the rounded "now + 15min" so the required
+  // field isn't empty.
+  setVal('dtstart', isCreate ? defaultDtstartLocal() : toDatetimeLocal(s.dtstart));
+  setVal('timezone', s.timezone || (isCreate ? browserTimezone() : 'UTC'));
   setVal('estimated_duration_seconds', '');
   if (form.elements.status) {
     setVal('status', s.status || 'active');
@@ -542,22 +825,67 @@ function hydrateScheduleForm(form, schedule, mode) {
 
 // readScheduleForm serializes the schedule form into the API shape.
 // DTSTART is converted from "datetime-local" ("YYYY-MM-DDTHH:MM") to a
-// UTC ISO string; empty template_id is submitted as "" so the server
-// treats it as "no template" (edit flow uses clear_template when the
-// caller wants to explicitly drop the link, but the UI doesn't surface
-// that nuance yet — 1.4c may expose a dedicated "clear template" ticker).
-// Returns null after surfacing field errors when the form is syntactically
-// bad at the client level.
-function readScheduleForm(form, mode) {
+// UTC ISO string; empty template_id is dropped on create and sent as ""
+// on edit so the server applies clear_template via the partial patch.
+//
+// PR6 #39 — target/template inputs carry the typed label or a pasted
+// UUID; we resolve to UUID via Components.entityPickerResolve and
+// surface a field error when the typed text matches nothing.
+function readScheduleForm(form, mode, lookups) {
   if (!form) return null;
   const fd = new FormData(form);
+  const L = lookups || { targets: new Map(), templates: new Map() };
+
+  const targetOptions = Array.from(L.targets.values()).map(t => ({
+    id: t.id, label: t.value || t.id,
+  }));
+  const templateOptions = Array.from(L.templates.values()).map(t => ({
+    id: t.id, label: t.name || t.id,
+  }));
+
+  const targetTyped = (fd.get('target_id') || '').toString().trim();
+  const targetID = Components.entityPickerResolve(targetTyped, targetOptions);
+  if (targetID === null) {
+    Components.applyFieldErrors(form, [{
+      field: 'target_id',
+      message: 'unknown target — pick one from the list or paste its UUID',
+    }]);
+    return null;
+  }
+  if (mode === 'create' && !targetID) {
+    Components.applyFieldErrors(form, [{ field: 'target_id', message: 'required' }]);
+    return null;
+  }
+
+  const templateTyped = (fd.get('template_id') || '').toString().trim();
+  let templateID = '';
+  if (templateTyped) {
+    const r = Components.entityPickerResolve(templateTyped, templateOptions);
+    if (r === null) {
+      Components.applyFieldErrors(form, [{
+        field: 'template_id',
+        message: 'unknown template — pick one from the list, paste its UUID, or leave empty',
+      }]);
+      return null;
+    }
+    templateID = r;
+  }
+
   const out = {
     name: (fd.get('name') || '').toString().trim(),
-    target_id: (fd.get('target_id') || '').toString().trim(),
-    template_id: (fd.get('template_id') || '').toString().trim(),
     rrule: (fd.get('rrule') || '').toString().trim(),
     timezone: (fd.get('timezone') || '').toString().trim() || 'UTC',
   };
+  if (targetID) out.target_id = targetID;
+  // template_id: drop the key on create so the server's omitempty
+  // handling treats "no template" as "no template". On edit we send ""
+  // when explicitly cleared so the server applies clear_template.
+  if (mode === 'create') {
+    if (templateID) out.template_id = templateID;
+  } else {
+    out.template_id = templateID;
+  }
+
   const dtLocal = (fd.get('dtstart') || '').toString().trim();
   if (dtLocal) {
     const d = new Date(dtLocal);
@@ -575,13 +903,6 @@ function readScheduleForm(form, mode) {
       return null;
     }
     out.estimated_duration_seconds = n;
-  }
-  // template_id: empty string means "not set" — drop the key on create
-  // so the omitempty JSON handling on the server treats it naturally.
-  // On edit we send "" if the user cleared it so the server applies
-  // clear_template semantics via the partial patch.
-  if (!out.template_id) {
-    delete out.template_id;
   }
   if (mode === 'edit') {
     const status = (fd.get('status') || '').toString();
