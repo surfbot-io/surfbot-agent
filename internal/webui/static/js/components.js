@@ -165,6 +165,9 @@ const Components = {
   // rruleCompact keeps the first semicolon-separated component (FREQ=...)
   // or the first 40 chars, whichever is shorter. Full RRULE goes into the
   // title attribute for hover.
+  //
+  // Prefer humanizeRRule for new code — this stays as the fallback shape
+  // when a pattern isn't yet covered by the humanizer.
   rruleCompact(rrule) {
     if (!rrule) return '-';
     const safe = escapeHtml(rrule);
@@ -172,6 +175,83 @@ const Components = {
     let short = first.length < 40 ? first : rrule.slice(0, 40);
     if (short.length < rrule.length) short += '…';
     return `<span class="mono" title="${safe}">${escapeHtml(short)}</span>`;
+  },
+
+  // humanizeRRule renders the most common RRULE patterns as plain English.
+  // Returns a plain text string for covered patterns (e.g. "Daily at 02:00",
+  // "Weekly on Mon, Wed, Fri at 09:00", "Every 6 hours") and falls back to
+  // rruleCompact()'s mono span when the rule contains fields the humanizer
+  // doesn't model — that way unknown rules stay legible without inventing
+  // labels for fields like COUNT/UNTIL/BYSETPOS.
+  //
+  // Returning a mixed shape (string vs HTML) is a deliberate trade-off so
+  // the covered cases are easy to assert in tests and easy to wrap in a
+  // tooltip at the call site; callers detect the fallback by checking
+  // whether the value starts with '<'.
+  humanizeRRule(rrule) {
+    if (rrule == null || rrule === '') return '-';
+    const parts = parseRRule(rrule);
+    if (!parts.FREQ) return Components.rruleCompact(rrule);
+
+    // Bail to the fallback when fields outside our model are present.
+    // Keeps "Daily at 02:00" from showing for FREQ=DAILY;COUNT=10.
+    const SUPPORTED = new Set(['FREQ', 'INTERVAL', 'BYHOUR', 'BYMINUTE', 'BYDAY', 'BYMONTHDAY']);
+    for (const k of Object.keys(parts)) {
+      if (!SUPPORTED.has(k)) return Components.rruleCompact(rrule);
+    }
+
+    const interval = parts.INTERVAL ? parseInt(parts.INTERVAL, 10) : 1;
+    if (isNaN(interval) || interval < 1) return Components.rruleCompact(rrule);
+    const time = formatRRuleTime(parts.BYHOUR, parts.BYMINUTE);
+
+    switch (parts.FREQ.toUpperCase()) {
+      case 'DAILY':
+        if (parts.BYDAY || parts.BYMONTHDAY) return Components.rruleCompact(rrule);
+        return interval > 1
+          ? `Every ${interval} days${time ? ' at ' + time : ''}`
+          : `Daily${time ? ' at ' + time : ''}`;
+      case 'WEEKLY': {
+        if (parts.BYMONTHDAY) return Components.rruleCompact(rrule);
+        const days = formatRRuleByDay(parts.BYDAY);
+        if (parts.BYDAY && !days) return Components.rruleCompact(rrule);
+        return interval > 1
+          ? `Every ${interval} weeks${days ? ' on ' + days : ''}${time ? ' at ' + time : ''}`
+          : `Weekly${days ? ' on ' + days : ''}${time ? ' at ' + time : ''}`;
+      }
+      case 'MONTHLY': {
+        if (parts.BYDAY) return Components.rruleCompact(rrule);
+        const dayN = parts.BYMONTHDAY ? parseInt(parts.BYMONTHDAY, 10) : null;
+        if (parts.BYMONTHDAY && (isNaN(dayN) || dayN < 1 || dayN > 31)) {
+          return Components.rruleCompact(rrule);
+        }
+        const day = dayN ? ` on day ${dayN}` : '';
+        return interval > 1
+          ? `Every ${interval} months${day}${time ? ' at ' + time : ''}`
+          : `Monthly${day}${time ? ' at ' + time : ''}`;
+      }
+      case 'HOURLY':
+        if (parts.BYDAY || parts.BYMONTHDAY || parts.BYHOUR || parts.BYMINUTE) {
+          return Components.rruleCompact(rrule);
+        }
+        return interval > 1 ? `Every ${interval} hours` : 'Hourly';
+      case 'MINUTELY':
+        if (parts.BYDAY || parts.BYMONTHDAY || parts.BYHOUR || parts.BYMINUTE) {
+          return Components.rruleCompact(rrule);
+        }
+        return interval > 1 ? `Every ${interval} minutes` : 'Every minute';
+      default:
+        return Components.rruleCompact(rrule);
+    }
+  },
+
+  // rruleCellHtml wraps humanizeRRule's output for table cells: covered
+  // patterns get a tooltip carrying the raw RRULE; the fallback already
+  // ships its own title=, so it passes through.
+  rruleCellHtml(rrule) {
+    const human = Components.humanizeRRule(rrule);
+    if (human === '-') return '<span class="text-muted">—</span>';
+    if (typeof human === 'string' && human.charAt(0) === '<') return human;
+    return `<span title="${escapeHtml(rrule || '')}">${escapeHtml(human)}</span>`;
   },
 
   // nextRun formats a *future* time as "in 3h 42m" and a past time as
@@ -268,9 +348,252 @@ const Components = {
     });
   },
 
+  // entityPicker renders a datalist-backed input. options is an array
+  // of { id, label } where label is what the operator sees and types.
+  // The form ultimately submits the typed text, not the id — callers
+  // resolve text → id at submit time via entityPickerResolve so a
+  // pasted UUID still works as a power-user escape hatch. Pickers stay
+  // stateless on purpose; reading happens in the page's read*Form.
+  entityPicker({ name, value, label, options, required, allowEmpty, help, placeholder }) {
+    const opts = (options || []).map(o =>
+      `<option value="${escapeHtml(o.label)}"></option>`
+    ).join('');
+    let display = '';
+    if (value) {
+      const match = (options || []).find(o => o.id === value);
+      display = match ? match.label : String(value);
+    }
+    const reqMark = (required && !allowEmpty) ? ' <span class="form-required">*</span>' : '';
+    const helpHtml = help ? `<div class="form-help">${escapeHtml(help)}</div>` : '';
+    const ph = placeholder ? `placeholder="${escapeHtml(placeholder)}"` : '';
+    return `<div class="form-field" data-field="${escapeHtml(name)}">
+      <label class="form-label" for="f-${escapeHtml(name)}">${escapeHtml(label)}${reqMark}</label>
+      <input class="form-input" id="f-${escapeHtml(name)}" name="${escapeHtml(name)}"
+             list="${escapeHtml(name)}-options" autocomplete="off"
+             ${(required && !allowEmpty) ? 'required' : ''}
+             ${ph}
+             value="${escapeHtml(display)}">
+      <datalist id="${escapeHtml(name)}-options">${opts}</datalist>
+      ${helpHtml}
+      <div class="field-error" data-field-error="${escapeHtml(name)}" style="display:none"></div>
+    </div>`;
+  },
+
+  // entityPickerResolve maps the typed text in a picker input to its id.
+  // Returns '' for empty input, the matched id for a successful lookup,
+  // or null when the typed text matches neither a label nor a known id
+  // — the caller surfaces a field error in that case.
+  entityPickerResolve(typed, options) {
+    const t = (typed || '').trim();
+    if (!t) return '';
+    const byLabel = (options || []).find(o => o.label === t);
+    if (byLabel) return byLabel.id;
+    const byId = (options || []).find(o => o.id === t);
+    if (byId) return byId.id;
+    return null;
+  },
+
+  // rruleBuilder renders the segmented preset selector + per-mode
+  // controls + live preview + a hidden input named `name` so the
+  // existing FormData read picks it up unchanged. Wire interactivity
+  // after mount via rruleBuilderAttach(formEl). The default preset is
+  // DAILY at 02:00; data-rrule-initial drives hydration on edit.
+  //
+  // Only Daily / Weekly / Monthly are exposed; sub-daily cadences
+  // (hourly, minutely) and exotic patterns (YEARLY, COUNT, UNTIL,
+  // BYSETPOS) are CLI territory. When edit mode loads a schedule
+  // whose RRULE doesn't fit any preset, the builder shows an inline
+  // warning so the operator knows saving will replace the pattern.
+  rruleBuilder({ name, value, label, required }) {
+    const reqMark = required ? ' <span class="form-required">*</span>' : '';
+    const lbl = label || 'Schedule';
+    const safeName = escapeHtml(name);
+    return `<div class="form-field rrule-builder" data-field="${safeName}" data-rrule-builder data-rrule-initial="${escapeHtml(value || '')}">
+      <label class="form-label">${escapeHtml(lbl)}${reqMark}</label>
+      <div class="rrule-incompat" data-rb-incompat hidden>
+        <div><strong>Heads up:</strong> the existing schedule uses a pattern this form doesn't model
+          (<code class="mono" data-rb-incompat-raw></code>).
+          Saving here will replace it with whatever you pick below. Cancel and use the CLI if you want to keep it.</div>
+      </div>
+      <div class="rrule-presets" role="radiogroup" aria-label="Recurrence frequency">
+        <label class="rrule-preset"><input type="radio" name="${safeName}-mode" data-rb-mode value="DAILY" checked><span>Daily</span></label>
+        <label class="rrule-preset"><input type="radio" name="${safeName}-mode" data-rb-mode value="WEEKLY"><span>Weekly</span></label>
+        <label class="rrule-preset"><input type="radio" name="${safeName}-mode" data-rb-mode value="MONTHLY"><span>Monthly</span></label>
+      </div>
+      <div class="rrule-controls">
+        <div class="rrule-panel" data-rb-panel="DAILY">
+          <span class="rrule-text">at</span>
+          <input type="time" data-rb="time-daily" value="02:00">
+        </div>
+        <div class="rrule-panel" data-rb-panel="WEEKLY" hidden>
+          <span class="rrule-text">on</span>
+          <span class="rrule-day-toggles">
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-MO"><span>Mon</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-TU"><span>Tue</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-WE"><span>Wed</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-TH"><span>Thu</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-FR"><span>Fri</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-SA"><span>Sat</span></label>
+            <label class="rrule-day-toggle"><input type="checkbox" data-rb="day-SU"><span>Sun</span></label>
+          </span>
+          <span class="rrule-text">at</span>
+          <input type="time" data-rb="time-weekly" value="09:00">
+        </div>
+        <div class="rrule-panel" data-rb-panel="MONTHLY" hidden>
+          <span class="rrule-text">on day</span>
+          <input type="number" data-rb="monthday" min="1" max="31" value="1">
+          <span class="rrule-text">at</span>
+          <input type="time" data-rb="time-monthly" value="00:00">
+        </div>
+      </div>
+      <div class="rrule-preview" data-rb-preview-host>
+        <span class="rrule-preview-label">Will run:</span>
+        <strong data-rb-preview>—</strong>
+      </div>
+      <input type="hidden" name="${safeName}" data-rb-output value="">
+      <div class="field-error" data-field-error="${safeName}" style="display:none"></div>
+    </div>`;
+  },
+
+  // rruleBuilderAttach wires the segmented selector, panels, and live
+  // preview, then hydrates from data-rrule-initial. Idempotent so it's
+  // safe to call after partial DOM updates.
+  rruleBuilderAttach(rootOrForm) {
+    const root = rootOrForm && rootOrForm.matches && rootOrForm.matches('[data-rrule-builder]')
+      ? rootOrForm
+      : (rootOrForm && rootOrForm.querySelector ? rootOrForm.querySelector('[data-rrule-builder]') : null);
+    if (!root) return;
+    if (root.dataset.rbAttached) return;
+    root.dataset.rbAttached = '1';
+
+    const output = root.querySelector('[data-rb-output]');
+    const preview = root.querySelector('[data-rb-preview]');
+    const previewHost = root.querySelector('[data-rb-preview-host]');
+    const modeRadios = root.querySelectorAll('[data-rb-mode]');
+
+    function selectedMode() {
+      for (const r of modeRadios) if (r.checked) return r.value;
+      return 'DAILY';
+    }
+
+    function showPanel(mode) {
+      root.querySelectorAll('[data-rb-panel]').forEach(p => {
+        p.hidden = p.dataset.rbPanel !== mode;
+      });
+    }
+
+    function buildRRule() {
+      const mode = selectedMode();
+      const q = (sel) => root.querySelector(sel);
+      if (mode === 'DAILY') {
+        const t = (q('[data-rb="time-daily"]').value || '00:00').split(':');
+        return `FREQ=DAILY;BYHOUR=${parseInt(t[0],10)};BYMINUTE=${parseInt(t[1],10)}`;
+      }
+      if (mode === 'WEEKLY') {
+        const days = ['MO','TU','WE','TH','FR','SA','SU']
+          .filter(d => q(`[data-rb="day-${d}"]`).checked);
+        const t = (q('[data-rb="time-weekly"]').value || '00:00').split(':');
+        let s = 'FREQ=WEEKLY';
+        if (days.length) s += `;BYDAY=${days.join(',')}`;
+        s += `;BYHOUR=${parseInt(t[0],10)};BYMINUTE=${parseInt(t[1],10)}`;
+        return s;
+      }
+      if (mode === 'MONTHLY') {
+        const d = parseInt(q('[data-rb="monthday"]').value, 10) || 1;
+        const t = (q('[data-rb="time-monthly"]').value || '00:00').split(':');
+        return `FREQ=MONTHLY;BYMONTHDAY=${d};BYHOUR=${parseInt(t[0],10)};BYMINUTE=${parseInt(t[1],10)}`;
+      }
+      return '';
+    }
+
+    function update() {
+      const rrule = buildRRule();
+      output.value = rrule;
+      previewHost.classList.remove('rrule-preview-error');
+      if (!rrule) {
+        preview.textContent = '—';
+      } else {
+        const human = Components.humanizeRRule(rrule);
+        if (typeof human === 'string' && human.charAt(0) === '<') {
+          preview.innerHTML = human;
+          previewHost.classList.add('rrule-preview-error');
+        } else if (human === '-') {
+          preview.textContent = '—';
+        } else {
+          preview.textContent = human;
+        }
+      }
+      root.dispatchEvent(new CustomEvent('rrule-change', {
+        bubbles: true,
+        detail: { rrule },
+      }));
+    }
+
+    function hydrate(rrule) {
+      const incompat = root.querySelector('[data-rb-incompat]');
+      const incompatRaw = root.querySelector('[data-rb-incompat-raw]');
+
+      if (!rrule) { update(); return; }
+      const parts = parseRRule(rrule);
+      const freq = (parts.FREQ || '').toUpperCase();
+      const supported = freq === 'DAILY' || freq === 'WEEKLY' || freq === 'MONTHLY';
+
+      if (!supported) {
+        // Existing schedule uses HOURLY/MINUTELY/YEARLY/COUNT/UNTIL/etc.
+        // We can't represent it here — surface the warning and leave
+        // the controls at the default DAILY preset so the operator
+        // makes an explicit choice if they want to overwrite.
+        if (incompat) incompat.hidden = false;
+        if (incompatRaw) incompatRaw.textContent = rrule;
+        update();
+        return;
+      }
+
+      if (incompat) incompat.hidden = true;
+      if (incompatRaw) incompatRaw.textContent = '';
+
+      const r = root.querySelector(`[data-rb-mode][value="${freq}"]`);
+      if (r) r.checked = true;
+
+      const h = parseInt(parts.BYHOUR || 0, 10);
+      const m = parseInt(parts.BYMINUTE || 0, 10);
+      const time = `${pad2(h)}:${pad2(m)}`;
+      if (freq === 'DAILY') {
+        root.querySelector('[data-rb="time-daily"]').value = time;
+      } else if (freq === 'WEEKLY') {
+        root.querySelector('[data-rb="time-weekly"]').value = time;
+        const days = (parts.BYDAY || '').split(',').map(s => s.trim().toUpperCase());
+        ['MO','TU','WE','TH','FR','SA','SU'].forEach(d => {
+          const cb = root.querySelector(`[data-rb="day-${d}"]`);
+          if (cb) cb.checked = days.indexOf(d) >= 0;
+        });
+      } else if (freq === 'MONTHLY') {
+        root.querySelector('[data-rb="time-monthly"]').value = time;
+        if (parts.BYMONTHDAY) {
+          root.querySelector('[data-rb="monthday"]').value = String(parseInt(parts.BYMONTHDAY, 10));
+        }
+      }
+
+      showPanel(freq);
+      update();
+    }
+
+    modeRadios.forEach(r => r.addEventListener('change', () => {
+      showPanel(selectedMode());
+      update();
+    }));
+    root.querySelectorAll('[data-rb]').forEach(el => {
+      const ev = (el.type === 'checkbox') ? 'change' : 'input';
+      el.addEventListener(ev, update);
+    });
+
+    hydrate(root.dataset.rruleInitial || '');
+  },
+
   // rruleField wraps formInput with a non-blocking client-side syntax
   // check. The server's 422 is the source of truth; the warning just
-  // catches obvious typos before the round-trip.
+  // catches obvious typos before the round-trip. Kept for callers that
+  // haven't migrated to rruleBuilder yet.
   rruleField({ label, name, value, error }) {
     const html = Components.formInput({
       label, name, type: 'text', value, error,
@@ -837,6 +1160,90 @@ function toDatetimeLocal(v) {
   const pad = (n) => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
     + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+// parseRRule splits "FREQ=DAILY;BYHOUR=2" into { FREQ:'DAILY', BYHOUR:'2' }.
+// Keys are upper-cased; values are kept verbatim. Components without an '='
+// are skipped so a stray "GARBAGE" doesn't crash the humanizer.
+function parseRRule(rrule) {
+  const out = {};
+  if (!rrule || typeof rrule !== 'string') return out;
+  rrule.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx < 0) return;
+    const k = part.slice(0, idx).trim().toUpperCase();
+    const v = part.slice(idx + 1).trim();
+    if (k) out[k] = v;
+  });
+  return out;
+}
+
+// formatRRuleTime renders "HH:MM" from BYHOUR/BYMINUTE strings. BYMINUTE
+// defaults to 0 when only BYHOUR is set so "FREQ=DAILY;BYHOUR=2" reads
+// "Daily at 02:00". Returns '' when BYHOUR is missing or out of range.
+function formatRRuleTime(byhour, byminute) {
+  if (byhour == null || byhour === '') return '';
+  const h = parseInt(byhour, 10);
+  if (isNaN(h) || h < 0 || h > 23) return '';
+  const mRaw = byminute != null && byminute !== '' ? parseInt(byminute, 10) : 0;
+  if (isNaN(mRaw) || mRaw < 0 || mRaw > 59) return '';
+  return pad2(h) + ':' + pad2(mRaw);
+}
+
+// formatRRuleByDay renders "MO,WE,FR" as "Mon, Wed, Fri". Unknown codes
+// short-circuit to '' so the humanizer can fall back to the raw rule.
+const RRULE_DAY_LABELS = Object.freeze({
+  MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu',
+  FR: 'Fri', SA: 'Sat', SU: 'Sun',
+});
+function formatRRuleByDay(byday) {
+  if (!byday) return '';
+  const tokens = byday.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (!tokens.length) return '';
+  const labels = [];
+  for (const t of tokens) {
+    const lbl = RRULE_DAY_LABELS[t];
+    if (!lbl) return '';
+    labels.push(lbl);
+  }
+  return labels.join(', ');
+}
+
+// browserTimezone returns the operator's IANA timezone (e.g.
+// "Europe/Madrid"). Falls back to "UTC" on the rare browser that
+// doesn't surface resolvedOptions.
+function browserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (_) {
+    return 'UTC';
+  }
+}
+
+// defaultDtstartLocal returns "now + 15 min, rounded up to the next
+// 15-min boundary" formatted for a datetime-local input. Used as the
+// pre-fill so the create-schedule modal doesn't open with an empty
+// required field — most operators just accept it and click Create.
+function defaultDtstartLocal() {
+  const d = new Date(Date.now() + 15 * 60 * 1000);
+  d.setSeconds(0, 0);
+  d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+    + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
+// suggestScheduleName composes a readable default like
+// "iana.org daily at 02:00" from a target value + RRULE. Returns ''
+// when there's no target to anchor on so callers can short-circuit
+// without overwriting whatever the user already typed.
+function suggestScheduleName(targetValue, rrule) {
+  const tv = (targetValue || '').trim();
+  if (!tv) return '';
+  const human = Components.humanizeRRule(rrule);
+  if (typeof human === 'string' && human.charAt(0) !== '<' && human !== '-') {
+    return tv + ' ' + human.toLowerCase();
+  }
+  return tv;
 }
 
 // cssEscape quotes a string for use in a CSS attribute selector. Light
