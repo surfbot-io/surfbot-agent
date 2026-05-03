@@ -72,6 +72,28 @@ const API = {
   target(id)            { return this.get('/targets/' + id); },
   tools()               { return this.get('/tools'); },
   availableTools()      { return this.get('/tools/available'); },
+  // Alias of availableTools — named for the Tools page "Refresh status" CTA
+  // so the call site reads as the operator's intent.
+  toolsRefresh()        { return this.get('/tools/available'); },
+  // Tool update / test endpoints don't exist server-side yet (#44 P0 ships
+  // the UI ahead of backend). These resolve with a typed marker so the page
+  // can show the right toast and the operator gets feedback. When the
+  // endpoints land, replace the Promise.resolve with `this.post(...)` —
+  // the call sites stay identical.
+  toolUpdate(name) {
+    return Promise.resolve({
+      status: 'mock',
+      message: 'Backend update endpoint coming in v0.6 · this is a UI placeholder',
+      tool: name,
+    });
+  },
+  toolTest(name) {
+    return Promise.resolve({
+      status: 'mock',
+      message: 'Backend test endpoint coming in v0.6 · this is a UI placeholder',
+      tool: name,
+    });
+  },
   scanStatus()          { return this.get('/scans/status'); },
   // SPEC-SCHED1.3a read-only endpoints. 1.4b adds write methods on top.
   listSchedules(params) { return this.get('/schedules' + toQuery(params)); },
