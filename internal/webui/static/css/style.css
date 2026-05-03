@@ -4109,3 +4109,38 @@ td > small.mono.text-muted { font-size: 11px; }
 }
 .form-disclosure[open] > summary::before { transform: rotate(90deg); }
 .form-disclosure > summary:hover { color: var(--text-primary); }
+
+/* === PR11 #44 — Tools page status pills + header actions =========== */
+
+/* Three-state status pill for the Tools page. Green for healthy,
+ * amber for "update available", red for "unavailable". Reuses the
+ * shared .pill base; only color/bg/border differ per state. */
+.pill-tool-status-available {
+  color: var(--success);
+  background: var(--color-success-100);
+  border-color: rgba(21, 128, 61, 0.35);
+}
+.pill-tool-status-update {
+  color: var(--sev-medium);
+  background: var(--sev-medium-bg);
+  border-color: rgba(210, 153, 34, 0.4);
+}
+.pill-tool-status-unavailable {
+  color: var(--sev-critical);
+  background: var(--sev-critical-bg);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+/* Header CTAs (Refresh status + Update all) sit to the right of the
+ * Tools page title, mirroring the schedules page pattern. */
+.tools-page-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Right-align the per-row action button so the column reads as a
+ * trailing CTA — same pattern as .schedule-actions. */
+.tools-actions-cell { text-align: right; white-space: nowrap; }
+.tools-th-actions { display: inline-block; width: 100%; text-align: right; }
