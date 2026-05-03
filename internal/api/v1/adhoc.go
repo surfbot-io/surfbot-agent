@@ -16,12 +16,19 @@ import (
 // CreateAdHocRequest is the POST /api/v1/scans/ad-hoc body. TargetID is
 // required; RequestedBy populates initiated_by on the persisted row so
 // audit trails survive process restarts.
+//
+// Name is accepted from PR9 #42 onward as an optional human label for
+// the run (parity with schedule names). It is currently round-tripped
+// through dispatch but not persisted — a follow-up backend issue adds
+// the column to ad_hoc_scan_runs. Accepting the field today keeps the
+// UI from 400-ing on DisallowUnknownFields.
 type CreateAdHocRequest struct {
 	TargetID           string                     `json:"target_id"`
 	TemplateID         *string                    `json:"template_id,omitempty"`
 	ToolConfigOverride map[string]json.RawMessage `json:"tool_config_override,omitempty"`
 	RequestedBy        string                     `json:"requested_by,omitempty"`
 	Reason             string                     `json:"reason,omitempty"`
+	Name               string                     `json:"name,omitempty"`
 }
 
 // CreateAdHocResponse is the 202 body. ScanID is empty on the immediate

@@ -276,14 +276,17 @@ document.addEventListener('DOMContentLoaded', () => {
     adhocBtn.addEventListener('click', () => AdHocPage.open());
   }
 
-  // PR2 #35 stubs. Cmd+K and "+ New" are placeholders until PR9
-  // (search) and PR3 (dashboard reframe) wire real behavior. Notif and
+  // PR9 #42: Cmd+K command palette + Cmd+R ad-hoc dispatcher. The
+  // topbar search button is the click affordance for Cmd+K. Notif and
   // help icons stay disabled with a "Coming in v0.6" tooltip set in
   // markup; no handler needed.
   const cmdkBtn = document.getElementById('topbar-cmdk-btn');
-  if (cmdkBtn) cmdkBtn.addEventListener('click', () => {
-    // Placeholder — PR9 implements global search.
-  });
+  if (cmdkBtn) {
+    cmdkBtn.addEventListener('click', () => {
+      if (typeof CommandPalette !== 'undefined') CommandPalette.open();
+    });
+  }
+  bindGlobalShortcuts();
   const newBtn = document.getElementById('topbar-new-btn');
   if (newBtn) {
     newBtn.setAttribute('aria-haspopup', 'menu');
@@ -448,3 +451,52 @@ const TopbarNewMenu = {
     }
   },
 };
+
+// PR9 #42 — global keyboard shortcuts. Cmd+K opens the command palette
+// from any route; Cmd+R opens the ad-hoc dispatcher. Both are no-ops
+// when their respective overlay is already open. Cmd+R intercepts the
+// browser refresh (OQ4 default); F5 stays available as a fallback and
+// the cmdk footer documents this.
+//
+// The handler skips when the user is typing into an input/textarea
+// /select/contenteditable to avoid hijacking text input — except inside
+// the palette overlay, where Cmd+K must still no-op the palette and Esc
+// is owned by the palette controller itself.
+function bindGlobalShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    const meta = e.metaKey || e.ctrlKey;
+    if (!meta) return;
+    const key = (e.key || '').toLowerCase();
+    if (key !== 'k' && key !== 'r') return;
+
+    const t = e.target;
+    const inEditable = t && t.matches && t.matches('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
+    const inPalette = t && t.closest && t.closest('.command-palette-overlay');
+    if (inEditable && !inPalette) {
+      // Cmd+K is a universal "open search" pattern — intercept even
+      // inside text fields so the user doesn't have to click out
+      // first. Cmd+R inside a text field stays as the browser default
+      // (refresh) so an operator typing in a textarea isn't
+      // interrupted by a modal opening on top of their work.
+      if (key === 'r') return;
+    }
+
+    if (key === 'k') {
+      e.preventDefault();
+      if (typeof CommandPalette === 'undefined') return;
+      if (CommandPalette.isOpen()) return;
+      CommandPalette.open();
+      return;
+    }
+    if (key === 'r') {
+      e.preventDefault();
+      if (typeof AdHocPage === 'undefined') return;
+      // No-op if a modal or the command palette is already open — both
+      // would otherwise stack a second overlay on top.
+      if (document.body.classList.contains('modal-open')) return;
+      if (document.body.classList.contains('cmdk-open')) return;
+      AdHocPage.open();
+      return;
+    }
+  });
+}
