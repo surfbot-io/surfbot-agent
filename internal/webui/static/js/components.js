@@ -1097,6 +1097,157 @@ const Components = {
     if (timeout > 0) setTimeout(close, timeout);
     return { close };
   },
+
+  // PR9 #42: commandPalette mounts the Cmd+K overlay. The caller (the
+  // CommandPalette controller in cmdk.js) owns data fetching and item
+  // selection state. This helper is responsible for the DOM:
+  //   - input at the top, focused on mount
+  //   - one block per source (header + up to 5 items each); empty
+  //     blocks are omitted unless `loading`/`error` is set
+  //   - footer with kbd hints
+  //
+  // The helper returns { root, close, setSources(sources), setActive(idx) }.
+  // setSources re-renders the result blocks while preserving the input
+  // value and focus; setActive moves the highlight without re-rendering.
+  // The caller handles ↑/↓/↵/Esc and computes the flat list of selectable
+  // items (so source order + per-source caps stay a render concern).
+  commandPalette({ sources, recents, onAction, onInput, onClose, footerHint }) {
+    const root = document.createElement('div');
+    root.className = 'command-palette-overlay';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-label', 'Command palette');
+    root.innerHTML = `
+      <div class="cmdk-panel" role="combobox" aria-haspopup="listbox" aria-expanded="true">
+        <div class="cmdk-input-wrap">
+          ${Components.icon('search', 16)}
+          <input class="cmdk-input" type="text" autocomplete="off" spellcheck="false"
+                 aria-label="Search findings, assets, scans"
+                 placeholder="Search findings, assets, scans…">
+          <kbd class="kbd cmdk-kbd-esc">Esc</kbd>
+        </div>
+        <div class="cmdk-results" data-cmdk-results role="listbox"></div>
+        <div class="cmdk-footer">
+          <span><kbd class="kbd">↑↓</kbd> navigate</span>
+          <span><kbd class="kbd">↵</kbd> open</span>
+          <span><kbd class="kbd">Esc</kbd> close</span>
+          ${footerHint ? `<span class="cmdk-footer-hint">${escapeHtml(footerHint)}</span>` : ''}
+        </div>
+      </div>
+    `;
+    document.body.appendChild(root);
+    document.body.classList.add('cmdk-open');
+
+    const input = root.querySelector('.cmdk-input');
+    const resultsEl = root.querySelector('[data-cmdk-results]');
+
+    let closed = false;
+    function close(reason) {
+      if (closed) return;
+      closed = true;
+      document.body.classList.remove('cmdk-open');
+      root.remove();
+      if (typeof onClose === 'function') onClose(reason || 'close');
+    }
+    root.addEventListener('mousedown', (e) => {
+      if (e.target === root) close('dismiss');
+    });
+
+    if (typeof onInput === 'function') {
+      input.addEventListener('input', () => onInput(input.value));
+    }
+
+    function renderSources(srcs) {
+      const blocks = [];
+      (srcs || []).forEach((s, sIdx) => {
+        if (s.hidden) return;
+        const headerSafe = escapeHtml(s.label || '');
+        let body = '';
+        if (s.loading) {
+          body = `<div class="cmdk-loading">Loading…</div>`;
+        } else if (s.error) {
+          body = `<div class="cmdk-error">${escapeHtml(s.error)}</div>`;
+        } else if (!s.items || !s.items.length) {
+          if (s.emptyMessage) body = `<div class="cmdk-no-results">${escapeHtml(s.emptyMessage)}</div>`;
+          else return; // no header without items
+        } else {
+          body = s.items.map((it, iIdx) => {
+            const dataIdx = `${sIdx}.${iIdx}`;
+            const iconHtml = it.icon ? Components.icon(it.icon, 14) : '';
+            const sub = it.sublabel ? `<span class="cmdk-item-sub">${escapeHtml(it.sublabel)}</span>` : '';
+            const right = it.right ? `<span class="cmdk-item-right">${escapeHtml(it.right)}</span>` : '';
+            const disabled = it.disabled ? ' cmdk-item-disabled' : '';
+            const tip = it.tooltip ? ` title="${escapeHtml(it.tooltip)}"` : '';
+            return `<div class="cmdk-item${disabled}" role="option" data-cmdk-idx="${dataIdx}"${tip}>
+              <span class="cmdk-item-icon" aria-hidden="true">${iconHtml}</span>
+              <span class="cmdk-item-label">${escapeHtml(it.label || '')}</span>
+              ${sub}
+              ${right}
+            </div>`;
+          }).join('');
+        }
+        blocks.push(`<div class="cmdk-source" data-cmdk-source="${escapeHtml(s.type || '')}">
+          <div class="cmdk-source-header">${headerSafe}</div>
+          ${body}
+        </div>`);
+      });
+      resultsEl.innerHTML = blocks.join('') || `<div class="cmdk-no-results">No matches</div>`;
+    }
+
+    function setActive(idx) {
+      resultsEl.querySelectorAll('.cmdk-item-active').forEach(el => el.classList.remove('cmdk-item-active'));
+      if (idx == null) return;
+      const el = resultsEl.querySelector(`[data-cmdk-idx="${CSS && CSS.escape ? CSS.escape(idx) : idx}"]`);
+      if (el) {
+        el.classList.add('cmdk-item-active');
+        // scrollIntoView with block:nearest so the active item is visible
+        // without the entire results block jumping when the user just
+        // moved one row.
+        const r = el.getBoundingClientRect();
+        const pr = resultsEl.getBoundingClientRect();
+        if (r.top < pr.top || r.bottom > pr.bottom) {
+          el.scrollIntoView({ block: 'nearest' });
+        }
+      }
+    }
+
+    if (typeof onAction === 'function') {
+      resultsEl.addEventListener('click', (e) => {
+        const it = e.target.closest('[data-cmdk-idx]');
+        if (!it) return;
+        if (it.classList.contains('cmdk-item-disabled')) {
+          it.classList.remove('cmdk-shake');
+          // restart the animation
+          void it.offsetWidth;
+          it.classList.add('cmdk-shake');
+          return;
+        }
+        onAction(it.getAttribute('data-cmdk-idx'));
+      });
+      resultsEl.addEventListener('mousemove', (e) => {
+        const it = e.target.closest('[data-cmdk-idx]');
+        if (!it) return;
+        if (it.classList.contains('cmdk-item-active')) return;
+        resultsEl.querySelectorAll('.cmdk-item-active').forEach(el => el.classList.remove('cmdk-item-active'));
+        it.classList.add('cmdk-item-active');
+      });
+    }
+
+    renderSources(sources);
+    setTimeout(() => input.focus(), 0);
+
+    return {
+      root,
+      close,
+      input,
+      setSources: renderSources,
+      setActive,
+      // setQuery updates the input value programmatically (used after
+      // clearing recents on action). Keeps focus.
+      setQuery(v) { input.value = v == null ? '' : String(v); },
+      getQuery() { return input.value; },
+    };
+  },
 };
 
 // Convenience shortcuts so callers can write Components.toast.error('…')
@@ -1132,6 +1283,11 @@ const ICONS = Object.freeze({
   // play for the +New > Run scan item.
   'eye-off':      '<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
   play:           '<polygon points="5 3 19 12 5 21 5 3"/>',
+  // PR9 #42: cmdk palette glyphs.
+  shield:         '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  pause:          '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+  list:           '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+  cube:           '<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
 });
 
 function pad2(n) { return String(n).padStart(2, '0'); }
