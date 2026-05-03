@@ -293,13 +293,16 @@ func TestIntegration_UIWriteFlows(t *testing.T) {
 	}
 }
 
-// TestIntegration_UITimeline asserts the 1.4c additions: timeline
-// page module, sidebar link + hash route, timeline helpers in
-// components.js, schedules-for-target section, target-detail ad-hoc
-// prefill support, dashboard Run scan now button, USED BY column
-// header, and the blackout activations placeholder. All assertions are
-// string-matches on embedded files or the served shell.
-func TestIntegration_UITimeline(t *testing.T) {
+// TestIntegration_UISchedulingWiring asserts the 1.4c additions that
+// survived the UI v2 redesign: schedules-for-target section, target-
+// detail ad-hoc prefill support, dashboard Run scan now button, USED BY
+// column header, and the blackout activations placeholder.
+//
+// PR12 #45 removed the Timeline page (`pages/timeline.js`, `#/timeline`
+// route, `Components.timelineRow|timelineEmptySlot|groupByDay`). The
+// negative assertions below pin those removals so a future regression
+// re-introducing the page would fail this test.
+func TestIntegration_UISchedulingWiring(t *testing.T) {
 	_, base, stop := startIntegrationServer(t)
 	defer stop()
 
@@ -307,27 +310,38 @@ func TestIntegration_UITimeline(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	html := string(body)
 
-	// Timeline nav link + <script> tag in the shell.
-	assert.Contains(t, html, `href="#/timeline"`, "shell missing Timeline nav link")
-	assert.Contains(t, html, `/js/pages/timeline.js`, "shell missing timeline.js <script> tag")
+	// PR12 #45: Timeline page is gone — shell must not load it and the
+	// embed.FS must not ship it.
+	assert.NotContains(t, html, `href="#/timeline"`, "shell still has Timeline nav link")
+	assert.NotContains(t, html, `/js/pages/timeline.js`, "shell still has timeline.js <script> tag")
+	if _, err := fs.Stat(staticFS, "static/js/pages/timeline.js"); err == nil {
+		t.Errorf("embed.FS still contains static/js/pages/timeline.js")
+	}
 
-	// Timeline page module embedded.
-	_, err := fs.Stat(staticFS, "static/js/pages/timeline.js")
-	assert.NoError(t, err, "embed.FS missing static/js/pages/timeline.js")
-
-	// app.js registers the #/timeline hash route. The regex literal
-	// uses JS-escaped `\/` so we assert on the stable symbol
-	// TimelinePage.render instead of the character-escape dance.
 	appJS := readEmbedded(t, "static/js/app.js")
-	assert.Contains(t, appJS, "TimelinePage.render", "app.js missing TimelinePage.render binding")
-	assert.Contains(t, appJS, "page: 'timeline'", "app.js missing timeline route registration")
+	assert.NotContains(t, appJS, "TimelinePage", "app.js still references TimelinePage")
+	assert.NotContains(t, appJS, "page: 'timeline'", "app.js still has timeline route registration")
+	// The legacy redirect lives on for one sprint so bookmarks don't
+	// break — see app.js routes table.
+	assert.Contains(t, appJS, "#\\/timeline", "app.js missing legacy #/timeline redirect")
 
-	// Timeline helpers in components.js.
+	// PR12 #45: dashboard AgentCard widget is gone. Only the sidebar
+	// compact card remains.
+	agentCardJS := readEmbedded(t, "static/js/pages/agent_card.js")
+	assert.Contains(t, agentCardJS, "mountCompact", "agent_card.js missing mountCompact")
+	assert.NotContains(t, agentCardJS, "mount(el)", "agent_card.js still defines dashboard mount()")
+	assert.NotContains(t, agentCardJS, "unmount()", "agent_card.js still defines unmount()")
+	assert.NotContains(t, appJS, "AgentCard.unmount", "app.js still calls AgentCard.unmount")
+
+	// PR12 #45: timeline helpers are gone from components.js. Surviving
+	// schedule helpers (horizonSelector, targetFilterSelector) stay
+	// because they're consumed by the schedule detail "Next firings"
+	// panel.
 	components := readEmbedded(t, "static/js/components.js")
-	for _, name := range []string{
-		"groupByDay", "timelineRow", "timelineEmptySlot",
-		"horizonSelector", "targetFilterSelector",
-	} {
+	for _, name := range []string{"timelineRow", "timelineEmptySlot", "groupByDay"} {
+		assert.NotContains(t, components, name, "components.js still defines %s", name)
+	}
+	for _, name := range []string{"horizonSelector", "targetFilterSelector"} {
 		assert.Contains(t, components, name, "components.js missing %s", name)
 	}
 
@@ -346,12 +360,6 @@ func TestIntegration_UITimeline(t *testing.T) {
 	adhocJS := readEmbedded(t, "static/js/pages/adhoc.js")
 	for _, name := range []string{"prefillTargetID", "lockTargetID", "adhoc-target-unlock"} {
 		assert.Contains(t, adhocJS, name, "adhoc.js missing %s", name)
-	}
-
-	// Dashboard Run scan now button restored.
-	dashJS := readEmbedded(t, "static/js/pages/dashboard.js")
-	for _, name := range []string{`data-action="run-scan-now"`, "dashboard-run-scan-btn"} {
-		assert.Contains(t, dashJS, name, "dashboard.js missing %s", name)
 	}
 
 	// Templates list USED BY column + hydration helper.

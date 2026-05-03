@@ -159,9 +159,11 @@ endpoints and CLI verbs.
 - **Bulk endpoint** at `POST /api/v1/schedules/bulk` for atomic-per-
   item pause/resume/delete/clone across many schedules at once.
 - **Web UI overhaul** — `#/schedules`, `#/templates`, `#/blackouts`,
-  `#/settings/defaults`, `#/timeline`. Every resource has create/edit/
-  delete; schedules support pause/resume + bulk ops; target-detail
-  pages show schedules for the target and wire the ad-hoc modal.
+  `#/settings/defaults`. Every resource has create/edit/delete;
+  schedules support pause/resume + bulk ops; target-detail pages show
+  schedules for the target and wire the ad-hoc modal. Upcoming
+  firings live in the per-schedule detail page (a standalone Timeline
+  page existed in 1.4c and was removed in UI v2 PR12).
 
 **What's removed**
 
